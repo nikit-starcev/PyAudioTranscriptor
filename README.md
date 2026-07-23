@@ -20,6 +20,24 @@
 Вся обработка выполняется полностью локально, без обращения к облачным API —
 аудио и текст никогда не покидают ваш компьютер.
 
+## Содержание
+
+- [Возможности](#возможности)
+- [Требования](#требования)
+- [Установка](#установка)
+- [Быстрый запуск](#быстрый-запуск-без-ручной-установки-и-параметров-в-командной-строке)
+- [Использование](#использование-вручную-через-uv)
+  - [Повышение точности распознавания](#повышение-точности-распознавания)
+  - [Токен доступа для диаризации](#токен-доступа-для-диаризации)
+  - [Выбор устройства (CPU/GPU)](#выбор-устройства-cpugpu)
+  - [Логи](#логи)
+- [Архитектура](#архитектура)
+  - [Структура каталогов](#структура-каталогов)
+  - [Назначение компонентов](#назначение-компонентов)
+- [Тестирование](#тестирование)
+  - [Интеграционные тесты](#интеграционные-тесты)
+- [Разработка](#разработка)
+
 ## Возможности
 
 - Распознавание речи полностью локально через [faster-whisper](https://github.com/SYSTRAN/faster-whisper).
@@ -321,38 +339,46 @@ uv run audio-transcriber transcribe records/call.mp3 \
 достаточно реализовать соответствующий протокол.
 
 ```mermaid
-flowchart TD
-    CLI["🖥️ CLI<br/><sub>Typer: аргументы, вывод, коды выхода</sub>"]
-    Config["⚙️ Config<br/><sub>AppConfig: валидация параметров запуска</sub>"]
-    Transcription["📝 Transcription<br/><sub>faster-whisper engine</sub>"]
-    Diarization["🗣️ Diarization<br/><sub>pyannote.audio engine</sub>"]
-    Merging["🔗 Merging<br/><sub>aligner: реплики ASR + говорящие</sub>"]
-    Export["📤 Export<br/><sub>TXT · DOCX · JSON · SRT</sub>"]
+flowchart LR
+    subgraph input["🔵 Вход"]
+        direction TB
+        CLI["🖥️ CLI<br/><sub>Typer</sub>"]
+        Config["⚙️ Config<br/><sub>AppConfig</sub>"]
+        CLI --> Config
+    end
 
-    CLI --> Config
-    Config --> Transcription
-    Config --> Diarization
-    Transcription --> Merging
-    Diarization --> Merging
-    Merging --> Export
+    subgraph processing["🟠 Обработка (заменяемые движки)"]
+        direction TB
+        Transcription["📝 Transcription<br/><sub>faster-whisper</sub>"]
+        Diarization["🗣️ Diarization<br/><sub>pyannote.audio</sub>"]
+        Merging["🔗 Merging<br/><sub>aligner</sub>"]
+        Transcription --> Merging
+        Diarization --> Merging
+    end
+
+    subgraph output["🟣 Результат"]
+        Export["📤 Export<br/><sub>TXT · DOCX · JSON · SRT</sub>"]
+    end
+
+    input --> processing --> output
 
     classDef entry fill:#4C6EF5,color:#fff,stroke:#364FC7;
     classDef swappable fill:#F08C00,color:#fff,stroke:#E8590C;
     classDef core fill:#2EA44F,color:#fff,stroke:#22863A;
-    classDef output fill:#6F42C1,color:#fff,stroke:#5A32A3;
+    classDef outputNode fill:#6F42C1,color:#fff,stroke:#5A32A3;
 
     class CLI,Config entry;
     class Transcription,Diarization swappable;
     class Merging core;
-    class Export output;
+    class Export outputNode;
 ```
 
-- 🔵 **CLI / Config** — точка входа и валидация параметров запуска.
-- 🟠 **Transcription / Diarization** — независимые движки, каждый за интерфейсом
-  `typing.Protocol`; можно заменить на другую реализацию без изменения
-  остального кода.
-- 🟢 **Merging** — сопоставляет реплики распознавания с говорящими по времени.
-- 🟣 **Export** — сохраняет результат в выбранные форматы.
+- 🔵 **Вход** — CLI (Typer) и Config валидируют параметры запуска.
+- 🟠 **Обработка** — Transcription и Diarization независимы и спрятаны за
+  интерфейсом `typing.Protocol`: любой из движков можно заменить на другую
+  реализацию без изменения остального кода. Merging сопоставляет их
+  результаты по времени.
+- 🟣 **Результат** — Export сохраняет стенограмму в выбранные форматы.
 
 `domain` (модели данных) и `utils` (логирование, работа с устройством CPU/CUDA,
 исключения) используются всеми слоями насквозь и не показаны на схеме отдельно.
@@ -370,63 +396,81 @@ AudioTranscriptor/
 ├── run.ps1                 # запуск для Windows (PowerShell)
 ├── run.bat                 # запуск для Windows перетаскиванием файла (вызывает run.ps1)
 ├── config.example.env      # шаблон параметров для run.sh/run.ps1 (скопировать в config.env)
-├── src/
-│   └── audio_transcriber/
-│       ├── __init__.py     # версия пакета (__version__)
-│       ├── __main__.py     # запуск через `python -m audio_transcriber`
-│       │
-│       ├── cli/            # Слой CLI (Typer)
-│       │   └── app.py      #   команда `transcribe`, разбор и валидация опций
-│       │
-│       ├── config/         # Конфигурация запуска
-│       │   └── settings.py #   AppConfig: сборка и валидация параметров
-│       │
-│       ├── domain/         # Доменные модели — не зависят ни от одного движка
-│       │   ├── enums.py    #   Device, ExportFormat
-│       │   └── models.py   #   TranscriptionSegment, SpeakerSegment,
-│       │                   #   Speaker, TranscriptEntry, TranscriptionResult
-│       │
-│       ├── transcription/  # Распознавание речи (ASR)
-│       │   ├── base.py     #   протокол SpeechRecognizer
-│       │   └── whisper_engine.py # реализация на faster-whisper
-│       │
-│       ├── diarization/    # Определение говорящих
-│       │   ├── base.py     #   протокол SpeakerDiarizer
-│       │   └── pyannote_engine.py # реализация на pyannote.audio
-│       │
-│       ├── merging/        # Объединение сегментов ASR + диаризации
-│       │   ├── base.py     #   протокол SegmentMerger
-│       │   └── aligner.py  #   реализация по максимальному перекрытию во времени
-│       │
-│       ├── export/         # Экспорт результата
-│       │   ├── base.py     #   протокол ResultExporter
-│       │   ├── txt_exporter.py
-│       │   ├── docx_exporter.py
-│       │   ├── json_exporter.py
-│       │   ├── srt_exporter.py
-│       │   ├── timestamps.py #  форматирование временных меток
-│       │   └── factory.py  #   выбор экспортёра по формату
-│       │
-│       ├── utils/          # Сквозные утилиты
-│       │   ├── exceptions.py #  иерархия исключений приложения
-│       │   ├── logging.py    #  настройка логирования (rich)
-│       │   ├── device.py     #  выбор CUDA/CPU, ленивый импорт torch
-│       │   └── audio.py      #  декодирование аудио через PyAV
-│       │
-│       └── pipeline.py     # сборка конвейера, используется CLI
-│
-└── tests/                  # Тесты pytest, зеркалируют структуру src/
-    ├── conftest.py
-    ├── test_config_settings.py
-    ├── test_device.py
-    ├── test_audio.py
-    ├── test_cli.py
-    ├── test_merging.py
-    ├── test_export.py
-    ├── test_pipeline.py
-    ├── test_integration.py  #  реальный конвейер на tests_jfk.flac (маркер integration)
-    └── tests_jfk.flac        #  тестовая аудиозапись для интеграционного теста
+├── src/audio_transcriber/  # исходный код пакета (см. ниже)
+└── tests/                  # тесты pytest (см. ниже)
 ```
+
+<details>
+<summary>📦 <code>src/audio_transcriber/</code> — исходный код пакета</summary>
+
+```
+src/audio_transcriber/
+├── __init__.py     # версия пакета (__version__)
+├── __main__.py     # запуск через `python -m audio_transcriber`
+│
+├── cli/            # Слой CLI (Typer)
+│   └── app.py      #   команда `transcribe`, разбор и валидация опций
+│
+├── config/         # Конфигурация запуска
+│   └── settings.py #   AppConfig: сборка и валидация параметров
+│
+├── domain/         # Доменные модели — не зависят ни от одного движка
+│   ├── enums.py    #   Device, ExportFormat
+│   └── models.py   #   TranscriptionSegment, SpeakerSegment,
+│                   #   Speaker, TranscriptEntry, TranscriptionResult
+│
+├── transcription/  # Распознавание речи (ASR)
+│   ├── base.py     #   протокол SpeechRecognizer
+│   └── whisper_engine.py # реализация на faster-whisper
+│
+├── diarization/    # Определение говорящих
+│   ├── base.py     #   протокол SpeakerDiarizer
+│   └── pyannote_engine.py # реализация на pyannote.audio
+│
+├── merging/        # Объединение сегментов ASR + диаризации
+│   ├── base.py     #   протокол SegmentMerger
+│   └── aligner.py  #   реализация по максимальному перекрытию во времени
+│
+├── export/         # Экспорт результата
+│   ├── base.py     #   протокол ResultExporter
+│   ├── txt_exporter.py
+│   ├── docx_exporter.py
+│   ├── json_exporter.py
+│   ├── srt_exporter.py
+│   ├── timestamps.py #  форматирование временных меток
+│   └── factory.py  #   выбор экспортёра по формату
+│
+├── utils/          # Сквозные утилиты
+│   ├── exceptions.py #  иерархия исключений приложения
+│   ├── logging.py    #  настройка логирования (rich)
+│   ├── device.py     #  выбор CUDA/CPU, ленивый импорт torch
+│   ├── audio.py      #  декодирование аудио через PyAV
+│   └── vocabulary.py #  загрузка словаря терминов для --vocabulary-file
+│
+└── pipeline.py     # сборка конвейера, используется CLI
+```
+
+</details>
+
+<details>
+<summary>🧪 <code>tests/</code> — тесты pytest, зеркалируют структуру <code>src/</code></summary>
+
+```
+tests/
+├── conftest.py
+├── test_config_settings.py
+├── test_device.py
+├── test_audio.py
+├── test_cli.py
+├── test_vocabulary.py
+├── test_merging.py
+├── test_export.py
+├── test_pipeline.py
+├── test_integration.py  # реальный конвейер на tests_jfk.flac (маркер integration)
+└── tests_jfk.flac        # тестовая аудиозапись для интеграционного теста
+```
+
+</details>
 
 </details>
 
