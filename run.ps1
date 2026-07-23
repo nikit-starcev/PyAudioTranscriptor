@@ -72,6 +72,15 @@ if ($config["SPEAKER_NAMES"]) {
 
 if ($config["HF_TOKEN"]) { $cliArgs += @("--hf-token", $config["HF_TOKEN"]) }
 if ($config["ENABLE_CORRECTION"] -eq "true") { $cliArgs += "--enable-correction" }
+if ($config["CORRECTION_MIN_WORD_LENGTH"]) {
+    $cliArgs += @("--correction-min-word-length", $config["CORRECTION_MIN_WORD_LENGTH"])
+}
+if ($config["CORRECTION_MIN_SIMILARITY"]) {
+    $cliArgs += @("--correction-min-similarity", $config["CORRECTION_MIN_SIMILARITY"])
+}
+if ($config["CORRECTION_MAX_CANDIDATES"]) {
+    $cliArgs += @("--correction-max-candidates", $config["CORRECTION_MAX_CANDIDATES"])
+}
 if ($config["HOTWORDS"]) { $cliArgs += @("--hotwords", $config["HOTWORDS"]) }
 if ($config["VERBOSE"] -eq "true") { $cliArgs += "--verbose" }
 

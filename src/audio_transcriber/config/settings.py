@@ -11,6 +11,11 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from audio_transcriber.correction.defaults import (
+    DEFAULT_CORRECTION_MAX_CANDIDATES,
+    DEFAULT_CORRECTION_MIN_SIMILARITY,
+    DEFAULT_CORRECTION_MIN_WORD_LENGTH,
+)
 from audio_transcriber.domain.enums import Device, ExportFormat
 from audio_transcriber.utils.exceptions import ConfigurationError
 
@@ -35,6 +40,9 @@ class AppConfig:
     initial_prompt: str | None = None
     hotwords: str | None = None
     enable_correction: bool = False
+    correction_min_word_length: int = DEFAULT_CORRECTION_MIN_WORD_LENGTH
+    correction_min_similarity: float = DEFAULT_CORRECTION_MIN_SIMILARITY
+    correction_max_candidates: int = DEFAULT_CORRECTION_MAX_CANDIDATES
     verbose: bool = False
 
     def __post_init__(self) -> None:
@@ -43,16 +51,34 @@ class AppConfig:
     def _validate(self) -> None:
         if not self.input_file.exists():
             raise ConfigurationError(f"Входной файл не найден: {self.input_file}")
+
         if not self.input_file.is_file():
             raise ConfigurationError(
                 f"Указанный путь не является файлом: {self.input_file}"
             )
+
         if self.num_speakers is not None and self.num_speakers < 1:
             raise ConfigurationError(
                 "Количество говорящих должно быть положительным числом"
             )
+
         if not self.export_formats:
             raise ConfigurationError("Не указан ни один формат экспорта")
+
+        if self.correction_min_word_length < 1:
+            raise ConfigurationError(
+                "CORRECTION_MIN_WORD_LENGTH должно быть целым числом >= 1"
+            )
+
+        if not (0.0 < self.correction_min_similarity <= 1.0):
+            raise ConfigurationError(
+                "CORRECTION_MIN_SIMILARITY должно быть числом в диапазоне (0; 1]"
+            )
+
+        if self.correction_max_candidates < 1:
+            raise ConfigurationError(
+                "CORRECTION_MAX_CANDIDATES должно быть целым числом >= 1"
+            )
 
         try:
             self.output_dir.mkdir(parents=True, exist_ok=True)

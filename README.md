@@ -169,6 +169,9 @@ uv run audio-transcriber transcribe --help
 
    ```
    ENABLE_CORRECTION=true
+   CORRECTION_MIN_WORD_LENGTH=6
+   CORRECTION_MIN_SIMILARITY=0.85
+   CORRECTION_MAX_CANDIDATES=8000
    ```
 
 2. **`--hotwords`** / **`--initial-prompt`** — короткие подсказки ASR во время

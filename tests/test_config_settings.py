@@ -46,6 +46,24 @@ def test_at_least_one_export_format_required(audio_file: Path) -> None:
         AppConfig(input_file=audio_file, export_formats=())
 
 
+def test_correction_min_word_length_must_be_positive(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, correction_min_word_length=0)
+
+
+def test_correction_min_similarity_must_be_in_unit_interval(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, correction_min_similarity=0.0)
+
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, correction_min_similarity=1.5)
+
+
+def test_correction_max_candidates_must_be_positive(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, correction_max_candidates=0)
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [

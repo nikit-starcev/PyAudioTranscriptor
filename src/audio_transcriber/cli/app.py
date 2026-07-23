@@ -9,6 +9,11 @@ import typer
 
 from audio_transcriber import __version__
 from audio_transcriber.config.settings import AppConfig
+from audio_transcriber.correction.defaults import (
+    DEFAULT_CORRECTION_MAX_CANDIDATES,
+    DEFAULT_CORRECTION_MIN_SIMILARITY,
+    DEFAULT_CORRECTION_MIN_WORD_LENGTH,
+)
 from audio_transcriber.domain.enums import Device, ExportFormat
 from audio_transcriber.pipeline import run_pipeline
 from audio_transcriber.utils.device import resolve_device
@@ -141,6 +146,32 @@ def transcribe(
             "По умолчанию выключено."
         ),
     ),
+    correction_min_word_length: int = typer.Option(
+        DEFAULT_CORRECTION_MIN_WORD_LENGTH,
+        "--correction-min-word-length",
+        min=1,
+        help=(
+            "Минимальная длина слова для автоисправления "
+            f"(по умолчанию {DEFAULT_CORRECTION_MIN_WORD_LENGTH})."
+        ),
+    ),
+    correction_min_similarity: float = typer.Option(
+        DEFAULT_CORRECTION_MIN_SIMILARITY,
+        "--correction-min-similarity",
+        help=(
+            "Минимальное сходство опечатки и кандидата (0; 1] "
+            f"(по умолчанию {DEFAULT_CORRECTION_MIN_SIMILARITY})."
+        ),
+    ),
+    correction_max_candidates: int = typer.Option(
+        DEFAULT_CORRECTION_MAX_CANDIDATES,
+        "--correction-max-candidates",
+        min=1,
+        help=(
+            "Максимум кандидатов OpenCorpora на один префикс "
+            f"(по умолчанию {DEFAULT_CORRECTION_MAX_CANDIDATES})."
+        ),
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -176,6 +207,9 @@ def transcribe(
             initial_prompt=initial_prompt,
             hotwords=hotwords,
             enable_correction=enable_correction,
+            correction_min_word_length=correction_min_word_length,
+            correction_min_similarity=correction_min_similarity,
+            correction_max_candidates=correction_max_candidates,
             verbose=verbose,
         )
         resolved_device = resolve_device(config.device)
@@ -199,6 +233,14 @@ def transcribe(
             "Автоисправление опечаток: %s",
             "включено" if config.enable_correction else "выключено",
         )
+        if config.enable_correction:
+            logger.info(
+                "Параметры автоисправления: min_word_length=%d, "
+                "min_similarity=%.2f, max_candidates=%d",
+                config.correction_min_word_length,
+                config.correction_min_similarity,
+                config.correction_max_candidates,
+            )
 
         result = run_pipeline(config, device=resolved_device)
     except KeyboardInterrupt:

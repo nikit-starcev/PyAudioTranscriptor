@@ -48,7 +48,11 @@ def run_pipeline(
     diarizer = diarizer or PyannoteSpeakerDiarizer(device, hf_token=config.hf_token)
     merger = merger or OverlapSegmentMerger()
     if corrector is None and config.enable_correction:
-        corrector = MorphTextCorrector()
+        corrector = MorphTextCorrector(
+            min_word_length=config.correction_min_word_length,
+            min_similarity=config.correction_min_similarity,
+            max_candidates=config.correction_max_candidates,
+        )
 
     logger.info("Распознавание речи...")
     transcription_segments, language, duration = recognizer.transcribe(
@@ -56,7 +60,9 @@ def run_pipeline(
     )
 
     logger.info("Определение говорящих...")
-    speaker_segments = diarizer.diarize(config.input_file, num_speakers=config.num_speakers)
+    speaker_segments = diarizer.diarize(
+        config.input_file, num_speakers=config.num_speakers
+    )
 
     entries, speakers = merger.merge(
         transcription_segments, speaker_segments, config.speaker_names

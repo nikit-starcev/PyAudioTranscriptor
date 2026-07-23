@@ -68,6 +68,9 @@ fi
 
 [ -n "${HF_TOKEN:-}" ] && ARGS+=(--hf-token "$HF_TOKEN")
 [ "${ENABLE_CORRECTION:-false}" = "true" ] && ARGS+=(--enable-correction)
+[ -n "${CORRECTION_MIN_WORD_LENGTH:-}" ] && ARGS+=(--correction-min-word-length "$CORRECTION_MIN_WORD_LENGTH")
+[ -n "${CORRECTION_MIN_SIMILARITY:-}" ] && ARGS+=(--correction-min-similarity "$CORRECTION_MIN_SIMILARITY")
+[ -n "${CORRECTION_MAX_CANDIDATES:-}" ] && ARGS+=(--correction-max-candidates "$CORRECTION_MAX_CANDIDATES")
 [ -n "${HOTWORDS:-}" ] && ARGS+=(--hotwords "$HOTWORDS")
 [ "${VERBOSE:-false}" = "true" ] && ARGS+=(--verbose)
 
