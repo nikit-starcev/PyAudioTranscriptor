@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from datetime import datetime
 from pathlib import Path
 
@@ -15,6 +16,42 @@ _CONSOLE_LOG_FORMAT = "%(message)s"
 _FILE_LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
 
 logger = logging.getLogger(__name__)
+
+
+def _silence_third_party_noise() -> None:
+    """Отключает предупреждения сторонних библиотек, не относящиеся к делу.
+
+    Эти сообщения выводятся напрямую в stderr мимо нашего логгера (через
+    ``warnings.warn`` или собственный логгер библиотеки) и описывают
+    ожидаемое, не влияющее на результат поведение:
+
+    - ``pyannote.audio`` при каждом запуске предупреждает об отсутствии
+      ``torchcodec`` — декодирование аудио в этом проекте выполняется через
+      PyAV (см. ``utils/audio.py``), ``torchcodec`` не используется вовсе;
+    - ``pyannote.audio`` осознанно отключает TensorFloat-32 для
+      воспроизводимости результатов — это не ошибка;
+    - PyTorch предупреждает об отсутствии ``triton`` (используется только
+      для профилирования FLOPs, не для самого распознавания/диаризации) —
+      на Windows ``triton`` не поддерживается.
+    """
+
+    # Важно: фильтры настраиваются по имени модуля-источника, без импорта
+    # pyannote.audio/torch — сама эта функция вызывается до того, как
+    # диаризация лениво импортирует их (см. pyannote_engine.py), и не должна
+    # провоцировать их загрузку раньше времени.
+    logging.getLogger("torch.utils.flop_counter").setLevel(logging.ERROR)
+
+    warnings.filterwarnings(
+        "ignore",
+        message=r"(?s).*torchcodec is not installed correctly.*",
+        category=UserWarning,
+        module=r"pyannote\.audio\.core\.io",
+    )
+    warnings.filterwarnings(
+        "ignore",
+        category=UserWarning,
+        module=r"pyannote\.audio\.utils\.reproducibility",
+    )
 
 
 def setup_logging(*, verbose: bool = False, log_dir: Path | None = None) -> Path | None:
@@ -31,6 +68,8 @@ def setup_logging(*, verbose: bool = False, log_dir: Path | None = None) -> Path
     :return: путь к созданному файлу логов, либо ``None``, если файл не
         создавался.
     """
+
+    _silence_third_party_noise()
 
     console_handler = RichHandler(
         show_time=verbose,
