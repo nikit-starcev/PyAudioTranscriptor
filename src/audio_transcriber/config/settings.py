@@ -1,0 +1,90 @@
+"""Конфигурация запуска приложения (:class:`AppConfig`).
+
+Собирает и валидирует параметры, переданные через CLI, прежде чем они
+попадут в компоненты конвейера (распознавание, диаризация, объединение,
+экспорт).
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from audio_transcriber.domain.enums import Device, ExportFormat
+from audio_transcriber.utils.exceptions import ConfigurationError
+
+logger = logging.getLogger(__name__)
+
+_SPEAKER_ID_TEMPLATE = "SPEAKER_{index:02d}"
+
+
+@dataclass(slots=True)
+class AppConfig:
+    """Полная конфигурация одного запуска транскрибации."""
+
+    input_file: Path
+    output_dir: Path = Path("output")
+    model_name: str = "large-v3-turbo"
+    language: str | None = None
+    device: Device = Device.AUTO
+    export_formats: tuple[ExportFormat, ...] = (ExportFormat.TXT,)
+    num_speakers: int | None = None
+    speaker_names: dict[str, str] = field(default_factory=dict)
+    hf_token: str | None = None
+    initial_prompt: str | None = None
+    hotwords: str | None = None
+    verbose: bool = False
+
+    def __post_init__(self) -> None:
+        self._validate()
+
+    def _validate(self) -> None:
+        if not self.input_file.exists():
+            raise ConfigurationError(f"Входной файл не найден: {self.input_file}")
+        if not self.input_file.is_file():
+            raise ConfigurationError(
+                f"Указанный путь не является файлом: {self.input_file}"
+            )
+        if self.num_speakers is not None and self.num_speakers < 1:
+            raise ConfigurationError(
+                "Количество говорящих должно быть положительным числом"
+            )
+        if not self.export_formats:
+            raise ConfigurationError("Не указан ни один формат экспорта")
+
+        try:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ConfigurationError(
+                f"Не удалось создать директорию результатов {self.output_dir}: {exc}"
+            ) from exc
+
+    @staticmethod
+    def parse_speaker_names(raw_values: list[str]) -> dict[str, str]:
+        """Разбирает значения ``--speaker-name`` вида ``"0=Иван"``.
+
+        Возвращает отображение идентификатора говорящего, присваиваемого
+        диаризацией (например ``"SPEAKER_00"``), на пользовательское имя.
+        """
+
+        mapping: dict[str, str] = {}
+        for raw in raw_values:
+            if "=" not in raw:
+                raise ConfigurationError(
+                    f"Некорректный формат --speaker-name: '{raw}'. "
+                    "Ожидается ИНДЕКС=Имя, например: --speaker-name 0=Иван"
+                )
+            index_part, name = (part.strip() for part in raw.split("=", maxsplit=1))
+            if not index_part.isdigit():
+                raise ConfigurationError(
+                    f"Некорректный индекс говорящего в '{raw}': "
+                    "ожидалось целое неотрицательное число"
+                )
+            if not name:
+                raise ConfigurationError(f"Не указано имя говорящего в '{raw}'")
+
+            speaker_id = _SPEAKER_ID_TEMPLATE.format(index=int(index_part))
+            mapping[speaker_id] = name
+
+        return mapping
