@@ -1,9 +1,9 @@
-"""Сборка конвейера: распознавание -> диаризация -> объединение -> экспорт.
+"""Сборка конвейера: распознавание -> диаризация -> объединение -> коррекция -> экспорт.
 
 Каждый этап конвейера обращается к своему компоненту только через протокол
 (``SpeechRecognizer``, ``SpeakerDiarizer``, ``SegmentMerger``,
-``ResultExporter``), поэтому конкретную реализацию можно передать снаружи —
-это используется в тестах для подстановки фиктивных движков.
+``TextCorrector``, ``ResultExporter``), поэтому конкретную реализацию можно
+передать снаружи — это используется в тестах для подстановки фиктивных движков.
 """
 
 from __future__ import annotations
@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 
 from audio_transcriber.config.settings import AppConfig
+from audio_transcriber.correction.base import TextCorrector
+from audio_transcriber.correction.symspell_corrector import SymSpellTextCorrector
 from audio_transcriber.diarization.base import SpeakerDiarizer
 from audio_transcriber.diarization.pyannote_engine import PyannoteSpeakerDiarizer
 from audio_transcriber.domain.enums import Device
@@ -32,6 +34,7 @@ def run_pipeline(
     recognizer: SpeechRecognizer | None = None,
     diarizer: SpeakerDiarizer | None = None,
     merger: SegmentMerger | None = None,
+    corrector: TextCorrector | None = None,
 ) -> TranscriptionResult:
     """Прогоняет входной файл через полный конвейер и экспортирует результат."""
 
@@ -44,6 +47,8 @@ def run_pipeline(
     )
     diarizer = diarizer or PyannoteSpeakerDiarizer(device, hf_token=config.hf_token)
     merger = merger or OverlapSegmentMerger()
+    if corrector is None and config.correction_terms:
+        corrector = SymSpellTextCorrector(list(config.correction_terms))
 
     logger.info("Распознавание речи...")
     transcription_segments, language, duration = recognizer.transcribe(
@@ -56,6 +61,10 @@ def run_pipeline(
     entries, speakers = merger.merge(
         transcription_segments, speaker_segments, config.speaker_names
     )
+
+    if corrector is not None:
+        logger.info("Постобработка текста по словарю (%d терминов)...", len(config.correction_terms))
+        entries = corrector.correct(entries)
 
     result = TranscriptionResult(
         source_path=config.input_file,

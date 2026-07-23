@@ -139,7 +139,7 @@ def test_transcribe_accepts_multiple_formats_and_speaker_names(
     assert "Мария" in result.stdout
 
 
-def test_transcribe_loads_vocabulary_file_and_merges_with_hotwords(
+def test_transcribe_loads_vocabulary_into_correction_terms(
     audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     captured: dict[str, AppConfig] = {}
@@ -177,19 +177,17 @@ def test_transcribe_loads_vocabulary_file_and_merges_with_hotwords(
     )
 
     assert result.exit_code == 0
-    assert captured["config"].hotwords == "Иванов, Петров, юрист Смирнова"
+    assert captured["config"].correction_terms == ("Иванов", "Петров")
+    assert captured["config"].hotwords == "юрист Смирнова"
 
 
-def test_transcribe_warns_about_vocabulary_terms_over_the_limit(
+def test_transcribe_hotwords_warns_when_over_limit(
     audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stub_pipeline
 ) -> None:
     monkeypatch.setattr(app_module, "resolve_device", lambda device: Device.CPU)
 
-    # Первые термины укладываются в лимит модели (900 символов по умолчанию),
-    # а последний — заведомо не влезает и должен быть отброшен с предупреждением.
-    vocabulary_file = tmp_path / "vocabulary.txt"
-    common_terms = "\n".join(f"термин-{i}" for i in range(80))
-    vocabulary_file.write_text(f"{common_terms}\nочень-важный-но-не-влезающий-термин\n", encoding="utf-8")
+    # Длинная строка --hotwords должна обрезаться с предупреждением.
+    long_hotwords = ", ".join(f"термин-{i}" for i in range(80))
 
     output_dir = tmp_path / "out"
     result = runner.invoke(
@@ -199,15 +197,15 @@ def test_transcribe_warns_about_vocabulary_terms_over_the_limit(
             str(audio_file),
             "-o",
             str(output_dir),
-            "--vocabulary-file",
-            str(vocabulary_file),
+            "--hotwords",
+            long_hotwords,
             "-v",
         ],
     )
 
     assert result.exit_code == 0
     log_files = list((output_dir / "logs").glob("*.log"))
-    assert "Не поместилось в лимит модели" in log_files[0].read_text(encoding="utf-8")
+    assert "Не поместилось в лимит hotwords ASR" in log_files[0].read_text(encoding="utf-8")
 
 
 def test_transcribe_rejects_missing_vocabulary_file(audio_file: Path, tmp_path: Path) -> None:

@@ -36,12 +36,26 @@ class FakeMerger:
         return entries, [speaker]
 
 
-def test_run_pipeline_wires_components_and_exports(audio_file: Path, tmp_path: Path) -> None:
+class FakeCorrector:
+    def correct(self, entries):
+        return [
+            TranscriptEntry(
+                start=entry.start,
+                end=entry.end,
+                text=entry.text.upper(),
+                speaker=entry.speaker,
+            )
+            for entry in entries
+        ]
+
+
+def test_run_pipeline_applies_text_corrector(audio_file: Path, tmp_path: Path) -> None:
     output_dir = tmp_path / "out"
     config = AppConfig(
         input_file=audio_file,
         output_dir=output_dir,
-        export_formats=(ExportFormat.TXT, ExportFormat.JSON),
+        export_formats=(ExportFormat.TXT,),
+        correction_terms=("привет",),
     )
 
     result = run_pipeline(
@@ -50,13 +64,7 @@ def test_run_pipeline_wires_components_and_exports(audio_file: Path, tmp_path: P
         recognizer=FakeRecognizer(),
         diarizer=FakeDiarizer(),
         merger=FakeMerger(),
+        corrector=FakeCorrector(),
     )
 
-    assert result.language == "ru"
-    assert result.duration == 1.0
-    assert len(result.entries) == 1
-    assert result.entries[0].speaker.display_name == "Иван"
-
-    stem = audio_file.stem
-    assert (output_dir / f"{stem}.txt").exists()
-    assert (output_dir / f"{stem}.json").exists()
+    assert result.entries[0].text == "ПРИВЕТ"

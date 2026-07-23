@@ -8,6 +8,7 @@ from pathlib import Path
 from audio_transcriber.domain.enums import Device
 from audio_transcriber.domain.models import TranscriptionSegment
 from audio_transcriber.utils.exceptions import TranscriptionError
+from audio_transcriber.utils.vocabulary import truncate_hotwords_by_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -54,10 +55,29 @@ class WhisperSpeechRecognizer:
 
         return self._model
 
+    def _prepare_hotwords(self, model) -> str | None:
+        """Обрезает hotwords по токенам модели, чтобы prompt не переполнял контекст."""
+        if not self._hotwords:
+            return None
+
+        def encode(text: str) -> list[int]:
+            return model.hf_tokenizer.encode(text).ids
+
+        truncated, dropped = truncate_hotwords_by_tokens(self._hotwords, encode)
+        if dropped:
+            logger.warning(
+                "Словарь терминов обрезан по лимиту токенов модели "
+                "(%d терминов не учтено). Расположите самые важные в начале файла.",
+                len(dropped),
+            )
+            logger.debug("Отброшенные термины: %s", ", ".join(dropped))
+        return truncated or None
+
     def transcribe(
         self, audio_path: Path, *, language: str | None = None
     ) -> tuple[list[TranscriptionSegment], str, float]:
         model = self._load_model()
+        hotwords = self._prepare_hotwords(model)
 
         try:
             raw_segments, info = model.transcribe(
@@ -72,7 +92,7 @@ class WhisperSpeechRecognizer:
                 # распознавать имена и специфичные термины конкретного
                 # разговора вместо похожих по звучанию слов.
                 initial_prompt=self._initial_prompt,
-                hotwords=self._hotwords,
+                hotwords=hotwords,
             )
             segments = [
                 TranscriptionSegment(

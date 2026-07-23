@@ -62,3 +62,32 @@ def test_build_hotwords_drops_terms_over_the_limit() -> None:
 
     assert hotwords == "Иванов, Петров"
     assert dropped == ["очень-длинный-термин-который-не-влезет-в-лимит"]
+
+
+def test_truncate_hotwords_by_tokens_keeps_whole_terms() -> None:
+    from audio_transcriber.utils.vocabulary import truncate_hotwords_by_tokens
+
+    # Имитация токенизатора: каждый символ = 1 токен.
+    def encode(text: str) -> list[int]:
+        return list(range(len(text)))
+
+    hotwords, dropped = truncate_hotwords_by_tokens(
+        "Иванов, Петров, Смирнова",
+        encode,
+        max_tokens=15,  # " Иванов, Петров" = 15 символов с ведущим пробелом
+    )
+
+    assert hotwords == "Иванов, Петров"
+    assert dropped == ["Смирнова"]
+
+
+def test_truncate_hotwords_by_tokens_empty_when_nothing_fits() -> None:
+    from audio_transcriber.utils.vocabulary import truncate_hotwords_by_tokens
+
+    def encode(text: str) -> list[int]:
+        return list(range(len(text)))
+
+    hotwords, dropped = truncate_hotwords_by_tokens("ОченьДлинныйТермин", encode, max_tokens=3)
+
+    assert hotwords == ""
+    assert dropped == ["ОченьДлинныйТермин"]

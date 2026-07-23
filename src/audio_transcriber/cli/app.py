@@ -127,7 +127,11 @@ def transcribe(
     hotwords: str | None = typer.Option(
         None,
         "--hotwords",
-        help="Слова/имена, которым нужно отдать приоритет при распознавании.",
+        help=(
+            "Короткий список слов для подсказки ASR во время распознавания "
+            "(ограничен ~100 токенами). Для большого словаря используйте "
+            "--vocabulary-file — он идёт в постобработку SymSpell без лимита."
+        ),
     ),
     vocabulary_file: Path | None = typer.Option(
         None,
@@ -137,8 +141,8 @@ def transcribe(
         readable=True,
         help=(
             "Текстовый файл со словарём терминов (один термин на строке, "
-            "строки с # — комментарии). Добавляется к --hotwords, чтобы не "
-            "перечислять имена и термины в командной строке каждый раз."
+            "строки с # — комментарии). Используется для постобработки "
+            "стенограммы через SymSpell — без лимита размера hotwords."
         ),
     ),
     verbose: bool = typer.Option(
@@ -155,19 +159,21 @@ def transcribe(
         logger.info("Подробные логи сохраняются в файл: %s", log_file)
 
     try:
-        vocabulary_terms: list[str] = []
+        correction_terms: list[str] = []
         if vocabulary_file is not None:
-            vocabulary_terms = load_vocabulary_terms(vocabulary_file)
+            correction_terms = load_vocabulary_terms(vocabulary_file)
             logger.info(
-                "Загружен словарь терминов (%d): %s", len(vocabulary_terms), vocabulary_file
+                "Загружен словарь для постобработки (%d): %s",
+                len(correction_terms),
+                vocabulary_file,
             )
 
-        if vocabulary_terms or hotwords:
-            hotwords, dropped_terms = build_hotwords(vocabulary_terms, hotwords)
+        if hotwords:
+            hotwords, dropped_terms = build_hotwords([], hotwords)
             if dropped_terms:
                 logger.warning(
-                    "Не поместилось в лимит модели и не будет учтено: %s. "
-                    "Расположите самые важные термины в начале файла словаря.",
+                    "Не поместилось в лимит hotwords ASR и не будет учтено: %s. "
+                    "Для большого словаря используйте --vocabulary-file.",
                     ", ".join(dropped_terms),
                 )
 
@@ -183,6 +189,7 @@ def transcribe(
             hf_token=hf_token,
             initial_prompt=initial_prompt,
             hotwords=hotwords,
+            correction_terms=tuple(correction_terms),
             verbose=verbose,
         )
         resolved_device = resolve_device(config.device)
@@ -202,6 +209,8 @@ def transcribe(
         )
         if config.speaker_names:
             logger.info("Пользовательские имена говорящих: %s", config.speaker_names)
+        if config.correction_terms:
+            logger.info("Словарь постобработки: %d терминов", len(config.correction_terms))
 
         result = run_pipeline(config, device=resolved_device)
     except KeyboardInterrupt:
