@@ -71,7 +71,7 @@ if ($config["SPEAKER_NAMES"]) {
 }
 
 if ($config["HF_TOKEN"]) { $cliArgs += @("--hf-token", $config["HF_TOKEN"]) }
-if ($config["VOCABULARY_FILE"]) { $cliArgs += @("--vocabulary-file", $config["VOCABULARY_FILE"]) }
+if ($config["ENABLE_CORRECTION"] -eq "true") { $cliArgs += "--enable-correction" }
 if ($config["HOTWORDS"]) { $cliArgs += @("--hotwords", $config["HOTWORDS"]) }
 if ($config["VERBOSE"] -eq "true") { $cliArgs += "--verbose" }
 

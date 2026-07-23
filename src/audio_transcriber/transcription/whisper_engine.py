@@ -8,7 +8,7 @@ from pathlib import Path
 from audio_transcriber.domain.enums import Device
 from audio_transcriber.domain.models import TranscriptionSegment
 from audio_transcriber.utils.exceptions import TranscriptionError
-from audio_transcriber.utils.vocabulary import truncate_hotwords_by_tokens
+from audio_transcriber.utils.hotwords import truncate_hotwords_by_tokens
 
 logger = logging.getLogger(__name__)
 

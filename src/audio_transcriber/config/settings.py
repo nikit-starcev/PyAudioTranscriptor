@@ -34,7 +34,7 @@ class AppConfig:
     hf_token: str | None = None
     initial_prompt: str | None = None
     hotwords: str | None = None
-    correction_terms: tuple[str, ...] = ()
+    enable_correction: bool = False
     verbose: bool = False
 
     def __post_init__(self) -> None:

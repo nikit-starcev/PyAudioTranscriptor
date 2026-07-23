@@ -55,7 +55,7 @@ def test_run_pipeline_applies_text_corrector(audio_file: Path, tmp_path: Path) -
         input_file=audio_file,
         output_dir=output_dir,
         export_formats=(ExportFormat.TXT,),
-        correction_terms=("привет",),
+        enable_correction=True,
     )
 
     result = run_pipeline(
@@ -68,3 +68,23 @@ def test_run_pipeline_applies_text_corrector(audio_file: Path, tmp_path: Path) -
     )
 
     assert result.entries[0].text == "ПРИВЕТ"
+
+
+def test_run_pipeline_skips_correction_when_disabled(audio_file: Path, tmp_path: Path) -> None:
+    output_dir = tmp_path / "out"
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=output_dir,
+        export_formats=(ExportFormat.TXT,),
+        enable_correction=False,
+    )
+
+    result = run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=FakeRecognizer(),
+        diarizer=FakeDiarizer(),
+        merger=FakeMerger(),
+    )
+
+    assert result.entries[0].text == "привет"

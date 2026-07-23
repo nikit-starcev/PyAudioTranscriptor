@@ -12,7 +12,7 @@ import logging
 
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.correction.base import TextCorrector
-from audio_transcriber.correction.symspell_corrector import SymSpellTextCorrector
+from audio_transcriber.correction.morph_corrector import MorphTextCorrector
 from audio_transcriber.diarization.base import SpeakerDiarizer
 from audio_transcriber.diarization.pyannote_engine import PyannoteSpeakerDiarizer
 from audio_transcriber.domain.enums import Device
@@ -47,8 +47,8 @@ def run_pipeline(
     )
     diarizer = diarizer or PyannoteSpeakerDiarizer(device, hf_token=config.hf_token)
     merger = merger or OverlapSegmentMerger()
-    if corrector is None and config.correction_terms:
-        corrector = SymSpellTextCorrector(list(config.correction_terms))
+    if corrector is None and config.enable_correction:
+        corrector = MorphTextCorrector()
 
     logger.info("Распознавание речи...")
     transcription_segments, language, duration = recognizer.transcribe(
@@ -63,7 +63,7 @@ def run_pipeline(
     )
 
     if corrector is not None:
-        logger.info("Постобработка текста по словарю (%d терминов)...", len(config.correction_terms))
+        logger.info("Автоисправление опечаток (только неизвестные словоформы)...")
         entries = corrector.correct(entries)
 
     result = TranscriptionResult(

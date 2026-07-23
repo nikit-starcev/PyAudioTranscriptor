@@ -67,7 +67,7 @@ if [ -n "${SPEAKER_NAMES:-}" ]; then
 fi
 
 [ -n "${HF_TOKEN:-}" ] && ARGS+=(--hf-token "$HF_TOKEN")
-[ -n "${VOCABULARY_FILE:-}" ] && ARGS+=(--vocabulary-file "$VOCABULARY_FILE")
+[ "${ENABLE_CORRECTION:-false}" = "true" ] && ARGS+=(--enable-correction)
 [ -n "${HOTWORDS:-}" ] && ARGS+=(--hotwords "$HOTWORDS")
 [ "${VERBOSE:-false}" = "true" ] && ARGS+=(--verbose)
 

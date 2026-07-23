@@ -139,7 +139,7 @@ def test_transcribe_accepts_multiple_formats_and_speaker_names(
     assert "Мария" in result.stdout
 
 
-def test_transcribe_loads_vocabulary_into_correction_terms(
+def test_transcribe_passes_hotwords(
     audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     captured: dict[str, AppConfig] = {}
@@ -158,9 +158,6 @@ def test_transcribe_loads_vocabulary_into_correction_terms(
     monkeypatch.setattr(app_module, "run_pipeline", fake_run_pipeline)
     monkeypatch.setattr(app_module, "resolve_device", lambda device: Device.CPU)
 
-    vocabulary_file = tmp_path / "vocabulary.txt"
-    vocabulary_file.write_text("# участники\nИванов\nПетров\n", encoding="utf-8")
-
     output_dir = tmp_path / "out"
     result = runner.invoke(
         app,
@@ -169,16 +166,48 @@ def test_transcribe_loads_vocabulary_into_correction_terms(
             str(audio_file),
             "-o",
             str(output_dir),
-            "--vocabulary-file",
-            str(vocabulary_file),
             "--hotwords",
             "юрист Смирнова",
         ],
     )
 
     assert result.exit_code == 0
-    assert captured["config"].correction_terms == ("Иванов", "Петров")
     assert captured["config"].hotwords == "юрист Смирнова"
+    assert captured["config"].enable_correction is False
+
+
+def test_transcribe_enable_correction_flag(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+
+    def fake_run_pipeline(config: AppConfig, **kwargs):
+        captured["config"] = config
+        speaker = Speaker(id="SPEAKER_00", display_name="Иван")
+        return TranscriptionResult(
+            source_path=config.input_file,
+            language="ru",
+            duration=1.0,
+            entries=[TranscriptEntry(start=0.0, end=1.0, text="привет", speaker=speaker)],
+            speakers=[speaker],
+        )
+
+    monkeypatch.setattr(app_module, "run_pipeline", fake_run_pipeline)
+    monkeypatch.setattr(app_module, "resolve_device", lambda device: Device.CPU)
+
+    result = runner.invoke(
+        app,
+        [
+            "transcribe",
+            str(audio_file),
+            "-o",
+            str(tmp_path / "out"),
+            "--enable-correction",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["config"].enable_correction is True
 
 
 def test_transcribe_hotwords_warns_when_over_limit(
@@ -206,19 +235,3 @@ def test_transcribe_hotwords_warns_when_over_limit(
     assert result.exit_code == 0
     log_files = list((output_dir / "logs").glob("*.log"))
     assert "Не поместилось в лимит hotwords ASR" in log_files[0].read_text(encoding="utf-8")
-
-
-def test_transcribe_rejects_missing_vocabulary_file(audio_file: Path, tmp_path: Path) -> None:
-    result = runner.invoke(
-        app,
-        [
-            "transcribe",
-            str(audio_file),
-            "-o",
-            str(tmp_path / "out"),
-            "--vocabulary-file",
-            str(tmp_path / "missing-vocabulary.txt"),
-        ],
-    )
-
-    assert result.exit_code != 0

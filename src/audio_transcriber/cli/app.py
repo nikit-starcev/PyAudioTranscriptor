@@ -13,8 +13,8 @@ from audio_transcriber.domain.enums import Device, ExportFormat
 from audio_transcriber.pipeline import run_pipeline
 from audio_transcriber.utils.device import resolve_device
 from audio_transcriber.utils.exceptions import AudioTranscriberError
+from audio_transcriber.utils.hotwords import build_hotwords
 from audio_transcriber.utils.logging import setup_logging
-from audio_transcriber.utils.vocabulary import build_hotwords, load_vocabulary_terms
 
 logger = logging.getLogger(__name__)
 
@@ -129,20 +129,16 @@ def transcribe(
         "--hotwords",
         help=(
             "Короткий список слов для подсказки ASR во время распознавания "
-            "(ограничен ~100 токенами). Для большого словаря используйте "
-            "--vocabulary-file — он идёт в постобработку SymSpell без лимита."
+            "(ограничен ~100 токенами)."
         ),
     ),
-    vocabulary_file: Path | None = typer.Option(
-        None,
-        "--vocabulary-file",
-        exists=True,
-        dir_okay=False,
-        readable=True,
+    enable_correction: bool = typer.Option(
+        False,
+        "--enable-correction",
         help=(
-            "Текстовый файл со словарём терминов (один термин на строке, "
-            "строки с # — комментарии). Используется для постобработки "
-            "стенограммы через SymSpell — без лимита размера hotwords."
+            "Включить автоисправление опечаток ASR. Исправляются только слова, "
+            "неизвестные морфологическому анализатору русского языка. "
+            "По умолчанию выключено."
         ),
     ),
     verbose: bool = typer.Option(
@@ -159,21 +155,11 @@ def transcribe(
         logger.info("Подробные логи сохраняются в файл: %s", log_file)
 
     try:
-        correction_terms: list[str] = []
-        if vocabulary_file is not None:
-            correction_terms = load_vocabulary_terms(vocabulary_file)
-            logger.info(
-                "Загружен словарь для постобработки (%d): %s",
-                len(correction_terms),
-                vocabulary_file,
-            )
-
         if hotwords:
-            hotwords, dropped_terms = build_hotwords([], hotwords)
+            hotwords, dropped_terms = build_hotwords(hotwords)
             if dropped_terms:
                 logger.warning(
-                    "Не поместилось в лимит hotwords ASR и не будет учтено: %s. "
-                    "Для большого словаря используйте --vocabulary-file.",
+                    "Не поместилось в лимит hotwords ASR и не будет учтено: %s.",
                     ", ".join(dropped_terms),
                 )
 
@@ -189,7 +175,7 @@ def transcribe(
             hf_token=hf_token,
             initial_prompt=initial_prompt,
             hotwords=hotwords,
-            correction_terms=tuple(correction_terms),
+            enable_correction=enable_correction,
             verbose=verbose,
         )
         resolved_device = resolve_device(config.device)
@@ -209,8 +195,10 @@ def transcribe(
         )
         if config.speaker_names:
             logger.info("Пользовательские имена говорящих: %s", config.speaker_names)
-        if config.correction_terms:
-            logger.info("Словарь постобработки: %d терминов", len(config.correction_terms))
+        logger.info(
+            "Автоисправление опечаток: %s",
+            "включено" if config.enable_correction else "выключено",
+        )
 
         result = run_pipeline(config, device=resolved_device)
     except KeyboardInterrupt:
