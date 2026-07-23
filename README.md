@@ -357,11 +357,11 @@ sequenceDiagram
     CLI->>Pipeline: run_pipeline(config)
 
     Pipeline->>ASR: transcribe(audio)
-    Note right of ASR: реализует Protocol SpeechRecognizer — заменяемо
+    Note right of ASR: реализует Protocol SpeechRecognizer
     ASR-->>Pipeline: сегменты речи, язык, длительность
 
     Pipeline->>Diar: diarize(audio)
-    Note right of Diar: реализует Protocol SpeakerDiarizer — заменяемо
+    Note right of Diar: реализует Protocol SpeakerDiarizer
     Diar-->>Pipeline: сегменты говорящих
 
     Pipeline->>Merge: merge(сегменты речи, говорящие)
