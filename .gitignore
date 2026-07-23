@@ -155,6 +155,12 @@ activemq-data/
 # Локальный конфиг для run.sh/run.ps1 (содержит токен Hugging Face) —
 # используйте config.example.env как шаблон.
 config.env
+
+# Личный словарь терминов для --vocabulary-file/VOCABULARY_FILE — может
+# содержать реальные имена и детали дела. Используйте vocabulary.example.txt
+# как шаблон и держите свою копию вне git.
+vocabulary*.txt
+!vocabulary.example.txt
 env/
 venv/
 ENV/
