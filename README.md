@@ -1,12 +1,24 @@
-# AudioTranscriptor
+<div align="center">
 
-Локальная CLI-утилита на Python для автоматической транскрибации аудиозаписей
-телефонных разговоров, переговоров, интервью и судебных материалов с
-**разделением говорящих** (speaker diarization).
+# 🎙️ AudioTranscriptor
 
-Вся обработка выполняется полностью локально, без обращения к облачным API.
-Утилита распознаёт речь, определяет, кто из собеседников что говорит, и
+**Локальная CLI-утилита на Python для транскрибации аудиозаписей с разделением говорящих**
+
+[![Python](https://img.shields.io/badge/python-3.14%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![uv](https://img.shields.io/badge/managed%20with-uv-DE5FE9?logo=astral&logoColor=white)](https://docs.astral.sh/uv/)
+[![faster-whisper](https://img.shields.io/badge/ASR-faster--whisper-FF6F00)](https://github.com/SYSTRAN/faster-whisper)
+[![pyannote.audio](https://img.shields.io/badge/diarization-pyannote.audio-6F42C1)](https://github.com/pyannote/pyannote-audio)
+[![100% локально](https://img.shields.io/badge/данные-100%25%20локально-2EA44F)](#)
+[![CUDA/CPU](https://img.shields.io/badge/устройство-CUDA%20%2F%20CPU-4C6EF5)](#выбор-устройства-cpugpu)
+
+</div>
+
+Инструмент для подготовки стенограмм переговоров, интервью и судебных
+материалов: распознаёт речь, определяет, кто из собеседников что говорит, и
 экспортирует стенограмму в удобном формате с явной разметкой говорящих.
+
+Вся обработка выполняется полностью локально, без обращения к облачным API —
+аудио и текст никогда не покидают ваш компьютер.
 
 ## Возможности
 
@@ -308,40 +320,47 @@ uv run audio-transcriber transcribe records/call.mp3 \
 распознавания или диаризации на другой без изменения остального кода —
 достаточно реализовать соответствующий протокол.
 
-```
-                 ┌───────────┐
-                 │    CLI    │  Typer: парсинг аргументов, вывод, коды выхода
-                 └─────┬─────┘
-                       ▼
-                 ┌───────────┐
-                 │  Config   │  Сборка и валидация параметров запуска (AppConfig)
-                 └─────┬─────┘
-                       ▼
-     ┌───────────────────────────────────┐
-     │        Конвейер обработки          │
-     │                                     │
-     │  ┌───────────────┐  ┌────────────┐ │
-     │  │ Transcription │  │Diarization │ │  Независимые, взаимозаменяемые
-     │  │(faster-whisper│  │(pyannote.  │ │  движки, реализующие Protocol
-     │  │   engine)     │  │  audio)    │ │
-     │  └───────┬───────┘  └─────┬──────┘ │
-     │          └────────┬───────┘        │
-     │                   ▼                │
-     │            ┌────────────┐          │
-     │            │  Merging   │          │  Сопоставление реплик ASR
-     │            │ (aligner)  │          │  с говорящими из диаризации
-     │            └─────┬──────┘          │
-     └──────────────────┼─────────────────┘
-                        ▼
-                 ┌────────────┐
-                 │   Export   │  TXT / DOCX / JSON / SRT
-                 └────────────┘
+```mermaid
+flowchart TD
+    CLI["🖥️ CLI<br/><sub>Typer: аргументы, вывод, коды выхода</sub>"]
+    Config["⚙️ Config<br/><sub>AppConfig: валидация параметров запуска</sub>"]
+    Transcription["📝 Transcription<br/><sub>faster-whisper engine</sub>"]
+    Diarization["🗣️ Diarization<br/><sub>pyannote.audio engine</sub>"]
+    Merging["🔗 Merging<br/><sub>aligner: реплики ASR + говорящие</sub>"]
+    Export["📤 Export<br/><sub>TXT · DOCX · JSON · SRT</sub>"]
 
-   Domain (модели данных) и Utils (логирование, устройства, исключения)
-   используются всеми слоями насквозь.
+    CLI --> Config
+    Config --> Transcription
+    Config --> Diarization
+    Transcription --> Merging
+    Diarization --> Merging
+    Merging --> Export
+
+    classDef entry fill:#4C6EF5,color:#fff,stroke:#364FC7;
+    classDef swappable fill:#F08C00,color:#fff,stroke:#E8590C;
+    classDef core fill:#2EA44F,color:#fff,stroke:#22863A;
+    classDef output fill:#6F42C1,color:#fff,stroke:#5A32A3;
+
+    class CLI,Config entry;
+    class Transcription,Diarization swappable;
+    class Merging core;
+    class Export output;
 ```
+
+- 🔵 **CLI / Config** — точка входа и валидация параметров запуска.
+- 🟠 **Transcription / Diarization** — независимые движки, каждый за интерфейсом
+  `typing.Protocol`; можно заменить на другую реализацию без изменения
+  остального кода.
+- 🟢 **Merging** — сопоставляет реплики распознавания с говорящими по времени.
+- 🟣 **Export** — сохраняет результат в выбранные форматы.
+
+`domain` (модели данных) и `utils` (логирование, работа с устройством CPU/CUDA,
+исключения) используются всеми слоями насквозь и не показаны на схеме отдельно.
 
 ### Структура каталогов
+
+<details>
+<summary>📂 Показать дерево каталогов</summary>
 
 ```
 AudioTranscriptor/
@@ -408,6 +427,8 @@ AudioTranscriptor/
     ├── test_integration.py  #  реальный конвейер на tests_jfk.flac (маркер integration)
     └── tests_jfk.flac        #  тестовая аудиозапись для интеграционного теста
 ```
+
+</details>
 
 ### Назначение компонентов
 
