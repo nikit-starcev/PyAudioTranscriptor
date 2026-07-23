@@ -1,0 +1,68 @@
+[project]
+name = "audio-transcriber"
+version = "0.1.0"
+description = "Локальная CLI-утилита для транскрибации аудиозаписей с разделением говорящих (speaker diarization)"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "av>=11",
+    "faster-whisper>=1.2.1",
+    "pyannote-audio>=4.0.7",
+    "python-docx>=1.2.0",
+    "rich>=15.0.0",
+    "tqdm>=4.69.0",
+    "typer>=0.27.0",
+    "torch>=2.8,<2.13",
+    "torchaudio>=2.8,<2.12",
+]
+
+[project.scripts]
+audio-transcriber = "audio_transcriber.cli.app:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/audio_transcriber"]
+
+# PyTorch не публикует CUDA-сборки в основном индексе PyPI, поэтому по
+# умолчанию устанавливается CPU-only пакет. Ниже torch/torchaudio явно
+# направлены на CUDA-сборку PyTorch (индекс cu126) на Windows/Linux, чтобы
+# --device cuda/auto работали "из коробки" на машинах с NVIDIA GPU.
+# Версии torch<2.13 и torchaudio<2.12 закреплены намеренно: начиная со
+# следующих версий PyTorch перестал выпускать сборки под CUDA 12.6 —
+# последнюю ветку CUDA, ещё поддерживающую архитектуры Maxwell/Pascal/Volta
+# (например, GTX 10xx). На macOS CUDA-сборок не существует, поэтому там
+# используется обычный CPU-индекс.
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
+    { index = "pytorch-cu126", marker = "sys_platform != 'darwin'" },
+]
+torchaudio = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
+    { index = "pytorch-cu126", marker = "sys_platform != 'darwin'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -m \"not integration\""
+markers = [
+    "integration: медленные тесты на реальных моделях и аудиофайлах (запуск: pytest -m integration)",
+]
