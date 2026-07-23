@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🎙️ AudioTranscriptor
+# 🎙️ PyAudioTranscriptor
 
 **Локальная CLI-утилита на Python для транскрибации аудиозаписей с разделением говорящих**
 
@@ -62,7 +62,7 @@
 
 ```bash
 git clone <url-репозитория>
-cd AudioTranscriptor
+cd PyAudioTranscriptor
 uv sync
 ```
 
@@ -392,7 +392,7 @@ sequenceDiagram
 <summary>📂 Показать дерево каталогов</summary>
 
 ```
-AudioTranscriptor/
+PyAudioTranscriptor/
 ├── pyproject.toml          # зависимости, точка входа CLI, конфигурация pytest
 ├── uv.lock                 # зафиксированные версии зависимостей
 ├── run.sh                  # запуск для Linux/macOS: ставит uv и вызывает CLI
