@@ -76,10 +76,10 @@ uv sync
 
 ## Быстрый запуск (без ручной установки и параметров в командной строке)
 
-Для тех, кто не хочет разбираться с `uv`, виртуальным окружением и длинными
-командами, в репозитории есть готовые скрипты-обёртки: `run.sh` (Linux/macOS)
-и `run.ps1` / `run.bat` (Windows). Они сами устанавливают `uv`, если его нет,
-и запускают транскрибацию с параметрами, которые вы один раз укажете в файле
+В репозитории есть готовые скрипты-обёртки: `run.sh` (Linux/macOS) и
+`run.ps1` / `run.bat` (Windows) — они не требуют команд `uv` и параметров в
+командной строке. Скрипты сами устанавливают `uv`, если его нет, и запускают
+транскрибацию с параметрами, которые вы один раз укажете в файле
 `config.env`.
 
 **Настройка (один раз):**
@@ -338,50 +338,60 @@ uv run audio-transcriber transcribe records/call.mp3 \
 распознавания или диаризации на другой без изменения остального кода —
 достаточно реализовать соответствующий протокол.
 
+Схема отражает фактический порядок вызовов в `pipeline.py`: конвейер строго
+последовательный (диаризация начинается только после завершения
+распознавания), а не параллельный.
+
 ```mermaid
-flowchart LR
-    subgraph input["🔵 Вход"]
-        direction TB
-        CLI["🖥️ CLI<br/><sub>Typer</sub>"]
-        Config["⚙️ Config<br/><sub>AppConfig</sub>"]
-        CLI --> Config
+sequenceDiagram
+    actor User as Пользователь
+    participant CLI
+    participant Config
+    participant Pipeline
+    participant ASR as Transcription<br/>(faster-whisper)
+    participant Diar as Diarization<br/>(pyannote.audio)
+    participant Merge as Merging
+    participant Export as Export
+
+    User->>CLI: transcribe audio.mp3 [опции]
+    CLI->>Config: собрать и провалидировать AppConfig
+    Config-->>CLI: AppConfig
+    CLI->>Pipeline: run_pipeline(config)
+
+    rect rgb(255, 243, 224)
+    Pipeline->>ASR: transcribe(audio)
+    Note right of ASR: реализует Protocol SpeechRecognizer — заменяемо
+    ASR-->>Pipeline: сегменты речи, язык, длительность
+
+    Pipeline->>Diar: diarize(audio)
+    Note right of Diar: реализует Protocol SpeakerDiarizer — заменяемо
+    Diar-->>Pipeline: сегменты говорящих
+
+    Pipeline->>Merge: merge(сегменты речи, говорящие)
+    Merge-->>Pipeline: реплики + говорящие
     end
 
-    subgraph processing["🟠 Обработка (заменяемые движки)"]
-        direction TB
-        Transcription["📝 Transcription<br/><sub>faster-whisper</sub>"]
-        Diarization["🗣️ Diarization<br/><sub>pyannote.audio</sub>"]
-        Merging["🔗 Merging<br/><sub>aligner</sub>"]
-        Transcription --> Merging
-        Diarization --> Merging
+    rect rgb(243, 229, 245)
+    loop по каждому формату экспорта
+        Pipeline->>Export: export(результат, путь)
+    end
     end
 
-    subgraph output["🟣 Результат"]
-        Export["📤 Export<br/><sub>TXT · DOCX · JSON · SRT</sub>"]
-    end
-
-    input --> processing --> output
-
-    classDef entry fill:#4C6EF5,color:#fff,stroke:#364FC7;
-    classDef swappable fill:#F08C00,color:#fff,stroke:#E8590C;
-    classDef core fill:#2EA44F,color:#fff,stroke:#22863A;
-    classDef outputNode fill:#6F42C1,color:#fff,stroke:#5A32A3;
-
-    class CLI,Config entry;
-    class Transcription,Diarization swappable;
-    class Merging core;
-    class Export outputNode;
+    Pipeline-->>CLI: TranscriptionResult
+    CLI-->>User: сводка в консоль + файлы в output-dir
 ```
 
-- 🔵 **Вход** — CLI (Typer) и Config валидируют параметры запуска.
-- 🟠 **Обработка** — Transcription и Diarization независимы и спрятаны за
-  интерфейсом `typing.Protocol`: любой из движков можно заменить на другую
-  реализацию без изменения остального кода. Merging сопоставляет их
-  результаты по времени.
-- 🟣 **Результат** — Export сохраняет стенограмму в выбранные форматы.
+- **CLI / Config** — принимают команду, валидируют параметры запуска.
+- **Transcription / Diarization** *(оранжевая зона)* — вызываются
+  последовательно, каждый за интерфейсом `typing.Protocol`: любой из
+  движков можно заменить на другую реализацию без изменения остального
+  кода. Merging сопоставляет их результаты по времени.
+- **Export** *(фиолетовая зона)* — сохраняет результат в каждый из
+  запрошенных форматов.
 
 `domain` (модели данных) и `utils` (логирование, работа с устройством CPU/CUDA,
-исключения) используются всеми слоями насквозь и не показаны на схеме отдельно.
+исключения) используются всеми участниками насквозь и не показаны на схеме
+отдельно.
 
 ### Структура каталогов
 
