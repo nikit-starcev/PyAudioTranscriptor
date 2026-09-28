@@ -99,7 +99,7 @@ class PyannoteSpeakerDiarizer:
                 def _hook(
                     step_name: object,
                     _step_artifact: object,
-                    _file: object = None,
+                    file: object = None,
                     total: float | None = None,
                     completed: float | None = None,
                 ) -> None:
@@ -107,6 +107,7 @@ class PyannoteSpeakerDiarizer:
                     # completed=None — одноразовый шаг (без прогресса),
                     # completed может превышать total (batch_size > num_chunks),
                     # поэтому прогресс нормализуется в диапазон [0; 1].
+                    del file  # параметр обязателен (pyannote зовёт hook(file=...)), не используется
                     if completed is None or total is None:
                         fraction = None
                     elif completed >= total:
