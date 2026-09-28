@@ -34,17 +34,13 @@ def test_truncate_hotwords_by_tokens_respects_limit() -> None:
         # Грубая модель: 1 токен ≈ 1 символ (удобно для теста).
         return list(range(len(text)))
 
-    truncated, dropped = truncate_hotwords_by_tokens(
-        "один, два, три", encode, max_tokens=10
-    )
+    truncated, dropped = truncate_hotwords_by_tokens("один, два, три", encode, max_tokens=10)
     assert truncated
     assert isinstance(dropped, list)
 
 
 def test_truncate_hotwords_by_tokens_empty_terms() -> None:
-    truncated, dropped = truncate_hotwords_by_tokens(
-        "  ,  ", lambda text: [1, 2, 3]
-    )
+    truncated, dropped = truncate_hotwords_by_tokens("  ,  ", lambda _text: [1, 2, 3])
     assert truncated == "  ,  "
     assert dropped == []
 

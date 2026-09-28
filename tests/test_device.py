@@ -45,8 +45,11 @@ def test_explicit_cuda_succeeds_when_available(monkeypatch: pytest.MonkeyPatch) 
 def test_is_cuda_available_reflects_torch(monkeypatch: pytest.MonkeyPatch) -> None:
     import torch
 
+    # Функция кэширует результат — сбрасываем кэш между проверками.
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    device_module.is_cuda_available.cache_clear()
     assert device_module.is_cuda_available() is True
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    device_module.is_cuda_available.cache_clear()
     assert device_module.is_cuda_available() is False

@@ -47,3 +47,22 @@ def load_waveform(path: Path, *, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
         raise AudioFileError(f"Аудиофайл {path} не содержит звуковых данных")
 
     return np.concatenate(chunks, axis=1)[0]
+
+
+def write_wav(path: Path, waveform: np.ndarray, *, sample_rate: int = SAMPLE_RATE) -> None:
+    """Записывает моно waveform float32 как 16-битный PCM WAV.
+
+    Используется для передачи аудио внешним инструментам (whisper-cli),
+    которые не декодируют все форматы (например, WebM), но принимают WAV.
+    """
+
+    import wave
+
+    samples = np.clip(waveform, -1.0, 1.0)
+    pcm = (samples * 32767.0).astype(np.int16)
+
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(pcm.tobytes())

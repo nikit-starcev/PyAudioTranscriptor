@@ -156,6 +156,14 @@ activemq-data/
 # используйте config.example.env как шаблон.
 config.env
 
+# Артефакты работы и пользовательские данные транскрибера.
+output/
+*.suggested.txt
+/glossary.txt
+/glossary.user.txt
+tests/*.flac.json
+/*.docx
+
 env/
 venv/
 ENV/

@@ -58,3 +58,4 @@ class TranscriptionResult:
     duration: float
     entries: list[TranscriptEntry] = field(default_factory=list)
     speakers: list[Speaker] = field(default_factory=list)
+    participants: list[str] | None = None

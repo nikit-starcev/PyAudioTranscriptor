@@ -18,6 +18,11 @@ class DocxExporter:
         document = Document()
         document.add_heading(result.source_path.name, level=1)
 
+        if result.participants:
+            document.add_heading("Участники", level=2)
+            for participant in result.participants:
+                document.add_paragraph(participant, style="List Bullet")
+
         for entry in result.entries:
             speaker_label = entry.speaker.display_name if entry.speaker else "?"
             paragraph = document.add_paragraph()

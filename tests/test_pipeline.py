@@ -49,6 +49,54 @@ class FakeCorrector:
         ]
 
 
+class MultiSegmentMerger:
+    """Возвращает несколько коротких реплик одного говорящего."""
+
+    def merge(self, transcription_segments, speaker_segments, known_speakers=None):
+        speaker = Speaker(id="SPEAKER_00", display_name="Иван")
+        entries = [
+            TranscriptEntry(start=0.0, end=1.0, text="привет", speaker=speaker),
+            TranscriptEntry(start=1.1, end=2.0, text="мир", speaker=speaker),
+        ]
+        return entries, [speaker]
+
+
+class RecordingCorrector:
+    """Корректор, запоминающий входные реплики, чтобы проверить порядок этапов."""
+
+    def __init__(self) -> None:
+        self.seen: list[TranscriptEntry] = []
+
+    def correct(self, entries):
+        self.seen = list(entries)
+        return entries
+
+
+def test_run_pipeline_merges_sentences_before_correction(audio_file: Path, tmp_path: Path) -> None:
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+        enable_correction=True,
+    )
+    corrector = RecordingCorrector()
+
+    result = run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=FakeRecognizer(),
+        diarizer=FakeDiarizer(),
+        merger=MultiSegmentMerger(),
+        corrector=corrector,
+    )
+
+    # Корректор получил уже склеенную реплику.
+    assert len(corrector.seen) == 1
+    assert corrector.seen[0].text == "привет мир"
+    assert len(result.entries) == 1
+    assert result.entries[0].text == "привет мир"
+
+
 def test_run_pipeline_applies_text_corrector(audio_file: Path, tmp_path: Path) -> None:
     output_dir = tmp_path / "out"
     config = AppConfig(
@@ -68,6 +116,36 @@ def test_run_pipeline_applies_text_corrector(audio_file: Path, tmp_path: Path) -
     )
 
     assert result.entries[0].text == "ПРИВЕТ"
+
+
+class ExplodingDiarizer:
+    """Диаризатор, который обязан не вызываться при отключённой диаризации."""
+
+    def diarize(self, *args, **kwargs):
+        raise AssertionError("диаризация не должна вызываться, когда она отключена")
+
+
+def test_run_pipeline_skips_diarization_when_disabled(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+        diarization_enabled=False,
+    )
+
+    result = run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=FakeRecognizer(),
+        diarizer=ExplodingDiarizer(),
+    )
+
+    # Реплики без говорящего, список говорящих пуст.
+    assert len(result.entries) == 1
+    assert result.entries[0].speaker is None
+    assert result.speakers == []
 
 
 def test_run_pipeline_skips_correction_when_disabled(audio_file: Path, tmp_path: Path) -> None:

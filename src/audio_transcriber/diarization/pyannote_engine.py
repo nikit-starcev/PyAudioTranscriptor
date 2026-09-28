@@ -5,9 +5,11 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 from audio_transcriber.domain.enums import Device
 from audio_transcriber.domain.models import SpeakerSegment
+from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.utils.audio import SAMPLE_RATE, load_waveform
 from audio_transcriber.utils.exceptions import DiarizationError
 
@@ -25,27 +27,43 @@ class PyannoteSpeakerDiarizer:
         *,
         pipeline_name: str = DEFAULT_PIPELINE,
         hf_token: str | None = None,
+        local_model_path: Path | str | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> None:
         self._device = device
         self._pipeline_name = pipeline_name
+        self._local_model_path = Path(local_model_path) if local_model_path else None
+        self._on_progress = on_progress
         self._hf_token = (
-            hf_token
-            or os.environ.get("HF_TOKEN")
-            or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+            hf_token or os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
         )
-        self._pipeline = None
+        self._pipeline: Any = None
 
-    def _load_pipeline(self):
+    def _load_pipeline(self) -> Any:
         if self._pipeline is not None:
             return self._pipeline
 
         import torch
         from pyannote.audio import Pipeline
 
-        logger.debug("Загрузка модели диаризации '%s'", self._pipeline_name)
         try:
-            pipeline = Pipeline.from_pretrained(self._pipeline_name, token=self._hf_token)
+            if self._local_model_path is not None and self._local_model_path.is_dir():
+                # Локальная копия модели: грузится напрямую с диска, без
+                # обращения к Hugging Face (токен и сеть не нужны).
+                logger.debug(
+                    "Загрузка локальной модели диаризации из '%s'",
+                    self._local_model_path,
+                )
+                pipeline = Pipeline.from_pretrained(self._local_model_path)
+            else:
+                logger.debug("Загрузка модели диаризации '%s'", self._pipeline_name)
+                pipeline = Pipeline.from_pretrained(self._pipeline_name, token=self._hf_token)
         except Exception as exc:
+            if self._local_model_path is not None and self._local_model_path.is_dir():
+                raise DiarizationError(
+                    f"Не удалось загрузить локальную модель диаризации "
+                    f"'{self._local_model_path}': {exc}"
+                ) from exc
             raise DiarizationError(
                 f"Не удалось загрузить модель диаризации '{self._pipeline_name}'. "
                 "Убедитесь, что вы приняли условия использования модели на "
@@ -62,9 +80,7 @@ class PyannoteSpeakerDiarizer:
         self._pipeline = pipeline
         return self._pipeline
 
-    def diarize(
-        self, audio_path: Path, *, num_speakers: int | None = None
-    ) -> list[SpeakerSegment]:
+    def diarize(self, audio_path: Path, *, num_speakers: int | None = None) -> list[SpeakerSegment]:
         pipeline = self._load_pipeline()
 
         import torch
@@ -77,11 +93,41 @@ class PyannoteSpeakerDiarizer:
         }
 
         try:
-            # ProgressHook показывает прогресс внутренних этапов (сегментация,
-            # эмбеддинги, кластеризация) — без него диаризация длинных записей
-            # выглядит как зависание, так как не даёт промежуточного вывода.
-            with ProgressHook() as hook:
-                output = pipeline(audio_input, num_speakers=num_speakers, hook=hook)
+            emit = self._on_progress
+            if emit is not None:
+
+                def _hook(
+                    step_name: object,
+                    _step_artifact: object,
+                    _file: object = None,
+                    total: float | None = None,
+                    completed: float | None = None,
+                ) -> None:
+                    # pyannote передаёт completed/total в разных комбинациях:
+                    # completed=None — одноразовый шаг (без прогресса),
+                    # completed может превышать total (batch_size > num_chunks),
+                    # поэтому прогресс нормализуется в диапазон [0; 1].
+                    if completed is None or total is None:
+                        fraction = None
+                    elif completed >= total:
+                        fraction = 1.0
+                    else:
+                        fraction = max(0.0, min(1.0, completed / total))
+                    emit(
+                        ProgressEvent(
+                            "diarization",
+                            message=str(step_name),
+                            fraction=fraction,
+                            detail=str(step_name),
+                        )
+                    )
+
+                output = pipeline(audio_input, num_speakers=num_speakers, hook=_hook)
+            else:
+                # ProgressHook показывает прогресс внутренних этапов
+                # (сегментация, эмбеддинги, кластеризация) в консоли.
+                with ProgressHook() as hook:
+                    output = pipeline(audio_input, num_speakers=num_speakers, hook=hook)
         except Exception as exc:
             raise DiarizationError(
                 f"Ошибка при определении говорящих в файле {audio_path}: {exc}"

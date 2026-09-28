@@ -47,9 +47,7 @@ def test_txt_exporter_writes_lines_with_speakers(
     assert "?: Без определённого говорящего" in content
 
 
-def test_json_exporter_round_trips_data(
-    sample_result: TranscriptionResult, tmp_path: Path
-) -> None:
+def test_json_exporter_round_trips_data(sample_result: TranscriptionResult, tmp_path: Path) -> None:
     output_path = tmp_path / "out.json"
 
     JsonExporter().export(sample_result, output_path)
@@ -96,5 +94,7 @@ def test_docx_exporter_creates_readable_document(
         (ExportFormat.SRT, SrtExporter),
     ],
 )
-def test_factory_creates_matching_exporter(export_format: ExportFormat, expected_type: type) -> None:
+def test_factory_creates_matching_exporter(
+    export_format: ExportFormat, expected_type: type
+) -> None:
     assert isinstance(create_exporter(export_format), expected_type)

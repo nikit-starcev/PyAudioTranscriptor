@@ -58,8 +58,6 @@ def test_morph_corrector_does_not_invent_from_short_surname() -> None:
 def test_morph_corrector_respects_custom_min_word_length() -> None:
     # При высоком пороге длины длинная опечатка всё ещё правится.
     corrector = MorphTextCorrector(min_word_length=10)
-    entries = [
-        TranscriptEntry(start=0.0, end=1.0, text="Взаимоприимания мы не нашли.")
-    ]
+    entries = [TranscriptEntry(start=0.0, end=1.0, text="Взаимоприимания мы не нашли.")]
 
     assert corrector.correct(entries)[0].text == "Взаимопонимания мы не нашли."

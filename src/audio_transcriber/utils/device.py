@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+from functools import lru_cache
 
 from audio_transcriber.domain.enums import Device
 from audio_transcriber.utils.exceptions import DeviceNotAvailableError
@@ -15,8 +16,13 @@ from audio_transcriber.utils.exceptions import DeviceNotAvailableError
 logger = logging.getLogger(__name__)
 
 
+@lru_cache(maxsize=1)
 def is_cuda_available() -> bool:
-    """Проверяет доступность CUDA через PyTorch."""
+    """Проверяет доступность CUDA через PyTorch (результат кэшируется).
+
+    Инициализация CUDA в PyTorch дорогая, а устройство в рамках процесса не
+    меняется, поэтому результат вычисляется один раз.
+    """
 
     try:
         import torch

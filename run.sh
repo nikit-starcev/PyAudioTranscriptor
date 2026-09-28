@@ -49,6 +49,10 @@ ARGS=(transcribe "$AUDIO_FILE")
 [ -n "${MODEL:-}" ] && ARGS+=(--model "$MODEL")
 [ -n "${LANGUAGE:-}" ] && ARGS+=(--language "$LANGUAGE")
 [ -n "${DEVICE:-}" ] && ARGS+=(--device "$DEVICE")
+[ -n "${ASR_BACKEND:-}" ] && ARGS+=(--asr-backend "$ASR_BACKEND")
+[ -n "${WHISPER_CPP_MODEL:-}" ] && ARGS+=(--whisper-cpp-model "$WHISPER_CPP_MODEL")
+[ -n "${WHISPER_CPP_BINARY:-}" ] && ARGS+=(--whisper-cpp-binary "$WHISPER_CPP_BINARY")
+[ -n "${WHISPER_CPP_LIB_PATH:-}" ] && ARGS+=(--whisper-cpp-lib-path "$WHISPER_CPP_LIB_PATH")
 
 if [ -n "${FORMATS:-}" ]; then
     IFS=',' read -ra FORMAT_LIST <<< "$FORMATS"
@@ -67,6 +71,7 @@ if [ -n "${SPEAKER_NAMES:-}" ]; then
 fi
 
 [ -n "${HF_TOKEN:-}" ] && ARGS+=(--hf-token "$HF_TOKEN")
+[ -n "${PYANNOTE_LOCAL_MODEL:-}" ] && ARGS+=(--pyannote-local-model "$PYANNOTE_LOCAL_MODEL")
 [ "${ENABLE_CORRECTION:-false}" = "true" ] && ARGS+=(--enable-correction)
 [ -n "${CORRECTION_MIN_WORD_LENGTH:-}" ] && ARGS+=(--correction-min-word-length "$CORRECTION_MIN_WORD_LENGTH")
 [ -n "${CORRECTION_MIN_SIMILARITY:-}" ] && ARGS+=(--correction-min-similarity "$CORRECTION_MIN_SIMILARITY")
@@ -74,4 +79,22 @@ fi
 [ -n "${HOTWORDS:-}" ] && ARGS+=(--hotwords "$HOTWORDS")
 [ "${VERBOSE:-false}" = "true" ] && ARGS+=(--verbose)
 
-uv run audio-transcriber "${ARGS[@]}"
+# --- LLM-постобработка (llama.cpp) ---
+[ "${LLM_ENABLED:-false}" = "true" ] && ARGS+=(--llm)
+[ -n "${LLM_MODEL:-}" ] && ARGS+=(--llm-model "$LLM_MODEL")
+[ -n "${LLM_BINARY:-}" ] && ARGS+=(--llm-binary "$LLM_BINARY")
+[ -n "${LLM_LIB_PATH:-}" ] && ARGS+=(--llm-lib-path "$LLM_LIB_PATH")
+[ "${LLM_GPU:-true}" = "false" ] && ARGS+=(--llm-cpu)
+[ -n "${LLM_CONTEXT:-}" ] && ARGS+=(--llm-context "$LLM_CONTEXT")
+[ "${LLM_EXTRACT_NAMES:-true}" = "false" ] && ARGS+=(--llm-no-names)
+[ "${LLM_SUGGEST_TERMS:-false}" = "true" ] && ARGS+=(--llm-suggest-terms)
+[ -n "${GLOSSARY_PATH:-}" ] && ARGS+=(--glossary "$GLOSSARY_PATH")
+
+# Для бэкенда whisper-cpp (гибрид на AMD) используется CPU-сборка torch,
+# установленная вручную в .venv. `uv run` сверяется с uv.lock и может
+# переустановить CUDA-сборку torch, поэтому вызываем бинарник напрямую.
+if [ -x ".venv/bin/audio-transcriber" ]; then
+    .venv/bin/audio-transcriber "${ARGS[@]}"
+else
+    uv run audio-transcriber "${ARGS[@]}"
+fi

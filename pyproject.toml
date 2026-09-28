@@ -10,7 +10,7 @@ dependencies = [
     "pyannote-audio>=4.0.7",
     "python-docx>=1.2.0",
     "rich>=15.0.0",
-    "tqdm>=4.69.0",
+    "textual>=8.0.0",
     "typer>=0.27.0",
     "torch>=2.8,<2.13",
     "torchaudio>=2.8,<2.12",
@@ -59,6 +59,8 @@ explicit = true
 [dependency-groups]
 dev = [
     "pytest>=8.3.0",
+    "ruff>=0.8",
+    "mypy>=1.11",
 ]
 
 [tool.pytest.ini_options]
@@ -67,3 +69,51 @@ addopts = "-ra -m \"not integration\""
 markers = [
     "integration: медленные тесты на реальных моделях и аудиофайлах (запуск: pytest -m integration)",
 ]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+# Папки, которые линтер не проверяет (артефакты, кэш, окружение).
+extend-exclude = ["output", ".venv"]
+
+[tool.ruff.lint]
+# Базовый набор: ошибки pycodestyle (без длины строк E501 — её ограничивает
+# formatter), pyflakes, сортировка импортов (isort) и современные практики.
+select = [
+    "E4", "E7", "E9",
+    "F",
+    "I",
+    "UP",
+    "B",
+    "C4",
+    "SIM",
+    "ARG",
+    "BLE",
+    "RUF",
+]
+ignore = [
+    # Кириллица в строках/комментариях — для русскоязычного проекта это норма,
+    # а не случайный похожий Unicode-символ.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Typer по своей архитектуре требует вызовы typer.Option/typer.Argument прямо
+# в значениях по умолчанию у аргументов команды — для этого файла B008 отключён.
+"src/audio_transcriber/cli/app.py" = ["B008"]
+# В тестах допустимы «магические» фикстуры и неиспользуемые аргументы-заглушки.
+"tests/**" = ["ARG001", "ARG002"]
+
+[tool.mypy]
+python_version = "3.14"
+# Проверяем исходники строго, но не требуем аннотаций в тестах.
+files = ["src"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+no_implicit_optional = true
+check_untyped_defs = true
+disallow_untyped_defs = true

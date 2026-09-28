@@ -38,3 +38,7 @@ class MergeError(AudioTranscriberError):
 
 class ExportError(AudioTranscriberError):
     """Ошибка при экспорте результата в выбранный формат."""
+
+
+class LlmError(AudioTranscriberError):
+    """Ошибка на этапе LLM-постобработки (сервер, модель, запрос)."""

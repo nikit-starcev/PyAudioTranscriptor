@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import replace
-from difflib import SequenceMatcher
+from typing import Any
 
 from audio_transcriber.correction.defaults import (
     DEFAULT_CORRECTION_MAX_CANDIDATES,
@@ -22,27 +22,9 @@ from audio_transcriber.correction.defaults import (
     DEFAULT_CORRECTION_MIN_WORD_LENGTH,
 )
 from audio_transcriber.domain.models import TranscriptEntry
+from audio_transcriber.utils.text import WORD_PATTERN, match_case, ratio
 
 logger = logging.getLogger(__name__)
-
-# Выделяет «слова» без цифр и знаков препинания (Unicode-буквы).
-_WORD_PATTERN = re.compile(r"[^\W\d_]+", re.UNICODE)
-
-
-def _match_case(original: str, replacement: str) -> str:
-    """Сохраняет регистр исходного слова у замены."""
-    if original.isupper():
-        return replacement.upper()
-
-    if original[:1].isupper():
-        return replacement[:1].upper() + replacement[1:]
-
-    return replacement
-
-
-def _similarity(left: str, right: str) -> float:
-    """Доля сходства двух строк без учёта регистра (0..1)."""
-    return SequenceMatcher(None, left.casefold(), right.casefold()).ratio()
 
 
 def is_spelling_like_form(
@@ -60,7 +42,7 @@ def is_spelling_like_form(
     if abs(len(original) - len(corrected)) > max_len_delta:
         return False
 
-    return _similarity(original, corrected) >= min_similarity
+    return ratio(original, corrected) >= min_similarity
 
 
 class MorphTextCorrector:
@@ -80,9 +62,10 @@ class MorphTextCorrector:
         self._min_similarity = min_similarity
         self._max_candidates = max_candidates
 
-        self._morph = None
-        self._words_dawg = None
+        self._morph: Any = None
+        self._words_dawg: Any = None
         self._suggestion_cache: dict[str, str | None] = {}
+        self._known_cache: dict[str, bool] = {}
 
     def _ensure_loaded(self) -> None:
         if self._morph is not None:
@@ -94,8 +77,14 @@ class MorphTextCorrector:
         self._words_dawg = self._morph.dictionary.words
 
     def _is_known_russian_word(self, word: str) -> bool:
+        cached = self._known_cache.get(word)
+        if cached is not None:
+            return cached
+
         assert self._morph is not None
-        return any(parse.is_known for parse in self._morph.parse(word))
+        known = any(parse.is_known for parse in self._morph.parse(word))
+        self._known_cache[word] = known
+        return known
 
     def _is_spelling_like(self, original: str, corrected: str) -> bool:
         return is_spelling_like_form(
@@ -133,7 +122,7 @@ class MorphTextCorrector:
                 if not self._is_spelling_like(folded, candidate):
                     continue
 
-                score = _similarity(folded, candidate)
+                score = ratio(folded, candidate)
                 if score > best_score:
                     best = candidate
                     best_score = score
@@ -144,6 +133,36 @@ class MorphTextCorrector:
         result = best if best_score >= self._min_similarity else None
         self._suggestion_cache[folded] = result
         return result
+
+    def _correct_text(self, text: str) -> tuple[str, list[tuple[str, str]]]:
+        """Правит опечатки в одном тексте, возвращая его и список замен.
+
+        Отдельный метод (а не замыкание в цикле) — так ``applied`` не является
+        переменной цикла, и поведение не зависит от отложенного вызова.
+        """
+        applied: list[tuple[str, str]] = []
+
+        def replace_match(match: re.Match[str]) -> str:
+            original_word = match.group(0)
+
+            if len(original_word) < self._min_word_length:
+                return original_word
+
+            if self._is_known_russian_word(original_word):
+                return original_word
+
+            candidate = self._best_known_form(original_word)
+            if candidate is None:
+                return original_word
+
+            if candidate.casefold() == original_word.casefold():
+                return original_word
+
+            replacement = match_case(original_word, candidate)
+            applied.append((original_word, replacement))
+            return replacement
+
+        return WORD_PATTERN.sub(replace_match, text), applied
 
     def correct(self, entries: list[TranscriptEntry]) -> list[TranscriptEntry]:
         self._ensure_loaded()
@@ -156,29 +175,7 @@ class MorphTextCorrector:
                 corrected_entries.append(entry)
                 continue
 
-            applied: list[tuple[str, str]] = []
-
-            def replace_match(match: re.Match[str]) -> str:
-                original_word = match.group(0)
-
-                if len(original_word) < self._min_word_length:
-                    return original_word
-
-                if self._is_known_russian_word(original_word):
-                    return original_word
-
-                candidate = self._best_known_form(original_word)
-                if candidate is None:
-                    return original_word
-
-                if candidate.casefold() == original_word.casefold():
-                    return original_word
-
-                replacement = _match_case(original_word, candidate)
-                applied.append((original_word, replacement))
-                return replacement
-
-            new_text = _WORD_PATTERN.sub(replace_match, entry.text)
+            new_text, applied = self._correct_text(entry.text)
             total_replacements += len(applied)
 
             for old, new in applied:

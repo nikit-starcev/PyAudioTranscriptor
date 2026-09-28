@@ -52,12 +52,10 @@ def test_missing_input_file_fails_before_reaching_config(tmp_path: Path) -> None
 def test_transcribe_with_defaults_resolves_cpu(
     audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stub_pipeline
 ) -> None:
-    monkeypatch.setattr(app_module, "resolve_device", lambda device: Device.CPU)
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
 
     output_dir = tmp_path / "out"
-    result = runner.invoke(
-        app, ["transcribe", str(audio_file), "-o", str(output_dir)]
-    )
+    result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(output_dir)])
 
     assert result.exit_code == 0
     assert "cpu" in result.stdout
@@ -65,9 +63,7 @@ def test_transcribe_with_defaults_resolves_cpu(
     assert output_dir.is_dir()
 
 
-def test_transcribe_rejects_non_positive_num_speakers(
-    audio_file: Path, tmp_path: Path
-) -> None:
+def test_transcribe_rejects_non_positive_num_speakers(audio_file: Path, tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         ["transcribe", str(audio_file), "-o", str(tmp_path / "out"), "-n", "0"],
@@ -76,9 +72,7 @@ def test_transcribe_rejects_non_positive_num_speakers(
     assert result.exit_code != 0
 
 
-def test_transcribe_rejects_malformed_speaker_name(
-    audio_file: Path, tmp_path: Path
-) -> None:
+def test_transcribe_rejects_malformed_speaker_name(audio_file: Path, tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         [
@@ -97,7 +91,7 @@ def test_transcribe_rejects_malformed_speaker_name(
 def test_transcribe_saves_debug_log_file(
     audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stub_pipeline
 ) -> None:
-    monkeypatch.setattr(app_module, "resolve_device", lambda device: Device.CPU)
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
 
     output_dir = tmp_path / "out"
     result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(output_dir)])
@@ -156,7 +150,7 @@ def test_transcribe_passes_hotwords(
         )
 
     monkeypatch.setattr(app_module, "run_pipeline", fake_run_pipeline)
-    monkeypatch.setattr(app_module, "resolve_device", lambda device: Device.CPU)
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
 
     output_dir = tmp_path / "out"
     result = runner.invoke(
@@ -193,7 +187,7 @@ def test_transcribe_enable_correction_flag(
         )
 
     monkeypatch.setattr(app_module, "run_pipeline", fake_run_pipeline)
-    monkeypatch.setattr(app_module, "resolve_device", lambda device: Device.CPU)
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
 
     result = runner.invoke(
         app,
@@ -210,10 +204,89 @@ def test_transcribe_enable_correction_flag(
     assert captured["config"].enable_correction is True
 
 
+def _capturing_pipeline(captured: dict[str, AppConfig]):
+    def fake_run_pipeline(config: AppConfig, **kwargs):
+        captured["config"] = config
+        speaker = Speaker(id="SPEAKER_00", display_name="Иван")
+        return TranscriptionResult(
+            source_path=config.input_file,
+            language="ru",
+            duration=1.0,
+            entries=[TranscriptEntry(start=0.0, end=1.0, text="привет", speaker=speaker)],
+            speakers=[speaker],
+        )
+
+    return fake_run_pipeline
+
+
+def test_transcribe_names_enabled_by_default(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 0
+    assert captured["config"].llm_extract_names is True
+
+
+def test_transcribe_llm_no_names_flag(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(
+        app,
+        [
+            "transcribe",
+            str(audio_file),
+            "-o",
+            str(tmp_path / "out"),
+            "--llm-no-names",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["config"].llm_extract_names is False
+
+
+def test_transcribe_no_diarization_flag(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(
+        app,
+        ["transcribe", str(audio_file), "-o", str(tmp_path / "out"), "--no-diarization"],
+    )
+
+    assert result.exit_code == 0
+    assert captured["config"].diarization_enabled is False
+
+
+def test_transcribe_diarization_enabled_by_default(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 0
+    assert captured["config"].diarization_enabled is True
+
+
 def test_transcribe_hotwords_warns_when_over_limit(
     audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stub_pipeline
 ) -> None:
-    monkeypatch.setattr(app_module, "resolve_device", lambda device: Device.CPU)
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
 
     # Длинная строка --hotwords должна обрезаться с предупреждением.
     long_hotwords = ", ".join(f"термин-{i}" for i in range(80))

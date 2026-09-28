@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 from audio_transcriber.domain.enums import Device
 from audio_transcriber.domain.models import TranscriptionSegment
@@ -28,9 +29,9 @@ class WhisperSpeechRecognizer:
         self._device = device
         self._initial_prompt = initial_prompt
         self._hotwords = hotwords
-        self._model = None
+        self._model: Any = None
 
-    def _load_model(self):
+    def _load_model(self) -> Any:
         if self._model is not None:
             return self._model
 
@@ -55,7 +56,7 @@ class WhisperSpeechRecognizer:
 
         return self._model
 
-    def _prepare_hotwords(self, model) -> str | None:
+    def _prepare_hotwords(self, model: Any) -> str | None:
         """Обрезает hotwords по токенам модели, чтобы prompt не переполнял контекст."""
         if not self._hotwords:
             return None

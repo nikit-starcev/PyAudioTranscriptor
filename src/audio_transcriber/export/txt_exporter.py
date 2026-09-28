@@ -13,11 +13,18 @@ class TxtExporter:
     """Реализует протокол ``ResultExporter`` для формата TXT."""
 
     def export(self, result: TranscriptionResult, output_path: Path) -> None:
-        lines = [
+        lines: list[str] = []
+
+        if result.participants:
+            lines.append("Участники:")
+            lines.extend(f"  {participant}" for participant in result.participants)
+            lines.append("")
+
+        lines.extend(
             f"[{format_timestamp(entry.start)}] "
             f"{entry.speaker.display_name if entry.speaker else '?'}: {entry.text}"
             for entry in result.entries
-        ]
+        )
 
         try:
             output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -14,10 +14,12 @@ from audio_transcriber.correction.defaults import (
     DEFAULT_CORRECTION_MIN_SIMILARITY,
     DEFAULT_CORRECTION_MIN_WORD_LENGTH,
 )
-from audio_transcriber.domain.enums import Device, ExportFormat
+from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
+from audio_transcriber.llm.client import DEFAULT_CONTEXT_SIZE as DEFAULT_LLM_CONTEXT_SIZE
 from audio_transcriber.pipeline import run_pipeline
 from audio_transcriber.utils.device import resolve_device
 from audio_transcriber.utils.exceptions import AudioTranscriberError
+from audio_transcriber.utils.glossary_paths import normalize_glossary_paths_tuple
 from audio_transcriber.utils.hotwords import build_hotwords
 from audio_transcriber.utils.logging import setup_logging
 
@@ -60,7 +62,7 @@ def transcribe(
         exists=True,
         dir_okay=False,
         readable=True,
-        help="Путь к аудиофайлу для транскрибации (например, звонок в .mp3).",
+        help="Путь к аудио- или видеофайлу для транскрибации (mp3, wav, mp4, webm, ...).",
     ),
     output_dir: Path = typer.Option(
         Path("output"),
@@ -105,6 +107,15 @@ def transcribe(
         min=1,
         help="Точное количество говорящих, если оно известно заранее.",
     ),
+    diarization: bool = typer.Option(
+        True,
+        "--diarization/--no-diarization",
+        help=(
+            "Размечать говорящих (диаризация). При --no-diarization конвейер "
+            "идёт без спикеров: локальная модель диаризации и токен Hugging Face "
+            "не нужны."
+        ),
+    ),
     speaker_name: list[str] = typer.Option(
         [],
         "--speaker-name",
@@ -119,6 +130,14 @@ def transcribe(
         help=(
             "Токен доступа Hugging Face для модели диаризации. "
             "По умолчанию берётся из переменной окружения HF_TOKEN."
+        ),
+    ),
+    pyannote_local_model: Path | None = typer.Option(
+        None,
+        "--pyannote-local-model",
+        help=(
+            "Путь к локальной копии модели диаризации (директория с config.yaml). "
+            "Позволяет работать полностью офлайн, без токена и сети."
         ),
     ),
     initial_prompt: str | None = typer.Option(
@@ -172,6 +191,104 @@ def transcribe(
             f"(по умолчанию {DEFAULT_CORRECTION_MAX_CANDIDATES})."
         ),
     ),
+    asr_backend: AsrBackend = typer.Option(
+        AsrBackend.FASTER_WHISPER.value,
+        "--asr-backend",
+        case_sensitive=False,
+        help=(
+            "Движок распознавания: faster-whisper (CUDA/CPU через PyTorch) "
+            "или whisper-cpp (GPU через Vulkan — для AMD-карт без ROCm)."
+        ),
+    ),
+    whisper_cpp_model: Path | None = typer.Option(
+        None,
+        "--whisper-cpp-model",
+        help="Путь к ggml-модели для бэкенда whisper-cpp (обязателен при whisper-cpp).",
+    ),
+    whisper_cpp_binary: str = typer.Option(
+        "whisper-cli",
+        "--whisper-cpp-binary",
+        help="Путь или имя бинарника whisper-cli (по умолчанию whisper-cli).",
+    ),
+    whisper_cpp_lib_path: str | None = typer.Option(
+        None,
+        "--whisper-cpp-lib-path",
+        help=(
+            "Каталог с библиотеками whisper.cpp (задаётся как LD_LIBRARY_PATH "
+            "при запуске бинарника)."
+        ),
+    ),
+    whisper_cpp_threads: int | None = typer.Option(
+        None,
+        "--whisper-cpp-threads",
+        min=1,
+        help="Число потоков для whisper.cpp (по умолчанию — значение самого бинарника).",
+    ),
+    llm: bool = typer.Option(
+        False,
+        "--llm",
+        help=(
+            "Включить LLM-постобработку: извлечение имён участников и правка "
+            "терминов по глоссарию. Требует локальную модель llama.cpp (см. "
+            "--llm-model). По умолчанию выключено."
+        ),
+    ),
+    llm_model: Path | None = typer.Option(
+        None,
+        "--llm-model",
+        help="Путь к GGUF-модели LLM (например, Qwen2.5-7B-Instruct Q4_K_M).",
+    ),
+    llm_binary: str = typer.Option(
+        "llama-server",
+        "--llm-binary",
+        help="Путь или имя бинарника llama-server (по умолчанию llama-server).",
+    ),
+    llm_lib_path: str | None = typer.Option(
+        None,
+        "--llm-lib-path",
+        help=(
+            "Каталог с библиотеками llama.cpp (задаётся как LD_LIBRARY_PATH при запуске бинарника)."
+        ),
+    ),
+    llm_gpu: bool = typer.Option(
+        True,
+        "--llm-gpu/--llm-cpu",
+        help=(
+            "Использовать GPU (Vulkan) для LLM. При --llm-cpu инференс идёт "
+            "на CPU. При нехватке VRAM клиент сам деградирует до CPU."
+        ),
+    ),
+    llm_context: int = typer.Option(
+        DEFAULT_LLM_CONTEXT_SIZE,
+        "--llm-context",
+        min=128,
+        help=(f"Размер контекста LLM в токенах (по умолчанию {DEFAULT_LLM_CONTEXT_SIZE})."),
+    ),
+    llm_suggest_terms: bool = typer.Option(
+        False,
+        "--llm-suggest-terms",
+        help=(
+            "После обработки собрать термины-кандидаты, которых нет в "
+            "глоссарии, и записать их в файл <глоссарий>.suggested.txt."
+        ),
+    ),
+    llm_extract_names: bool = typer.Option(
+        True,
+        "--llm-names/--llm-no-names",
+        help=(
+            "Определять имена участников через LLM. Включено по умолчанию. "
+            "При --llm-no-names правка терминов по глоссарию продолжает "
+            "работать, а имена не извлекаются."
+        ),
+    ),
+    glossary: list[str] = typer.Option(
+        [],
+        "--glossary",
+        help=(
+            "Путь к файлу(ам) глоссария терминов. Можно указать несколько раз "
+            "или перечислить пути через запятую. Термины объединяются."
+        ),
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -202,8 +319,10 @@ def transcribe(
             device=device,
             export_formats=tuple(dict.fromkeys(export_format)),
             num_speakers=num_speakers,
+            diarization_enabled=diarization,
             speaker_names=AppConfig.parse_speaker_names(speaker_name),
             hf_token=hf_token,
+            pyannote_local_model=pyannote_local_model,
             initial_prompt=initial_prompt,
             hotwords=hotwords,
             enable_correction=enable_correction,
@@ -211,22 +330,34 @@ def transcribe(
             correction_min_similarity=correction_min_similarity,
             correction_max_candidates=correction_max_candidates,
             verbose=verbose,
+            asr_backend=asr_backend,
+            whisper_cpp_model=whisper_cpp_model,
+            whisper_cpp_binary=whisper_cpp_binary,
+            whisper_cpp_lib_path=whisper_cpp_lib_path,
+            whisper_cpp_threads=whisper_cpp_threads,
+            llm_enabled=llm,
+            llm_model=llm_model,
+            llm_binary=llm_binary,
+            llm_lib_path=llm_lib_path,
+            llm_gpu=llm_gpu,
+            llm_context_size=llm_context,
+            llm_suggest_terms=llm_suggest_terms,
+            llm_extract_names=llm_extract_names,
+            glossary_path=normalize_glossary_paths_tuple(glossary),
         )
+        config.ensure_output_dir()
         resolved_device = resolve_device(config.device)
 
         logger.info("Входной файл: %s", config.input_file)
         logger.info("Директория результатов: %s", config.output_dir)
+        logger.info("Бэкенд распознавания: %s", config.asr_backend.value)
         logger.info("Модель распознавания: %s", config.model_name)
         logger.info("Язык: %s", config.language or "автоопределение")
-        logger.info(
-            "Устройство: %s (запрошено: %s)", resolved_device.value, config.device.value
-        )
-        logger.info(
-            "Форматы экспорта: %s", ", ".join(fmt.value for fmt in config.export_formats)
-        )
-        logger.info(
-            "Количество говорящих: %s", config.num_speakers or "автоопределение"
-        )
+        logger.info("Устройство: %s (запрошено: %s)", resolved_device.value, config.device.value)
+        logger.info("Форматы экспорта: %s", ", ".join(fmt.value for fmt in config.export_formats))
+        logger.info("Диаризация: %s", "включена" if config.diarization_enabled else "выключена")
+        if config.diarization_enabled:
+            logger.info("Количество говорящих: %s", config.num_speakers or "автоопределение")
         if config.speaker_names:
             logger.info("Пользовательские имена говорящих: %s", config.speaker_names)
         logger.info(
@@ -241,6 +372,19 @@ def transcribe(
                 config.correction_min_similarity,
                 config.correction_max_candidates,
             )
+        logger.info(
+            "LLM-постобработка: %s",
+            "включена" if config.llm_enabled else "выключена",
+        )
+        if config.llm_enabled:
+            logger.info(
+                "Параметры LLM: контекст=%d токенов, GPU=%s, "
+                "определение имён=%s, предложения терминов=%s",
+                config.llm_context_size,
+                "да" if config.llm_gpu else "нет",
+                "включено" if config.llm_extract_names else "выключено",
+                "включены" if config.llm_suggest_terms else "выключены",
+            )
 
         result = run_pipeline(config, device=resolved_device)
     except KeyboardInterrupt:
@@ -250,9 +394,25 @@ def transcribe(
         logger.error(str(exc))
         raise typer.Exit(code=1) from exc
 
-    logger.info(
-        "Готово: %d реплик(и), %d говорящих", len(result.entries), len(result.speakers)
-    )
+    logger.info("Готово: %d реплик(и), %d говорящих", len(result.entries), len(result.speakers))
+
+
+@app.command()
+def tui() -> None:
+    """Открыть интерактивный интерфейс (htop-стиль) для запуска транскрибации."""
+    import logging
+    import warnings
+
+    # В TUI прогресс показывается в панели, а не в консоли, поэтому
+    # приглушаем INFO-логи и шумные предупреждения pyannote/torch,
+    # которые иначе портят полноэкранный вывод.
+    logging.getLogger().setLevel(logging.WARNING)
+    warnings.filterwarnings("ignore", module=r"pyannote\..*")
+    warnings.filterwarnings("ignore", category=UserWarning, module=r"torch.*")
+
+    from audio_transcriber.tui.app import TranscriberApp
+
+    TranscriberApp().run()
 
 
 if __name__ == "__main__":

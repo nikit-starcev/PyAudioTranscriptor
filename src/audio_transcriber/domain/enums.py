@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class Device(str, Enum):
+class Device(StrEnum):
     """Устройство, на котором должны выполняться вычисления."""
 
     AUTO = "auto"
@@ -13,7 +13,14 @@ class Device(str, Enum):
     CUDA = "cuda"
 
 
-class ExportFormat(str, Enum):
+class AsrBackend(StrEnum):
+    """Движок распознавания речи."""
+
+    FASTER_WHISPER = "faster-whisper"
+    WHISPER_CPP = "whisper-cpp"
+
+
+class ExportFormat(StrEnum):
     """Поддерживаемые форматы экспорта стенограммы."""
 
     TXT = "txt"

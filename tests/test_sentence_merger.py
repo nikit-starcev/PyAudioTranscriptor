@@ -1,0 +1,110 @@
+"""Тесты склейки подряд идущих реплик одного говорящего (``SentenceMerger``)."""
+
+from __future__ import annotations
+
+import pytest
+
+from audio_transcriber.domain.models import Speaker, TranscriptEntry
+from audio_transcriber.merging.sentence_merger import SentenceMerger
+
+_SPEAKER_1 = Speaker(id="SPEAKER_00", display_name="Спикер 1")
+_SPEAKER_2 = Speaker(id="SPEAKER_01", display_name="Спикер 2")
+
+
+def _entry(start: float, end: float, text: str, speaker: Speaker | None) -> TranscriptEntry:
+    return TranscriptEntry(start=start, end=end, text=text, speaker=speaker)
+
+
+def test_merges_consecutive_same_speaker() -> None:
+    entries = [
+        _entry(0.0, 1.0, "привет", _SPEAKER_1),
+        _entry(1.1, 2.0, "как дела", _SPEAKER_1),
+        _entry(2.1, 3.0, "что нового", _SPEAKER_1),
+    ]
+
+    merged = SentenceMerger().merge(entries)
+
+    assert len(merged) == 1
+    assert merged[0].text == "привет как дела что нового"
+    assert merged[0].start == 0.0
+    assert merged[0].end == 3.0
+    assert merged[0].speaker is _SPEAKER_1
+
+
+def test_does_not_merge_different_speakers() -> None:
+    entries = [
+        _entry(0.0, 1.0, "привет", _SPEAKER_1),
+        _entry(1.0, 2.0, "здравствуйте", _SPEAKER_2),
+    ]
+
+    merged = SentenceMerger().merge(entries)
+
+    assert [entry.text for entry in merged] == ["привет", "здравствуйте"]
+    assert [entry.speaker for entry in merged] == [_SPEAKER_1, _SPEAKER_2]
+
+
+def test_speaker_none_entries_are_not_merged_together() -> None:
+    entries = [
+        _entry(0.0, 1.0, "раз", None),
+        _entry(1.0, 2.0, "два", None),
+    ]
+
+    merged = SentenceMerger().merge(entries)
+
+    assert [entry.text for entry in merged] == ["раз", "два"]
+
+
+def test_none_is_not_attached_to_named_speaker() -> None:
+    entries = [
+        _entry(0.0, 1.0, "привет", _SPEAKER_1),
+        _entry(1.0, 2.0, "шум", None),
+        _entry(2.0, 3.0, "продолжаю", _SPEAKER_1),
+    ]
+
+    merged = SentenceMerger().merge(entries)
+
+    # None-реплика разрывает серию и не присоединяется ни к кому
+    assert [entry.text for entry in merged] == ["привет", "шум", "продолжаю"]
+
+
+def test_large_gap_breaks_utterance() -> None:
+    entries = [
+        _entry(0.0, 1.0, "первая", _SPEAKER_1),
+        _entry(10.0, 11.0, "вторая", _SPEAKER_1),
+    ]
+
+    merged = SentenceMerger(max_gap=2.0).merge(entries)
+
+    assert [entry.text for entry in merged] == ["первая", "вторая"]
+
+
+def test_gap_at_boundary_still_merges() -> None:
+    entries = [
+        _entry(0.0, 1.0, "первая", _SPEAKER_1),
+        _entry(3.0, 4.0, "вторая", _SPEAKER_1),
+    ]
+
+    merged = SentenceMerger(max_gap=2.0).merge(entries)
+
+    assert len(merged) == 1
+    assert merged[0].text == "первая вторая"
+
+
+def test_collapses_repeated_spaces() -> None:
+    entries = [
+        _entry(0.0, 1.0, "привет  ", _SPEAKER_1),
+        _entry(1.0, 2.0, "   как   дела", _SPEAKER_1),
+    ]
+
+    merged = SentenceMerger().merge(entries)
+
+    assert merged[0].text == "привет как дела"
+
+
+def test_empty_list_returns_empty() -> None:
+    assert SentenceMerger().merge([]) == []
+
+
+def test_negative_max_gap_rejected() -> None:
+    with pytest.raises(ValueError):
+        SentenceMerger(max_gap=-1.0)

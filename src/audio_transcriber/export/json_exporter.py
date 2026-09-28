@@ -17,6 +17,7 @@ class JsonExporter:
             "source_path": str(result.source_path),
             "language": result.language,
             "duration": result.duration,
+            "participants": result.participants,
             "speakers": [
                 {"id": speaker.id, "display_name": speaker.display_name}
                 for speaker in result.speakers

@@ -17,9 +17,7 @@ from audio_transcriber.domain.models import SpeakerSegment
 class SpeakerDiarizer(Protocol):
     """Контракт компонента определения говорящих."""
 
-    def diarize(
-        self, audio_path: Path, *, num_speakers: int | None = None
-    ) -> list[SpeakerSegment]:
+    def diarize(self, audio_path: Path, *, num_speakers: int | None = None) -> list[SpeakerSegment]:
         """Определяет говорящих в аудиофайле.
 
         :param audio_path: путь к аудиофайлу.
