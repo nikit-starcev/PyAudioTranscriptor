@@ -532,7 +532,7 @@ def serve(
         )
         return
     if open_browser:
-        threading.Timer(
-            1.0, lambda: webbrowser.open(f"http://{host}:{port}/")
-        ).start()
+        opener = threading.Timer(1.0, lambda: webbrowser.open(f"http://{host}:{port}/"))
+        opener.daemon = True
+        opener.start()
     uvicorn.run(create_app(), host=host, port=port, log_level="info")

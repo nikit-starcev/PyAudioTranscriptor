@@ -53,9 +53,13 @@ class JobEventBus:
             subscribers = list(self._subscribers.get(job_id, ()))
         terminal = event.get("status") in TERMINAL_STATUSES
         for subscriber in subscribers:
-            subscriber.loop.call_soon_threadsafe(subscriber.queue.put_nowait, event)
-            if terminal:
-                subscriber.loop.call_soon_threadsafe(subscriber.queue.put_nowait, None)
+            try:
+                subscriber.loop.call_soon_threadsafe(subscriber.queue.put_nowait, event)
+                if terminal:
+                    subscriber.loop.call_soon_threadsafe(subscriber.queue.put_nowait, None)
+            except RuntimeError:
+                # Event loop уже закрыт (остановка сервера) — событие некому отдать.
+                continue
 
     def history(self, job_id: str) -> list[JobEvent]:
         """Снимок накопленных событий задачи (может быть пустым)."""
