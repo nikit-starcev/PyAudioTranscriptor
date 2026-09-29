@@ -401,3 +401,16 @@ def test_enrollment_min_similarity_default(audio_file: Path) -> None:
 def test_enrollment_min_similarity_out_of_range(audio_file: Path, value: float) -> None:
     with pytest.raises(ConfigurationError):
         AppConfig(input_file=audio_file, enrollment_min_similarity=value)
+
+
+def test_timeline_defaults_to_true(audio_file: Path) -> None:
+    assert AppConfig(input_file=audio_file).timeline is True
+
+
+def test_timeline_accepts_explicit_false(audio_file: Path) -> None:
+    assert AppConfig(input_file=audio_file, timeline=False).timeline is False
+
+
+def test_timeline_must_be_boolean(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, timeline="yes")  # type: ignore[arg-type]

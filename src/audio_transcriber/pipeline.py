@@ -44,6 +44,11 @@ from audio_transcriber.diarization.pyannote_engine import PyannoteSpeakerDiarize
 from audio_transcriber.domain.enums import AsrBackend, Device
 from audio_transcriber.domain.models import SpeakerOverlap, TranscriptionResult
 from audio_transcriber.export.factory import create_exporter
+from audio_transcriber.export.timeline import (
+    build_speaker_tracks,
+    render_timeline_text,
+    write_timeline,
+)
 from audio_transcriber.llm.base import LlmClient
 from audio_transcriber.merging.aligner import OverlapSegmentMerger
 from audio_transcriber.merging.base import SegmentMerger
@@ -358,6 +363,18 @@ def run_pipeline(
         logger.info("Экспорт в %s: %s", export_format.value, output_path)
         emit(ProgressEvent("export", f"Экспорт {export_format.value}", fraction=None))
         create_exporter(export_format).export(result, output_path)
+
+    if config.timeline:
+        if build_speaker_tracks(result):
+            # Подробная сводка «кто когда говорил» — в лог (INFO), HTML — рядом
+            # с остальными результатами.
+            logger.info("Таймлайн говорящих:\n%s", render_timeline_text(result))
+            timeline_path = config.output_dir / f"{config.input_file.stem}.timeline.html"
+            logger.info("Экспорт таймлайна: %s", timeline_path)
+            emit(ProgressEvent("export", "Экспорт таймлайна", fraction=None))
+            write_timeline(result, timeline_path)
+        else:
+            logger.info("Таймлайн пропущен — нет данных о говорящих")
 
     emit(ProgressEvent("done", "Готово", fraction=1.0))
     return result

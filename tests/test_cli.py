@@ -751,3 +751,35 @@ def test_transcribe_rejects_missing_speaker_reference_file(
     )
 
     assert result.exit_code == 1
+
+
+# --- Пакет 6 «таймлайн говорящих» -------------------------------------------
+
+
+def test_transcribe_timeline_enabled_by_default(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 0
+    assert captured["config"].timeline is True
+
+
+def test_transcribe_no_timeline_flag(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(
+        app,
+        ["transcribe", str(audio_file), "-o", str(tmp_path / "out"), "--no-timeline"],
+    )
+
+    assert result.exit_code == 0
+    assert captured["config"].timeline is False

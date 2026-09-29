@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
 from audio_transcriber.domain.models import TranscriptionResult
 from audio_transcriber.tui import app as tui_app
@@ -788,3 +789,233 @@ def test_build_config_speaker_references_default_to_none(
 
     assert config.speaker_references == {}
     assert config.enrollment_min_similarity == pytest.approx(0.6)
+
+
+# --- Пакет 6 «таймлайн говорящих»: настройка TUI ----------------------------
+
+
+def test_build_config_timeline_enabled_by_default(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            return app._build_config(audio_file)
+
+    assert asyncio.run(_run()).timeline is True
+
+
+def test_build_config_timeline_can_be_disabled_via_env(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    defaults = _defaults(tmp_path / "out")
+    defaults["TIMELINE"] = "false"
+    monkeypatch.setattr(tui_app, "_load_env_defaults", lambda: defaults)
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            return app._build_config(audio_file)
+
+    assert asyncio.run(_run()).timeline is False
+
+
+# --- Пакет 7 «правка говорящих»: чистые операции ----------------------------
+
+
+def test_rename_speaker_updates_speakers_and_entries(audio_file: Path) -> None:
+    original = _search_result(audio_file)
+
+    renamed = tui_app.rename_speaker(original, "SPEAKER_00", "Пётр")
+
+    assert any(
+        speaker.id == "SPEAKER_00" and speaker.display_name == "Пётр"
+        for speaker in renamed.speakers
+    )
+    assert all(
+        entry.speaker is not None and entry.speaker.display_name == "Пётр"
+        for entry in renamed.entries
+        if entry.speaker is not None and entry.speaker.id == "SPEAKER_00"
+    )
+    # Исходный результат не мутирован.
+    assert any(speaker.display_name == "Иван" for speaker in original.speakers)
+
+
+def test_merge_speakers_reassigns_entries_and_drops_source(audio_file: Path) -> None:
+    original = _search_result(audio_file)
+
+    merged = tui_app.merge_speakers(original, "SPEAKER_00", "SPEAKER_01")
+
+    assert [speaker.id for speaker in merged.speakers] == ["SPEAKER_01"]
+    assert all(
+        entry.speaker is not None and entry.speaker.id == "SPEAKER_01"
+        for entry in merged.entries
+        if entry.speaker is not None
+    )
+
+
+# --- Пакет 7 «правка говорящих»: модальный редактор --------------------------
+
+
+def test_speaker_editor_rename_updates_entries(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run() -> TranscriptionResult:
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            app._last_result = _search_result(audio_file)
+            app.action_edit_speakers()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, tui_app.SpeakerEditorScreen)
+            screen.query_one("#speakers_table", tui_app.DataTable).move_cursor(row=0)
+            assert screen.rename_selected("Пётр") is True
+            return screen.edited_result
+
+    result = asyncio.run(_run())
+
+    assert any(speaker.display_name == "Пётр" for speaker in result.speakers)
+    assert all(
+        entry.speaker is not None and entry.speaker.display_name == "Пётр"
+        for entry in result.entries
+        if entry.speaker is not None and entry.speaker.id == "SPEAKER_00"
+    )
+
+
+def test_speaker_editor_merge_reassigns_entries(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run() -> TranscriptionResult:
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            app._last_result = _search_result(audio_file)
+            app.action_edit_speakers()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, tui_app.SpeakerEditorScreen)
+            screen.query_one("#speakers_table", tui_app.DataTable).move_cursor(row=0)
+            assert screen.merge_selected_into("SPEAKER_01") is True
+            return screen.edited_result
+
+    result = asyncio.run(_run())
+
+    assert [speaker.id for speaker in result.speakers] == ["SPEAKER_01"]
+    assert all(
+        entry.speaker is not None and entry.speaker.id == "SPEAKER_01"
+        for entry in result.entries
+        if entry.speaker is not None
+    )
+
+
+def test_speaker_editor_save_reexports_formats(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_dir = tmp_path / "out"
+    calls: list[Path] = []
+
+    class _FakeExporter:
+        def export(self, result: TranscriptionResult, output_path: Path) -> None:
+            calls.append(Path(output_path))
+
+    monkeypatch.setattr(tui_app, "create_exporter", lambda _fmt: _FakeExporter())
+    monkeypatch.setattr(tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(output_dir)})
+
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=output_dir,
+        export_formats=(ExportFormat.TXT, ExportFormat.JSON),
+        timeline=False,
+    )
+
+    async def _run() -> None:
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            app._last_result = _search_result(audio_file)
+            app._last_config = config
+            app.action_edit_speakers()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, tui_app.SpeakerEditorScreen)
+            screen.rename_selected("Иван II")
+            screen.action_save()
+            await pilot.pause()
+
+    asyncio.run(_run())
+
+    assert calls == [
+        output_dir / f"{audio_file.stem}.txt",
+        output_dir / f"{audio_file.stem}.json",
+    ]
+
+
+def test_speaker_editor_cancel_keeps_original_result(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+    original = _search_result(audio_file)
+
+    async def _run() -> TranscriptionResult | None:
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            app._last_result = original
+            app.action_edit_speakers()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, tui_app.SpeakerEditorScreen)
+            screen.rename_selected("Пётр")
+            screen.action_cancel()
+            await pilot.pause()
+            return app._last_result
+
+    result = asyncio.run(_run())
+
+    assert result is original
+    assert [speaker.display_name for speaker in result.speakers] == ["Иван", "Мария"]
+
+
+def test_e_key_opens_speaker_editor(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run() -> bool:
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            app._last_result = _search_result(audio_file)
+            await pilot.press("e")
+            await pilot.pause()
+            return isinstance(app.screen, tui_app.SpeakerEditorScreen)
+
+    assert asyncio.run(_run()) is True
+
+
+def test_edit_speakers_without_result_does_not_open_editor(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run() -> bool:
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            app.action_edit_speakers()
+            return isinstance(app.screen, tui_app.SpeakerEditorScreen)
+
+    assert asyncio.run(_run()) is False

@@ -273,6 +273,15 @@ def transcribe(
             "Если утилиты нет — уведомление тихо пропускается. По умолчанию включено."
         ),
     ),
+    timeline: bool = typer.Option(
+        True,
+        "--timeline/--no-timeline",
+        help=(
+            "Строить таймлайн «кто когда говорил»: HTML (<имя>.timeline.html рядом "
+            "с результатами) и подробную текстовую сводку в лог. По умолчанию "
+            "включено; без данных диаризации таймлайн мягко пропускается."
+        ),
+    ),
     low_confidence_threshold: float = typer.Option(
         DEFAULT_LOW_CONFIDENCE_THRESHOLD,
         "--low-confidence-threshold",
@@ -488,6 +497,7 @@ def transcribe(
             use_cache=cache,
             cache_dir=cache_dir,
             notifications=notifications,
+            timeline=timeline,
             low_confidence_threshold=low_confidence_threshold,
             enable_correction=enable_correction,
             correction_min_word_length=correction_min_word_length,
@@ -564,6 +574,10 @@ def transcribe(
         logger.info(
             "Порог низкой уверенности ASR: %.2f",
             config.low_confidence_threshold,
+        )
+        logger.info(
+            "Таймлайн говорящих: %s",
+            "включён" if config.timeline else "выключен",
         )
         logger.info(
             "Шумоподавление (DeepFilterNet): %s",

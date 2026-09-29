@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import queue as queue_module
 import time
+from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -25,6 +26,7 @@ from textual.app import App, ComposeResult
 from textual.binding import BindingType
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.message import Message
+from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
     DataTable,
@@ -55,6 +57,8 @@ from audio_transcriber.correction.defaults import (
 )
 from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
 from audio_transcriber.domain.models import TranscriptionResult
+from audio_transcriber.export.factory import create_exporter
+from audio_transcriber.export.timeline import build_speaker_tracks, write_timeline
 from audio_transcriber.llm.base import LlmClient
 from audio_transcriber.llm.client import (
     DEFAULT_CONTEXT_SIZE as DEFAULT_LLM_CONTEXT_SIZE,
@@ -211,6 +215,52 @@ def filter_result_rows(rows: Sequence[ResultRow], query: str) -> list[ResultRow]
         if all(term in haystack for term in terms):
             matching.append(row)
     return matching
+
+
+def rename_speaker(
+    result: TranscriptionResult, speaker_id: str, new_name: str
+) -> TranscriptionResult:
+    """Возвращает копию результата с новым именем говорящего у него и реплик.
+
+    Ничего не делает, если говорящий с таким идентификатором не найден.
+    """
+
+    if not any(speaker.id == speaker_id for speaker in result.speakers):
+        return result
+    speakers = [
+        replace(speaker, display_name=new_name) if speaker.id == speaker_id else speaker
+        for speaker in result.speakers
+    ]
+    renamed = next(speaker for speaker in speakers if speaker.id == speaker_id)
+    entries = [
+        replace(entry, speaker=renamed)
+        if entry.speaker is not None and entry.speaker.id == speaker_id
+        else entry
+        for entry in result.entries
+    ]
+    return replace(result, speakers=speakers, entries=entries)
+
+
+def merge_speakers(
+    result: TranscriptionResult, source_id: str, target_id: str
+) -> TranscriptionResult:
+    """Сливает говорящего ``source_id`` в ``target_id``.
+
+    Все реплики источника переназначаются целевому говорящему, источник
+    удаляется из списка. Если целевого говорящего нет, результат не меняется.
+    """
+
+    target = next((speaker for speaker in result.speakers if speaker.id == target_id), None)
+    if target is None or source_id == target_id:
+        return result
+    speakers = [speaker for speaker in result.speakers if speaker.id != source_id]
+    entries = [
+        replace(entry, speaker=target)
+        if entry.speaker is not None and entry.speaker.id == source_id
+        else entry
+        for entry in result.entries
+    ]
+    return replace(result, speakers=speakers, entries=entries)
 
 
 class MediaDirectoryTree(DirectoryTree):
@@ -414,6 +464,7 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
     denoise_enabled = app.query_one("#denoise", Switch).value
     use_cache = app.query_one("#cache", Switch).value
     notifications_enabled = app.query_one("#notifications", Switch).value
+    timeline_enabled = app.query_one("#timeline", Switch).value
 
     backend_raw = str(app.query_one("#backend", Select).value or "")
     backend = (
@@ -507,6 +558,7 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
         use_cache=use_cache,
         cache_dir=cache_dir,
         notifications=notifications_enabled,
+        timeline=timeline_enabled,
         low_confidence_threshold=low_confidence_threshold,
         enable_correction=enable_correction,
         correction_min_word_length=_to_int(
@@ -540,6 +592,158 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
         llm_prompt_file=llm_prompt_file,
         glossary_path=normalize_glossary_paths_tuple(glossary_path or None),
     )
+
+
+class SpeakerEditorScreen(ModalScreen[TranscriptionResult | None]):
+    """Модальный экран правки говорящих: переименование и объединение.
+
+    Работает с копией результата: правки видны в таблице говорящих, но
+    применяются к приложению только по «Сохранить» (возвращает копию). Закрытие
+    через ``Esc``/«Отмена» возвращает ``None`` — исходный результат не меняется.
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        ("escape", "cancel", "Отмена"),
+        ("r", "rename", "Переименовать"),
+        ("m", "merge", "Объединить"),
+        ("s", "save", "Сохранить"),
+    ]
+
+    CSS = """
+    SpeakerEditorScreen { align: center middle; }
+    #speaker_editor {
+        width: 74; height: auto;
+        border: thick $primary; background: $surface; padding: 1 2;
+    }
+    #editor_title { text-style: bold; height: 1; margin-bottom: 1; }
+    #speakers_table { height: 10; }
+    #rename_row, #merge_row, #editor_actions { height: auto; margin-top: 1; }
+    #new_name, #merge_target { width: 1fr; }
+    #rename, #merge { margin-left: 1; }
+    #editor_status { height: 1; margin-top: 1; color: $text-muted; }
+    """
+
+    def __init__(self, result: TranscriptionResult) -> None:
+        super().__init__()
+        # Копия: Esc не должен менять исходный результат приложения.
+        self._result = replace(
+            result, speakers=list(result.speakers), entries=list(result.entries)
+        )
+        self._speaker_ids: list[str] = []
+
+    @property
+    def edited_result(self) -> TranscriptionResult:
+        """Текущее (возможно, отредактированное) состояние говорящих."""
+        return self._result
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="speaker_editor"):
+            yield Static("Правка говорящих", id="editor_title")
+            yield DataTable(id="speakers_table", zebra_stripes=True, cursor_type="row")
+            with Horizontal(id="rename_row"):
+                yield Input(placeholder="Новое имя…", id="new_name")
+                yield Button("Переименовать [r]", id="rename")
+            with Horizontal(id="merge_row"):
+                yield Select([], id="merge_target", allow_blank=True, prompt="Куда объединить")
+                yield Button("Объединить [m]", id="merge")
+            with Horizontal(id="editor_actions"):
+                yield Button("Сохранить и экспорт [s]", id="save", variant="primary")
+                yield Button("Отмена [Esc]", id="cancel")
+            yield Static("", id="editor_status")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        table = self.query_one("#speakers_table", DataTable)
+        table.add_column("ID", key="id", width=14)
+        table.add_column("Имя", key="name")
+        table.add_column("Реплик", key="count", width=8)
+        self.reload()
+
+    def reload(self) -> None:
+        """Перерисовывает таблицу говорящих и список целей объединения."""
+        counts: Counter[str] = Counter(
+            entry.speaker.id for entry in self._result.entries if entry.speaker is not None
+        )
+        table = self.query_one("#speakers_table", DataTable)
+        table.clear()
+        self._speaker_ids = [speaker.id for speaker in self._result.speakers]
+        for speaker in self._result.speakers:
+            table.add_row(
+                speaker.id, speaker.display_name, str(counts.get(speaker.id, 0))
+            )
+        self.query_one("#merge_target", Select).set_options(
+            [
+                (f"{speaker.display_name} ({speaker.id})", speaker.id)
+                for speaker in self._result.speakers
+            ]
+        )
+        self._set_status("")
+
+    def selected_speaker_id(self) -> str | None:
+        """Идентификатор говорящего в текущей строке таблицы (или ``None``)."""
+        table = self.query_one("#speakers_table", DataTable)
+        row = table.cursor_row
+        if not self._speaker_ids or row < 0 or row >= len(self._speaker_ids):
+            return None
+        return self._speaker_ids[row]
+
+    def rename_selected(self, new_name: str) -> bool:
+        """Переименовывает выбранного говорящего (и все его реплики)."""
+        speaker_id = self.selected_speaker_id()
+        name = new_name.strip()
+        if speaker_id is None:
+            self._set_status("Не выбран говорящий")
+            return False
+        if not name:
+            self._set_status("Введите новое имя")
+            return False
+        self._result = rename_speaker(self._result, speaker_id, name)
+        self.reload()
+        self._set_status(f"{speaker_id} → {name}")
+        return True
+
+    def merge_selected_into(self, target_id: str | None) -> bool:
+        """Сливает выбранного говорящего в указанного ``target_id``."""
+        source_id = self.selected_speaker_id()
+        if source_id is None:
+            self._set_status("Не выбран говорящий")
+            return False
+        if not target_id or target_id == source_id:
+            self._set_status("Выберите другого говорящего")
+            return False
+        if not any(speaker.id == target_id for speaker in self._result.speakers):
+            self._set_status("Целевой говорящий не найден")
+            return False
+        self._result = merge_speakers(self._result, source_id, target_id)
+        self.reload()
+        self._set_status(f"{source_id} объединён в {target_id}")
+        return True
+
+    def action_rename(self) -> None:
+        self.rename_selected(self.query_one("#new_name", Input).value)
+
+    def action_merge(self) -> None:
+        value = self.query_one("#merge_target", Select).value
+        self.merge_selected_into(value if isinstance(value, str) else None)
+
+    def action_save(self) -> None:
+        self.dismiss(self._result)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "rename":
+            self.action_rename()
+        elif event.button.id == "merge":
+            self.action_merge()
+        elif event.button.id == "save":
+            self.action_save()
+        elif event.button.id == "cancel":
+            self.action_cancel()
+
+    def _set_status(self, message: str) -> None:
+        self.query_one("#editor_status", Static).update(message)
 
 
 class TranscriberApp(App):
@@ -596,6 +800,7 @@ class TranscriberApp(App):
         ("t", "toggle_sidebar", "Файлы"),
         ("slash", "focus_search", "Поиск (/)"),
         ("ctrl+f", "focus_search", "Поиск"),
+        ("e", "edit_speakers", "Спикеры (e)"),
         ("escape", "clear_search", "Сброс поиска"),
     ]
 
@@ -613,6 +818,12 @@ class TranscriberApp(App):
         self._notify_enabled = False
         self._files_done = 0
         self._files_failed = 0
+        # Последний завершённый результат и соответствующий ему конфиг — нужны
+        # для правки говорящих (переименование/объединение) и переэкспорта без
+        # повторного прогона транскрибации.
+        self._last_result: TranscriptionResult | None = None
+        self._last_config: AppConfig | None = None
+        self._base_config: AppConfig | None = None
 
     # --- очередь (тонкие обёртки над QueueController) ------------------
 
@@ -737,6 +948,12 @@ class TranscriberApp(App):
                         yield Switch(
                             value=_to_bool(self._defaults.get("MARK_OVERLAP"), default=True),
                             id="overlap",
+                        )
+                    with Horizontal():
+                        yield Label("Таймлайн говорящих", classes="field-label")
+                        yield Switch(
+                            value=_to_bool(self._defaults.get("TIMELINE"), default=True),
+                            id="timeline",
                         )
                     with Horizontal():
                         yield Label("Порог уверенности", classes="field-label")
@@ -909,6 +1126,19 @@ class TranscriberApp(App):
             search.value = ""
         self._render_results()
 
+    def action_edit_speakers(self) -> None:
+        """Открывает редактор говорящих по последнему результату (``e``)."""
+        if self._last_result is None:
+            self.notify(
+                "Нет результата — сначала выполните транскрибацию",
+                severity="warning",
+                timeout=5,
+            )
+            return
+        self.push_screen(
+            SpeakerEditorScreen(self._last_result), self._on_speaker_editor_closed
+        )
+
     # --- сообщения ---
 
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -955,6 +1185,10 @@ class TranscriberApp(App):
 
         assert message.result is not None
         self._files_done += 1
+        # Запоминаем последний результат и конфиг для редактора говорящих.
+        self._last_result = message.result
+        if self._base_config is not None:
+            self._last_config = replace(self._base_config, input_file=message.path)
         self._populate_results(message.result)
         self.query_one("#results", DataTable).remove_class("hidden")
         elapsed = time.time() - (self._run_start_time or time.time())
@@ -1028,6 +1262,7 @@ class TranscriberApp(App):
 
         self._transcribing = True
         self._run_start_time = time.time()
+        self._base_config = base_config
         self._notify_enabled = base_config.notifications
         self._files_done = 0
         self._files_failed = 0
@@ -1072,6 +1307,38 @@ class TranscriberApp(App):
             status.update(f"Совпадений: {len(rows)} / {len(self._result_rows)}")
         else:
             status.update(f"Реплик: {len(self._result_rows)}")
+
+    def _on_speaker_editor_closed(self, result: TranscriptionResult | None) -> None:
+        """Применяет правки редактора говорящих и переэкспортирует результат."""
+        if result is None:  # Esc/«Отмена» — оставляем всё как было
+            return
+        self._last_result = result
+        self._populate_results(result)
+        self.query_one("#results", DataTable).remove_class("hidden")
+        try:
+            exported = self._reexport_result(result)
+        except Exception as exc:  # noqa: BLE001 — показываем ошибку экспорта в UI
+            self.notify(f"Не удалось экспортировать: {exc}", severity="error", timeout=8)
+            return
+        names = ", ".join(path.name for path in exported)
+        self.notify(f"Спикеры сохранены. Экспортировано: {names or 'нет форматов'}")
+
+    def _reexport_result(self, result: TranscriptionResult) -> list[Path]:
+        """Повторно выгружает результат в форматы (и таймлайн) последнего конфига."""
+        config = self._last_config
+        if config is None:
+            return []
+        config.ensure_output_dir()
+        exported: list[Path] = []
+        for export_format in config.export_formats:
+            output_path = config.output_dir / f"{config.input_file.stem}.{export_format.value}"
+            create_exporter(export_format).export(result, output_path)
+            exported.append(output_path)
+        if config.timeline and build_speaker_tracks(result):
+            timeline_path = config.output_dir / f"{config.input_file.stem}.timeline.html"
+            if write_timeline(result, timeline_path):
+                exported.append(timeline_path)
+        return exported
 
     def _tick(self) -> None:
         if self._transcribing and self._run_start_time is not None:

@@ -107,6 +107,10 @@ class AppConfig:
     # Десктоп-уведомление (notify-send) по завершении обработки. Если утилиты
     # нет — тихий no-op (см. audio_transcriber.utils.notifications).
     notifications: bool = True
+    # Таймлайн «кто когда говорил»: HTML (<имя>.timeline.html рядом с
+    # результатами) плюс подробная текстовая сводка в лог. Строится на этапе
+    # экспорта только при наличии данных диаризации; иначе мягко пропускается.
+    timeline: bool = True
     # Порог низкой уверенности ASR: реплики со средним avg_logprob ниже
     # порога помечаются в txt/docx/json. Логвероятности <= 0.
     low_confidence_threshold: float = DEFAULT_LOW_CONFIDENCE_THRESHOLD
@@ -192,6 +196,9 @@ class AppConfig:
 
         if not isinstance(self.notifications, bool):
             raise ConfigurationError("NOTIFICATIONS должно быть true или false")
+
+        if not isinstance(self.timeline, bool):
+            raise ConfigurationError("TIMELINE должно быть true или false")
 
         if isinstance(self.low_confidence_threshold, bool) or not isinstance(
             self.low_confidence_threshold, (int, float)
