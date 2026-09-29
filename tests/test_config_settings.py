@@ -492,3 +492,19 @@ def test_resolved_speaker_references_without_library_is_explicit(
     )
 
     assert config.resolved_speaker_references() == {"Иван": (explicit,)}
+
+
+# --- Пакет «протокол по кнопке»: protocol_auto ------------------------------
+
+
+def test_protocol_auto_defaults_to_true(audio_file: Path) -> None:
+    assert AppConfig(input_file=audio_file).protocol_auto is True
+
+
+def test_protocol_auto_can_be_disabled(audio_file: Path) -> None:
+    assert AppConfig(input_file=audio_file, protocol_auto=False).protocol_auto is False
+
+
+def test_protocol_auto_must_be_boolean(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, protocol_auto="yes")  # type: ignore[arg-type]

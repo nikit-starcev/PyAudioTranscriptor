@@ -16,6 +16,7 @@ from audio_transcriber.cleaning.repetition_filter import (
     DEFAULT_REPEAT_MIN_WORDS,
     DEFAULT_REPEAT_SIMILARITY,
 )
+from audio_transcriber.config import defaults as config_defaults
 from audio_transcriber.config.defaults import (
     DEFAULT_CONTEXT_SIZE as DEFAULT_LLM_CONTEXT_SIZE,
 )
@@ -153,12 +154,29 @@ class AppConfig:
     # принимает одиночный путь, строку со списком (через запятую/os.pathsep)
     # или последовательность (см. ``normalize_glossary_paths_tuple``).
     glossary_path: tuple[Path, ...] = ()
+    # Локальная SQLite-БД глоссария. ``None`` — путь по умолчанию
+    # (``DEFAULT_GLOSSARY_DB`` рядом с рабочим каталогом), см.
+    # :meth:`resolved_glossary_db`.
+    glossary_db: Path | None = field(
+        default_factory=lambda: Path(config_defaults.DEFAULT_GLOSSARY_DB)
+    )
+    # Использовать ли глоссарий (БД + текстовые файлы) в конвейере.
+    glossary_enabled: bool = True
+    # Автоматически завершать прогон «протоколом»: считать резюме LLM и
+    # экспортировать итоговые документы (txt/docx/...). При ``False`` конвейер
+    # останавливается на готовой стенограмме (результат — в памяти вызывающего),
+    # а протокол формируется отдельно по запросу (``generate_protocol``).
+    # По умолчанию ``True`` — обратная совместимость CLI; TUI ставит ``False``.
+    protocol_auto: bool = True
 
     def __post_init__(self) -> None:
         # Нормализуем пути к глоссариям до проверки (тип поля — tuple[Path, ...],
         # поэтому из кода сюда приходит уже кортеж, но CLI/тесты могут передать
         # любой из поддерживаемых форматов).
         self.glossary_path = normalize_glossary_paths_tuple(self.glossary_path)
+        # БД глоссария: CLI может передать строку — приводим к Path.
+        if self.glossary_db is not None:
+            self.glossary_db = Path(self.glossary_db)
         # Образцы голоса: допускаем одиночный путь или последовательность на имя.
         self.speaker_references = _normalize_speaker_references(self.speaker_references)
         self._validate()
@@ -181,6 +199,12 @@ class AppConfig:
 
         if not isinstance(self.clean_artifacts, bool):
             raise ConfigurationError("CLEAN_ARTIFACTS должно быть true или false")
+
+        if not isinstance(self.glossary_enabled, bool):
+            raise ConfigurationError("GLOSSARY_ENABLED должно быть true или false")
+
+        if not isinstance(self.protocol_auto, bool):
+            raise ConfigurationError("PROTOCOL_AUTO должно быть true или false")
 
         if not isinstance(self.denoise, bool):
             raise ConfigurationError("DENOISE должно быть true или false")
@@ -297,6 +321,12 @@ class AppConfig:
     def resolved_cache_dir(self) -> Path:
         """Каталог постадийного кэша: ``cache_dir`` или ``<output_dir>/.cache``."""
         return self.cache_dir if self.cache_dir is not None else self.output_dir / ".cache"
+
+    def resolved_glossary_db(self) -> Path:
+        """Путь к SQLite-БД глоссария: ``glossary_db`` или значение по умолчанию."""
+        if self.glossary_db is not None:
+            return self.glossary_db
+        return Path(config_defaults.DEFAULT_GLOSSARY_DB)
 
     def resolved_voices_dir(self) -> Path:
         """Каталог-библиотека образцов голоса: ``voices_dir`` или ``./voices``."""

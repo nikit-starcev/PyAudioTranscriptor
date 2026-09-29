@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import queue as queue_module
+import sqlite3
 import time
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
@@ -30,6 +31,7 @@ from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widgets import (
     Button,
+    Checkbox,
     DataTable,
     DirectoryTree,
     Footer,
@@ -46,6 +48,7 @@ from audio_transcriber.cleaning.repetition_filter import (
     DEFAULT_REPEAT_MIN_WORDS,
     DEFAULT_REPEAT_SIMILARITY,
 )
+from audio_transcriber.config import defaults as config_defaults
 from audio_transcriber.config.defaults import (
     DEFAULT_ENROLLMENT_MIN_SIMILARITY,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
@@ -67,8 +70,6 @@ from audio_transcriber.diarization.voices import (
 )
 from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
 from audio_transcriber.domain.models import SpeakerSegment, TranscriptionResult
-from audio_transcriber.export.factory import create_exporter
-from audio_transcriber.export.timeline import build_speaker_tracks, write_timeline
 from audio_transcriber.llm.base import LlmClient
 from audio_transcriber.llm.client import (
     DEFAULT_CONTEXT_SIZE as DEFAULT_LLM_CONTEXT_SIZE,
@@ -76,6 +77,8 @@ from audio_transcriber.llm.client import (
 from audio_transcriber.llm.client import create_llm_client
 from audio_transcriber.pipeline import run_pipeline
 from audio_transcriber.progress import ProgressEvent
+from audio_transcriber.protocol import ProtocolArtifacts, generate_protocol
+from audio_transcriber.storage.glossary_db import GlossaryDB
 from audio_transcriber.utils.config_env import load_config_env
 from audio_transcriber.utils.glossary_paths import normalize_glossary_paths_tuple
 from audio_transcriber.utils.notifications import notify
@@ -536,6 +539,9 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
     llm_prompt_file_raw = app.query_one("#llm_prompt_file", Input).value.strip()
     llm_prompt_file = Path(llm_prompt_file_raw) if llm_prompt_file_raw else None
     glossary_path = app.query_one("#glossary_path", Input).value.strip()
+    glossary_enabled = app.query_one("#glossary_enabled", Checkbox).value
+    glossary_db_raw = app.query_one("#glossary_db", Input).value.strip()
+    glossary_db = Path(glossary_db_raw) if glossary_db_raw else None
 
     language_value = app.query_one("#language", Select).value
     language = language_value if isinstance(language_value, str) and language_value else None
@@ -614,6 +620,11 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
         llm_prompt_extra=llm_prompt_extra,
         llm_prompt_file=llm_prompt_file,
         glossary_path=normalize_glossary_paths_tuple(glossary_path or None),
+        glossary_db=glossary_db,
+        glossary_enabled=glossary_enabled,
+        # TUI не пишет протокол автоматически: пользователь сначала проверяет
+        # стенограмму и правит имена, а протокол собирает кнопкой.
+        protocol_auto=False,
     )
 
 
@@ -1454,7 +1465,11 @@ class TranscriberApp(App):
     #results { height: 1fr; }
     #results.hidden { display: none; }
     #status { height: 1; color: $text-muted; }
-    #run { width: 100%; }
+    #run_actions { height: auto; }
+    #run { width: 1fr; }
+    #build_protocol { width: 1fr; margin-left: 1; }
+    #glossary_sources { height: auto; margin-left: 22; }
+    #glossary_status { height: auto; margin-left: 22; color: $text-muted; }
 
     .hidden { display: none; }
     """
@@ -1470,6 +1485,7 @@ class TranscriberApp(App):
         ("ctrl+f", "focus_search", "Поиск"),
         ("e", "edit_speakers", "Спикеры (e)"),
         ("v", "open_voices_library", "Голоса (v)"),
+        ("ctrl+p", "generate_protocol", "Протокол"),
         ("escape", "clear_search", "Сброс поиска"),
     ]
 
@@ -1497,6 +1513,12 @@ class TranscriberApp(App):
         # в библиотеку из редактора говорящих.
         self._last_samples: dict[str, Path] = {}
         self._base_config: AppConfig | None = None
+        # Источники глоссария, показанные в настройках: id чекбокса -> имя
+        # источника. Нужно, чтобы переключение чекбокса адресовало БД.
+        self._glossary_source_ids: dict[str, str] = {}
+        # Протокол формируется по кнопке; после правок имён он «устаревает».
+        self._protocol_stale = False
+        self._protocol_building = False
 
     # --- очередь (тонкие обёртки над QueueController) ------------------
 
@@ -1686,9 +1708,25 @@ class TranscriberApp(App):
                         )
                     with Horizontal():
                         yield Label("Глоссарий", classes="field-label")
-                        yield Input(
-                            value=self._defaults.get("GLOSSARY_PATH", ""), id="glossary_path"
+                        yield Checkbox(
+                            "Использовать глоссарий",
+                            value=_to_bool(
+                                self._defaults.get("GLOSSARY_ENABLED"), default=True
+                            ),
+                            id="glossary_enabled",
                         )
+                    with Horizontal():
+                        yield Label("БД глоссария", classes="field-label")
+                        yield Input(
+                            value=self._defaults.get("GLOSSARY_DB", ""),
+                            placeholder="glossary.db",
+                            id="glossary_db",
+                        )
+                    with Horizontal():
+                        yield Label("Источники", classes="field-label")
+                        yield Button("Обновить источники", id="glossary_refresh")
+                    yield Vertical(id="glossary_sources")
+                    yield Static("", id="glossary_status")
 
                     with Container(id="advanced", classes="hidden"):
                         with Horizontal():
@@ -1759,15 +1797,31 @@ class TranscriberApp(App):
                         with Horizontal():
                             yield Label("Hotwords", classes="field-label")
                             yield Input(value=self._defaults.get("HOTWORDS", ""), id="hotwords")
+                        with Horizontal():
+                            yield Label("Доп. файлы глоссария", classes="field-label")
+                            yield Input(
+                                value=self._defaults.get("GLOSSARY_PATH", ""),
+                                placeholder="файл.txt,файл.csv",
+                                id="glossary_path",
+                            )
 
-                    yield Button("Запустить очередь  [r]", id="run", variant="primary")
+                    with Horizontal(id="run_actions"):
+                        yield Button(
+                            "Запустить очередь  [r]", id="run", variant="primary"
+                        )
+                        yield Button(
+                            "Сформировать протокол  [Ctrl+P]",
+                            id="build_protocol",
+                            disabled=True,
+                        )
 
                 yield ProgressPanel()
                 with Horizontal(id="search_bar"):
                     yield Input(placeholder="Поиск по стенограмме (/)…", id="search")
                     yield Static("", id="search_status")
                     yield Static(
-                        "e — спикеры, v — голоса  ·  ⚠ низкая уверенность  ·  ⇄ наложение",
+                        "e — спикеры, v — голоса, Ctrl+P — протокол  ·  "
+                        "⚠ низкая уверенность  ·  ⇄ наложение",
                         id="legend",
                     )
                 yield DataTable(id="results", zebra_stripes=True)
@@ -1790,6 +1844,7 @@ class TranscriberApp(App):
         self._progress.reset()
         self.query_one("#progress", ProgressPanel).add_class("hidden")
         self.query_one("#results", DataTable).add_class("hidden")
+        self._refresh_glossary_sources()
         self.set_interval(0.5, self._tick)
 
     # --- действия (клавиши) ---
@@ -1862,6 +1917,61 @@ class TranscriberApp(App):
         )
         self.push_screen(VoicesLibraryScreen(voices_dir=voices_dir))
 
+    def action_generate_protocol(self) -> None:
+        """Собирает протокол по текущему результату (``Ctrl+P``).
+
+        Резюме пересчитывается по актуальной стенограмме (с учётом правок
+        имён), документы выгружаются в форматы последнего прогона. Работа
+        идёт в фоновом потоке, чтобы не блокировать интерфейс.
+        """
+        if self._last_result is None or self._last_config is None:
+            self.notify(
+                "Нет результата — сначала выполните транскрибацию",
+                severity="warning",
+                timeout=5,
+            )
+            return
+        if self._protocol_building:
+            return
+        self._protocol_building = True
+        self.query_one("#build_protocol", Button).disabled = True
+        self.query_one("#status", Static).update("Формирую протокол…")
+        self._generate_protocol_worker(self._last_config, self._last_result)
+
+    @work(thread=True, group="protocol")
+    def _generate_protocol_worker(
+        self, config: AppConfig, result: TranscriptionResult
+    ) -> None:
+        try:
+            artifacts = generate_protocol(config, result, on_progress=self._emit_progress)
+        except Exception as exc:  # noqa: BLE001 — показываем ошибку в UI
+            self.call_from_thread(self._on_protocol_failed, str(exc))
+            return
+        self.call_from_thread(self._on_protocol_ready, artifacts)
+
+    def _on_protocol_ready(self, artifacts: ProtocolArtifacts) -> None:
+        self._protocol_building = False
+        self._protocol_stale = False
+        self.query_one("#build_protocol", Button).disabled = False
+        names = ", ".join(path.name for path in artifacts.paths) or "нет форматов"
+        summary_note = " с резюме" if artifacts.summary else ""
+        message = f"Протокол сформирован{summary_note}: {names}"
+        self.query_one("#status", Static).update(message)
+        self.notify(message)
+
+    def _on_protocol_failed(self, error: str) -> None:
+        self._protocol_building = False
+        self.query_one("#build_protocol", Button).disabled = False
+        self.query_one("#status", Static).update(f"Протокол не сформирован: {error}")
+        self.notify(f"Протокол не сформирован: {error}", severity="error", timeout=8)
+
+    def _mark_protocol_stale(self) -> None:
+        """Отмечает, что после правок имён протокол нужно пересобрать."""
+        self._protocol_stale = True
+        self.query_one("#status", Static).update(
+            "имена изменены — нажмите [Ctrl+P], чтобы пересобрать протокол"
+        )
+
     # --- сообщения ---
 
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -1885,6 +1995,33 @@ class TranscriberApp(App):
             self._start_run()
         elif event.button.id == "add_to_queue":
             self._add_selected_to_queue()
+        elif event.button.id == "glossary_refresh":
+            self._refresh_glossary_sources()
+        elif event.button.id == "build_protocol":
+            self.action_generate_protocol()
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        """Сохраняет переключение источника глоссария в его БД."""
+        checkbox_id = event.checkbox.id
+        if checkbox_id is None:
+            return
+        source_name = self._glossary_source_ids.get(checkbox_id)
+        if source_name is None:
+            return
+        try:
+            with GlossaryDB(self._resolved_glossary_db_path()) as db:
+                db.set_source_enabled(source_name, event.value)
+        except (OSError, sqlite3.Error) as exc:
+            self.notify(
+                f"Не удалось сохранить источник глоссария: {exc}",
+                severity="error",
+                timeout=8,
+            )
+            return
+        state = "включён" if event.value else "отключён"
+        self.query_one("#glossary_status", Static).update(
+            f"Источник «{source_name}» {state}"
+        )
 
     def on_progress_update(self, message: ProgressUpdate) -> None:
         self._progress.apply_event(message.event)
@@ -1915,6 +2052,8 @@ class TranscriberApp(App):
         self._last_samples = self._collect_samples(message.result)
         self._populate_results(message.result)
         self.query_one("#results", DataTable).remove_class("hidden")
+        self.query_one("#build_protocol", Button).disabled = False
+        self._protocol_stale = False
         elapsed = time.time() - (self._run_start_time or time.time())
         self.query_one("#status", Static).update(
             f"{message.path.name}: {len(message.result.entries)} реплик, "
@@ -1948,6 +2087,53 @@ class TranscriberApp(App):
             notify("Транскрибация завершена", f"Обработано {self._files_done} файл(ов)")
 
     # --- внутреннее ---
+
+    def _resolved_glossary_db_path(self) -> Path:
+        """Путь к БД глоссария из поля настроек (или значение по умолчанию)."""
+        raw = self.query_one("#glossary_db", Input).value.strip()
+        if raw:
+            return Path(raw)
+        return Path(config_defaults.DEFAULT_GLOSSARY_DB)
+
+    def _refresh_glossary_sources(self) -> None:
+        """Перечитывает источники глоссария из БД и перерисовывает список.
+
+        На каждый источник создаётся чекбокс с именем, типом и числом записей;
+        его состояние отражает ``enabled`` источника. Пустая БД — подсказка об
+        импорте.
+        """
+        container = self.query_one("#glossary_sources", Vertical)
+        status = self.query_one("#glossary_status", Static)
+        container.remove_children()
+        self._glossary_source_ids = {}
+        path = self._resolved_glossary_db_path()
+        try:
+            with GlossaryDB(path) as db:
+                sources = db.list_sources()
+                counts = db.entry_counts()
+        except (OSError, sqlite3.Error) as exc:
+            status.update(f"Не удалось открыть БД глоссария ({path}): {exc}")
+            return
+
+        if not sources:
+            status.update(
+                "БД глоссария пуста — импортируйте источник: "
+                "audio-transcriber glossary import <файл>"
+            )
+            return
+
+        for index, source in enumerate(sources):
+            widget_id = f"glossary_src_{index}"
+            self._glossary_source_ids[widget_id] = source.name
+            count = counts.get(source.name, 0)
+            container.mount(
+                Checkbox(
+                    f"{source.name} · {source.kind} · записей: {count}",
+                    value=source.enabled,
+                    id=widget_id,
+                )
+            )
+        status.update(f"Источников: {len(sources)} (снятая галочка отключает источник)")
 
     def _add_selected_to_queue(self) -> None:
         if self._selected_file is None:
@@ -2040,20 +2226,16 @@ class TranscriberApp(App):
             status.update(f"Реплик: {len(self._result_rows)}")
 
     def _on_speaker_editor_closed(self, result: TranscriptionResult | None) -> None:
-        """Применяет правки редактора говорящих и переэкспортирует результат."""
+        """Применяет правки редактора говорящих и помечает протокол устаревшим."""
         if result is None:  # Esc/«Отмена» — оставляем всё как было
             return
         self._last_result = result
         self._refresh_samples_after_rename(result)
         self._populate_results(result)
         self.query_one("#results", DataTable).remove_class("hidden")
-        try:
-            exported = self._reexport_result(result)
-        except Exception as exc:  # noqa: BLE001 — показываем ошибку экспорта в UI
-            self.notify(f"Не удалось экспортировать: {exc}", severity="error", timeout=8)
-            return
-        names = ", ".join(path.name for path in exported)
-        self.notify(f"Спикеры сохранены. Экспортировано: {names or 'нет форматов'}")
+        # Протокол в TUI собирается отдельно: правка имён делает его устаревшим.
+        self._mark_protocol_stale()
+        self.notify("Спикеры сохранены. Нажмите Ctrl+P, чтобы собрать протокол.")
 
     def _refresh_samples_after_rename(self, result: TranscriptionResult) -> None:
         """Приводит образцы говорящих в соответствие новым именам.
@@ -2079,23 +2261,6 @@ class TranscriberApp(App):
             if speaker_id not in collected and sample.is_file():
                 collected[speaker_id] = sample
         self._last_samples = collected
-
-    def _reexport_result(self, result: TranscriptionResult) -> list[Path]:
-        """Повторно выгружает результат в форматы (и таймлайн) последнего конфига."""
-        config = self._last_config
-        if config is None:
-            return []
-        config.ensure_output_dir()
-        exported: list[Path] = []
-        for export_format in config.export_formats:
-            output_path = config.output_dir / f"{config.input_file.stem}.{export_format.value}"
-            create_exporter(export_format).export(result, output_path)
-            exported.append(output_path)
-        if config.timeline and build_speaker_tracks(result):
-            timeline_path = config.output_dir / f"{config.input_file.stem}.timeline.html"
-            if write_timeline(result, timeline_path):
-                exported.append(timeline_path)
-        return exported
 
     def _tick(self) -> None:
         if self._transcribing and self._run_start_time is not None:

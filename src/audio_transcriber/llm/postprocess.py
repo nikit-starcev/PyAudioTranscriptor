@@ -43,7 +43,11 @@ from audio_transcriber.llm.chunking import (
     unique_speakers as _unique_speakers,
 )
 from audio_transcriber.llm.client import create_llm_client
-from audio_transcriber.llm.glossary import Glossary, load_glossary, write_suggested_terms
+from audio_transcriber.llm.glossary import (
+    SUGGESTED_TERMS_SUFFIX,
+    Glossary,
+    write_suggested_terms,
+)
 from audio_transcriber.llm.prompts import (
     PromptRecorder,
     PromptRecordingClient,
@@ -52,6 +56,7 @@ from audio_transcriber.llm.prompts import (
 )
 from audio_transcriber.llm.summary import summarize_meeting
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
+from audio_transcriber.storage.glossary_builder import build_glossary
 from audio_transcriber.utils.text import WORD_PATTERN
 
 logger = logging.getLogger(__name__)
@@ -529,6 +534,7 @@ def run_llm_postprocess(
     speakers: list[Speaker],
     *,
     client: LlmClient | None = None,
+    summarize: bool | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> tuple[list[TranscriptEntry], list[Speaker], list[str] | None, str | None]:
     """Полный этап LLM-постобработки для конвейера.
@@ -539,6 +545,11 @@ def run_llm_postprocess(
     ``participants`` — список участников для шапки документа, а ``summary`` —
     текст резюме (оба ``None``, если соответствующий этап не дал результата).
 
+    ``summarize`` переопределяет :attr:`AppConfig.llm_summary` на один вызов:
+    при ``False`` резюме не считается, хотя имена/термины обрабатываются. Это
+    нужно режиму, где протокол (резюме) формируется не по итогам прогона, а
+    отдельно (см. :func:`audio_transcriber.protocol.generate_protocol`).
+
     Фактические промпты (system + user) каждого этапа сохраняются рядом с
     результатом в ``<output_stem>.llm_prompt.txt``. Пользовательские доп.
     инструкции (``LLM_PROMPT_EXTRA``/``LLM_PROMPT_FILE``) подмешиваются в
@@ -548,7 +559,7 @@ def run_llm_postprocess(
     данные и пишет предупреждение.
     """
     emit = on_progress or (lambda _event: None)
-    glossary = load_glossary(config.glossary_path)
+    glossary = build_glossary(config)
 
     def _maybe_write_suggestions(current: list[TranscriptEntry]) -> None:
         """Собирает кандидатов в термины по финальному тексту (без LLM)."""
@@ -556,7 +567,16 @@ def run_llm_postprocess(
             return
         try:
             text = "\n".join(entry.text for entry in current if entry.text.strip())
-            path = write_suggested_terms(glossary, text, source=config.input_file.name)
+            # Глоссарий может собираться из БД (тогда ``suggested_path`` у него
+            # нет). Пишем предложения рядом с первым текстовым глоссарием, а
+            # если его нет — рядом с файлом БД.
+            primary = (
+                config.glossary_path[0] if config.glossary_path else config.resolved_glossary_db()
+            )
+            suggested = primary.with_name(primary.stem + SUGGESTED_TERMS_SUFFIX)
+            path = write_suggested_terms(
+                glossary, text, source=config.input_file.name, suggested_path=suggested
+            )
         except Exception as exc:  # noqa: BLE001 — не роняем конвейер
             logger.warning("Сбор предложений терминов не удался: %s", exc)
             return
@@ -632,7 +652,8 @@ def run_llm_postprocess(
         if names:
             entries, speakers = apply_participant_names(entries, speakers, names)
 
-        if config.llm_summary:
+        should_summarize = config.llm_summary if summarize is None else summarize
+        if should_summarize:
             try:
                 emit(ProgressEvent("llm", "Резюме встречи", fraction=None))
                 summary = summarize_meeting(

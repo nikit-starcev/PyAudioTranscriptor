@@ -161,6 +161,9 @@ output/
 *.suggested.txt
 /glossary.txt
 /glossary.user.txt
+# Локальная SQLite-БД глоссария (создаётся при импорте/запуске).
+glossary.db
+glossary.db-*
 tests/*.flac.json
 /*.docx
 

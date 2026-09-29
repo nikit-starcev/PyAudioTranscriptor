@@ -15,6 +15,7 @@ import pytest
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
 from audio_transcriber.domain.models import TranscriptionResult
+from audio_transcriber.storage.glossary_db import Source
 from audio_transcriber.tui import app as tui_app
 
 
@@ -919,17 +920,10 @@ def test_speaker_editor_merge_reassigns_entries(
     )
 
 
-def test_speaker_editor_save_reexports_formats(
+def test_speaker_editor_save_marks_protocol_stale(
     tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     output_dir = tmp_path / "out"
-    calls: list[Path] = []
-
-    class _FakeExporter:
-        def export(self, result: TranscriptionResult, output_path: Path) -> None:
-            calls.append(Path(output_path))
-
-    monkeypatch.setattr(tui_app, "create_exporter", lambda _fmt: _FakeExporter())
     monkeypatch.setattr(tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(output_dir)})
 
     config = AppConfig(
@@ -937,9 +931,10 @@ def test_speaker_editor_save_reexports_formats(
         output_dir=output_dir,
         export_formats=(ExportFormat.TXT, ExportFormat.JSON),
         timeline=False,
+        protocol_auto=False,
     )
 
-    async def _run() -> None:
+    async def _run() -> str:
         app = tui_app.TranscriberApp()
         async with app.run_test() as pilot:
             app._last_result = _search_result(audio_file)
@@ -951,13 +946,14 @@ def test_speaker_editor_save_reexports_formats(
             screen.rename_selected("Иван II")
             screen.action_save()
             await pilot.pause()
+            return str(app.query_one("#status", tui_app.Static).render())
 
-    asyncio.run(_run())
+    status = asyncio.run(_run())
 
-    assert calls == [
-        output_dir / f"{audio_file.stem}.txt",
-        output_dir / f"{audio_file.stem}.json",
-    ]
+    # Сохранение имён не выгружает файлы автоматически — только помечает
+    # протокол устаревшим.
+    assert "имена изменены" in status
+    assert not (output_dir / f"{audio_file.stem}.txt").exists()
 
 
 def test_speaker_editor_cancel_keeps_original_result(
@@ -1367,12 +1363,6 @@ def test_speaker_editor_save_renames_sample_files(
         tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
     )
 
-    class _FakeExporter:
-        def export(self, result: TranscriptionResult, output_path: Path) -> None:
-            return None
-
-    monkeypatch.setattr(tui_app, "create_exporter", lambda _fmt: _FakeExporter())
-
     output_dir = tmp_path / "out"
     speakers_dir = output_dir / f"{audio_file.stem}.speakers"
     speakers_dir.mkdir(parents=True)
@@ -1428,4 +1418,242 @@ def test_new_bindings_present() -> None:
         for binding in tui_app.TranscriberApp.BINDINGS
         if isinstance(binding, tuple)
     }
-    assert {"e", "v"} <= app_keys
+    assert {"e", "v", "ctrl+p"} <= app_keys
+
+
+# --- Блок «галочки глоссария» и «протокол по кнопке» ------------------------
+
+
+def _install_fake_glossary_db(
+    monkeypatch: pytest.MonkeyPatch,
+    sources: list[Source],
+    counts: dict[str, int] | None = None,
+) -> dict[str, list]:
+    """Подменяет ``GlossaryDB`` в TUI и возвращает журнал вызовов."""
+    recorded: dict[str, list] = {"enabled": [], "opened": []}
+    resolved_counts = dict(counts or {})
+
+    class _FakeGlossaryDB:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+            recorded["opened"].append(Path(path))
+
+        def __enter__(self) -> _FakeGlossaryDB:
+            return self
+
+        def __exit__(self, *exc_info: object) -> bool:
+            return False
+
+        def list_sources(self) -> list[Source]:
+            return list(sources)
+
+        def entry_counts(self) -> dict[str, int]:
+            return dict(resolved_counts)
+
+        def set_source_enabled(self, name: str, enabled: bool) -> bool:
+            recorded["enabled"].append((name, enabled))
+            return True
+
+    monkeypatch.setattr(tui_app, "GlossaryDB", _FakeGlossaryDB)
+    return recorded
+
+
+def _glossary_source(index: int, name: str, *, enabled: bool, kind: str = "txt") -> Source:
+    return Source(
+        id=index,
+        name=name,
+        kind=kind,
+        path=f"{name}.{kind}",
+        enabled=enabled,
+        imported_at=None,
+    )
+
+
+def test_tui_has_glossary_checkbox_and_db_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+    _install_fake_glossary_db(monkeypatch, [])
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            checkbox = app.query_one("#glossary_enabled", tui_app.Checkbox)
+            db_input = app.query_one("#glossary_db", tui_app.Input)
+            return checkbox.value, db_input.placeholder
+
+    value, placeholder = asyncio.run(_run())
+
+    assert value is True
+    assert placeholder == "glossary.db"
+
+
+def test_tui_glossary_lists_sources_with_kind_and_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+    _install_fake_glossary_db(
+        monkeypatch,
+        [
+            _glossary_source(1, "ТЗ", enabled=True, kind="txt"),
+            _glossary_source(2, "manual", enabled=False, kind="manual"),
+        ],
+        {"ТЗ": 7, "manual": 2},
+    )
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            boxes = list(app.query("#glossary_sources Checkbox"))
+            return [(box.value, str(box.label)) for box in boxes]
+
+    rows = asyncio.run(_run())
+
+    assert [enabled for enabled, _ in rows] == [True, False]
+    assert "ТЗ" in rows[0][1] and "7" in rows[0][1] and "txt" in rows[0][1]
+    assert "manual" in rows[1][1]
+
+
+def test_tui_glossary_toggle_saves_source_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+    recorded = _install_fake_glossary_db(
+        monkeypatch, [_glossary_source(1, "ТЗ", enabled=True)]
+    )
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            box = app.query_one("#glossary_sources Checkbox", tui_app.Checkbox)
+            box.value = False
+            await pilot.pause()
+            return recorded["enabled"]
+
+    enabled_calls = asyncio.run(_run())
+
+    assert enabled_calls[-1] == ("ТЗ", False)
+
+
+def test_tui_glossary_empty_db_shows_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+    _install_fake_glossary_db(monkeypatch, [])
+
+    async def _run() -> str:
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            return str(app.query_one("#glossary_status", tui_app.Static).render())
+
+    assert "пуст" in asyncio.run(_run())
+
+
+def test_tui_build_config_reads_glossary_and_disables_auto_protocol(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    defaults = _defaults(tmp_path / "out")
+    defaults["GLOSSARY_DB"] = str(tmp_path / "g.db")
+    defaults["GLOSSARY_ENABLED"] = "false"
+    monkeypatch.setattr(tui_app, "_load_env_defaults", lambda: defaults)
+    _install_fake_glossary_db(monkeypatch, [])
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            return app._build_config(audio_file)
+
+    config = asyncio.run(_run())
+
+    assert config.glossary_db == tmp_path / "g.db"
+    assert config.glossary_enabled is False
+    # TUI собирает протокол по кнопке, а не по итогам прогона.
+    assert config.protocol_auto is False
+
+
+def test_tui_protocol_action_builds_and_notifies(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+    _install_fake_glossary_db(monkeypatch, [])
+    built: dict[str, object] = {}
+
+    def fake_generate(config, result, *, on_progress=None):
+        built["config"] = config
+        built["result"] = result
+        return tui_app.ProtocolArtifacts(
+            paths=(config.output_dir / f"{audio_file.stem}.txt",), summary="Резюме"
+        )
+
+    monkeypatch.setattr(tui_app, "generate_protocol", fake_generate)
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        timeline=False,
+        protocol_auto=False,
+    )
+
+    async def _run() -> str:
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            app._last_result = _search_result(audio_file)
+            app._last_config = config
+            await pilot.pause()
+            app.action_generate_protocol()
+            for _ in range(100):
+                await asyncio.sleep(0.02)
+                await pilot.pause()
+                if not app._protocol_building and built:
+                    break
+            return str(app.query_one("#status", tui_app.Static).render())
+
+    status = asyncio.run(_run())
+
+    assert built["result"] is not None
+    assert "сформирован" in status
+
+
+def test_tui_protocol_stale_after_name_edits(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+    _install_fake_glossary_db(monkeypatch, [])
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        timeline=False,
+        protocol_auto=False,
+    )
+
+    async def _run() -> tuple[bool, str]:
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            app._last_result = _search_result(audio_file)
+            app._last_config = config
+            await pilot.pause()
+            app._on_speaker_editor_closed(app._last_result)
+            await pilot.pause()
+            status = str(app.query_one("#status", tui_app.Static).render())
+            return app._protocol_stale, status
+
+    stale, status = asyncio.run(_run())
+
+    assert stale is True
+    assert "имена изменены" in status

@@ -849,3 +849,111 @@ def test_transcribe_voices_dir_is_merged_into_references(
     assert result.exit_code == 0
     assert captured["config"].voices_dir == voices
     assert captured["config"].resolved_speaker_references() == {"Мария": (library_file,)}
+
+
+# --- Пакет «протокол по кнопке»: --no-protocol ------------------------------
+
+
+def test_transcribe_protocol_enabled_by_default(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 0
+    assert captured["config"].protocol_auto is True
+
+
+def test_transcribe_no_protocol_flag_disables_auto_protocol(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(
+        app,
+        ["transcribe", str(audio_file), "-o", str(tmp_path / "out"), "--no-protocol"],
+    )
+
+    assert result.exit_code == 0
+    assert captured["config"].protocol_auto is False
+
+
+def _real_pipeline_with_stubs(config: AppConfig, **kwargs):
+    """Прогон настоящего ``run_pipeline`` с фиктивными компонентами (без моделей)."""
+    from audio_transcriber.domain.models import (
+        Speaker,
+        TranscriptEntry,
+        TranscriptionSegment,
+    )
+    from audio_transcriber.pipeline import run_pipeline as real_run_pipeline
+
+    class _Recognizer:
+        def transcribe(self, audio_path: Path, *, language: str | None = None):
+            return ([TranscriptionSegment(start=0.0, end=1.0, text="привет")], "ru", 1.0)
+
+    class _Merger:
+        def merge(self, transcription_segments, speaker_segments, known_speakers=None):
+            speaker = Speaker(id="SPEAKER_00", display_name="Иван")
+            entry = TranscriptEntry(start=0.0, end=1.0, text="привет", speaker=speaker)
+            return [entry], [speaker]
+
+    return real_run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=_Recognizer(),
+        merger=_Merger(),
+    )
+
+
+def test_transcribe_no_protocol_writes_no_files(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app_module, "run_pipeline", _real_pipeline_with_stubs)
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+    output_dir = tmp_path / "out"
+
+    result = runner.invoke(
+        app,
+        [
+            "transcribe",
+            str(audio_file),
+            "-o",
+            str(output_dir),
+            "--no-protocol",
+            "--no-diarization",
+            "--no-speaker-samples",
+            "--no-timeline",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert not (output_dir / f"{audio_file.stem}.txt").exists()
+
+
+def test_transcribe_default_protocol_writes_files(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(app_module, "run_pipeline", _real_pipeline_with_stubs)
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+    output_dir = tmp_path / "out"
+
+    result = runner.invoke(
+        app,
+        [
+            "transcribe",
+            str(audio_file),
+            "-o",
+            str(output_dir),
+            "--no-diarization",
+            "--no-speaker-samples",
+            "--no-timeline",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert (output_dir / f"{audio_file.stem}.txt").is_file()

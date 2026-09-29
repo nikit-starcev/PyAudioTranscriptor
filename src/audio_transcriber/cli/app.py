@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 
@@ -14,6 +15,7 @@ from audio_transcriber.cleaning.repetition_filter import (
 )
 from audio_transcriber.config.defaults import (
     DEFAULT_ENROLLMENT_MIN_SIMILARITY,
+    DEFAULT_GLOSSARY_DB,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
 )
 from audio_transcriber.config.settings import AppConfig
@@ -31,6 +33,9 @@ from audio_transcriber.utils.glossary_paths import normalize_glossary_paths_tupl
 from audio_transcriber.utils.hotwords import build_hotwords
 from audio_transcriber.utils.logging import setup_logging
 from audio_transcriber.utils.notifications import notify
+
+if TYPE_CHECKING:
+    from audio_transcriber.storage.glossary_db import ImportReport
 
 logger = logging.getLogger(__name__)
 
@@ -467,6 +472,29 @@ def transcribe(
             "или перечислить пути через запятую. Термины объединяются."
         ),
     ),
+    glossary_db: Path | None = typer.Option(
+        None,
+        "--glossary-db",
+        help=(
+            "Путь к SQLite-БД глоссария. По умолчанию glossary.db рядом с "
+            "рабочим каталогом (переменная окружения GLOSSARY_DB)."
+        ),
+    ),
+    glossary_enabled: bool = typer.Option(
+        True,
+        "--glossary-enabled/--no-glossary",
+        help="Использовать глоссарий (БД и текстовые файлы). По умолчанию включён.",
+    ),
+    protocol: bool = typer.Option(
+        True,
+        "--protocol/--no-protocol",
+        help=(
+            "Автоматически завершать прогон протоколом: считать резюме LLM и "
+            "экспортировать итоговые документы. При --no-protocol прогон "
+            "останавливается на готовой стенограмме — файлы не пишутся "
+            "(протокол можно собрать отдельно). По умолчанию включено."
+        ),
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -541,6 +569,9 @@ def transcribe(
             llm_prompt_extra=llm_prompt_extra,
             llm_prompt_file=llm_prompt_file,
             glossary_path=normalize_glossary_paths_tuple(glossary),
+            glossary_db=glossary_db,
+            glossary_enabled=glossary_enabled,
+            protocol_auto=protocol,
         )
         config.ensure_output_dir()
         if clear_cache:
@@ -557,6 +588,10 @@ def transcribe(
         logger.info("Язык: %s", config.language or "автоопределение")
         logger.info("Устройство: %s (запрошено: %s)", resolved_device.value, config.device.value)
         logger.info("Форматы экспорта: %s", ", ".join(fmt.value for fmt in config.export_formats))
+        logger.info(
+            "Протокол по завершении: %s",
+            "включён" if config.protocol_auto else "выключен (--no-protocol)",
+        )
         logger.info("Диаризация: %s", "включена" if config.diarization_enabled else "выключена")
         if config.diarization_enabled:
             logger.info("Количество говорящих: %s", config.num_speakers or "автоопределение")
@@ -699,6 +734,254 @@ def tui() -> None:
     from audio_transcriber.tui.app import TranscriberApp
 
     TranscriberApp().run()
+
+
+# --- Подкоманда glossary: локальная БД глоссария ---------------------------
+
+glossary_app = typer.Typer(
+    name="glossary",
+    help="Управление локальной SQLite-БД глоссария (импорт, список, источники).",
+    add_completion=False,
+    no_args_is_help=True,
+)
+
+
+def _resolve_db_path(db: Path | None) -> Path:
+    """Путь к БД: явный ``--db``, иначе ``GLOSSARY_DB`` или значение по умолчанию."""
+    import os
+
+    if db is not None:
+        return db
+    return Path(os.environ.get("GLOSSARY_DB", DEFAULT_GLOSSARY_DB))
+
+
+def _print_import_report(report: ImportReport) -> None:
+    action = "перезаписан" if report.replaced else "обновлён"
+    typer.echo(
+        f"Источник «{report.source}» ({report.kind}) {action}: "
+        f"добавлено {report.added}, пропущено {report.skipped}, всего {report.total}."
+    )
+
+
+@glossary_app.command("import")
+def glossary_import(
+    path: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True, help="Файл глоссария."),
+    source: str | None = typer.Option(None, "--source", help="Имя источника (по умолчанию — имя файла)."),
+    kind: str | None = typer.Option(
+        None,
+        "--kind",
+        case_sensitive=False,
+        help="Тип файла: txt или csv. По умолчанию определяется по расширению.",
+    ),
+    replace: bool = typer.Option(
+        True, "--replace/--no-replace", help="Заменять существующий одноимённый источник."
+    ),
+    db: Path | None = typer.Option(None, "--db", help="Путь к БД глоссария."),
+) -> None:
+    """Импортировать глоссарий из .txt или .csv в локальную БД."""
+    from audio_transcriber.storage.glossary_db import GlossaryDB
+
+    resolved_kind = (kind or "").strip().casefold()
+    if not resolved_kind:
+        resolved_kind = "csv" if path.suffix.casefold() == ".csv" else "txt"
+    if resolved_kind not in {"txt", "csv"}:
+        typer.echo(f"Ошибка: неизвестный тип «{kind}». Допустимо: txt или csv.", err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        with GlossaryDB(_resolve_db_path(db)) as glossary_db:
+            if resolved_kind == "csv":
+                report = glossary_db.import_csv(path, source=source, replace=replace)
+            else:
+                report = glossary_db.import_txt(path, source=source, replace=replace)
+    except (OSError, UnicodeError, ValueError) as exc:
+        typer.echo(f"Ошибка импорта: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    _print_import_report(report)
+
+
+@glossary_app.command("list")
+def glossary_list(
+    source: str | None = typer.Option(None, "--source", help="Фильтр по имени источника."),
+    search: str | None = typer.Option(None, "--search", help="Поиск по канону/варианту/заметке."),
+    limit: int | None = typer.Option(None, "--limit", min=1, help="Ограничить число строк."),
+    enabled_only: bool = typer.Option(
+        False, "--enabled-only", help="Показывать только включённые записи."
+    ),
+    db: Path | None = typer.Option(None, "--db", help="Путь к БД глоссария."),
+) -> None:
+    """Показать записи глоссария с фильтрами."""
+    from audio_transcriber.storage.glossary_db import GlossaryDB
+
+    try:
+        with GlossaryDB(_resolve_db_path(db)) as glossary_db:
+            entries = glossary_db.list_entries(
+                source=source, enabled_only=enabled_only, search=search, limit=limit
+            )
+            source_names = {src.id: src.name for src in glossary_db.list_sources()}
+    except OSError as exc:
+        typer.echo(f"Ошибка чтения БД: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if not entries:
+        typer.echo("Записи не найдены.")
+        return
+
+    header = f"{'ID':>5}  {'Канон':<28} {'Ошибочная форма':<22} {'Источник':<20} Вкл"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for entry in entries:
+        variant = entry.variant or ""
+        source_name = source_names.get(entry.source_id or -1, "—")
+        enabled = "да" if entry.enabled else "нет"
+        typer.echo(
+            f"{entry.id:>5}  {entry.canonical:<28} {variant:<22} {source_name:<20} {enabled}"
+        )
+    typer.echo(f"\nВсего показано: {len(entries)}.")
+
+
+@glossary_app.command("add")
+def glossary_add(
+    term: str = typer.Argument(..., help='Термин или пара в виде "ошибочная форма = канон".'),
+    source: str = typer.Option("manual", "--source", help="Источник записи."),
+    note: str | None = typer.Option(None, "--note", help="Заметка к записи."),
+    category: str | None = typer.Option(None, "--category", help="Категория записи."),
+    db: Path | None = typer.Option(None, "--db", help="Путь к БД глоссария."),
+) -> None:
+    """Добавить в глоссарий термин или явную пару."""
+    from audio_transcriber.storage.glossary_db import GlossaryDB
+
+    value = term.strip()
+    if not value:
+        typer.echo("Ошибка: пустой термин.", err=True)
+        raise typer.Exit(code=1)
+    variant: str | None = None
+    canonical = value
+    if "=" in value:
+        wrong, _, canon = value.partition("=")
+        wrong, canon = wrong.strip(), canon.strip()
+        if not wrong or not canon:
+            typer.echo(
+                "Ошибка: некорректная пара. Ожидается «ошибочная форма = канон».",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        variant, canonical = wrong, canon
+
+    try:
+        with GlossaryDB(_resolve_db_path(db)) as glossary_db:
+            entry_id = glossary_db.add_entry(
+                canonical, variant=variant, source=source, note=note, category=category
+            )
+    except (OSError, ValueError) as exc:
+        typer.echo(f"Ошибка добавления: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if variant:
+        typer.echo(f"Добавлено (id {entry_id}): «{variant} = {canonical}» (источник «{source}»).")
+    else:
+        typer.echo(f"Добавлено (id {entry_id}): «{canonical}» (источник «{source}»).")
+
+
+@glossary_app.command("sources")
+def glossary_sources(
+    db: Path | None = typer.Option(None, "--db", help="Путь к БД глоссария."),
+) -> None:
+    """Показать источники глоссария и число записей в них."""
+    from audio_transcriber.storage.glossary_db import GlossaryDB
+
+    try:
+        with GlossaryDB(_resolve_db_path(db)) as glossary_db:
+            sources = glossary_db.list_sources()
+            counts = glossary_db.entry_counts()
+    except OSError as exc:
+        typer.echo(f"Ошибка чтения БД: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if not sources:
+        typer.echo("Источников нет. Импортируйте глоссарий: glossary import <файл>.")
+        return
+
+    header = f"{'Имя':<32} {'Тип':<6} {'Вкл':<5} {'Записей':>8}"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for src in sources:
+        enabled = "да" if src.enabled else "нет"
+        count = counts.get(src.name, 0)
+        typer.echo(f"{src.name:<32} {src.kind:<6} {enabled:<5} {count:>8}")
+
+
+@glossary_app.command("enable")
+def glossary_enable(
+    source: str = typer.Argument(..., help="Имя источника."),
+    db: Path | None = typer.Option(None, "--db", help="Путь к БД глоссария."),
+) -> None:
+    """Включить источник глоссария."""
+    _set_source_enabled(source, True, db)
+
+
+@glossary_app.command("disable")
+def glossary_disable(
+    source: str = typer.Argument(..., help="Имя источника."),
+    db: Path | None = typer.Option(None, "--db", help="Путь к БД глоссария."),
+) -> None:
+    """Отключить источник глоссария (термины остаются в БД)."""
+    _set_source_enabled(source, False, db)
+
+
+def _set_source_enabled(source: str, enabled: bool, db: Path | None) -> None:
+    """Общий обработчик команд enable/disable."""
+    from audio_transcriber.storage.glossary_db import GlossaryDB
+
+    try:
+        with GlossaryDB(_resolve_db_path(db)) as glossary_db:
+            found = glossary_db.set_source_enabled(source, enabled)
+    except OSError as exc:
+        typer.echo(f"Ошибка чтения БД: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if not found:
+        typer.echo(f"Источник «{source}» не найден.", err=True)
+        raise typer.Exit(code=1)
+    state = "включён" if enabled else "отключён"
+    typer.echo(f"Источник «{source}» {state}.")
+
+
+@glossary_app.command("remove")
+def glossary_remove(
+    target: str = typer.Argument(..., help="Имя источника или числовой id записи."),
+    cascade: bool = typer.Option(
+        True,
+        "--cascade/--keep-entries",
+        help="При удалении источника удалять его записи (иначе — открепить).",
+    ),
+    db: Path | None = typer.Option(None, "--db", help="Путь к БД глоссария."),
+) -> None:
+    """Удалить источник глоссария или отдельную запись по id."""
+    from audio_transcriber.storage.glossary_db import GlossaryDB
+
+    try:
+        with GlossaryDB(_resolve_db_path(db)) as glossary_db:
+            if target.strip().isdigit():
+                removed = glossary_db.delete_entry(int(target))
+                if not removed:
+                    typer.echo(f"Запись с id {target} не найдена.", err=True)
+                    raise typer.Exit(code=1)
+                typer.echo(f"Запись с id {target} удалена.")
+                return
+            if target not in {src.name for src in glossary_db.list_sources()}:
+                typer.echo(f"Источник «{target}» не найден.", err=True)
+                raise typer.Exit(code=1)
+            affected = glossary_db.delete_source(target, cascade=cascade)
+    except OSError as exc:
+        typer.echo(f"Ошибка чтения БД: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    suffix = "вместе с записями" if cascade else "(записи сохранены без источника)"
+    typer.echo(f"Источник «{target}» удалён: затронуто записей — {affected} {suffix}.")
+
+
+app.add_typer(glossary_app, name="glossary")
 
 
 if __name__ == "__main__":

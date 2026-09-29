@@ -338,7 +338,15 @@ def run_pipeline(
 
         logger.info("LLM-постобработка (имена участников, правка терминов, резюме)...")
         entries, speakers, participants, summary = run_llm_postprocess(
-            config, entries, speakers, client=llm_client, on_progress=emit
+            config,
+            entries,
+            speakers,
+            client=llm_client,
+            # В режиме «протокол по кнопке» резюме не считается на прогоне:
+            # имена и термины правятся, а резюме пересчитывается позже по
+            # актуальной (в т.ч. переименованной) стенограмме.
+            summarize=config.protocol_auto and config.llm_summary,
+            on_progress=emit,
         )
 
     # Помечаем реплики в зонах наложения речи в самом конце — после всех
@@ -357,23 +365,31 @@ def run_pipeline(
         low_confidence_threshold=config.low_confidence_threshold,
     )
 
-    for export_format in config.export_formats:
-        output_path = config.output_dir / f"{config.input_file.stem}.{export_format.value}"
-        logger.info("Экспорт в %s: %s", export_format.value, output_path)
-        emit(ProgressEvent("export", f"Экспорт {export_format.value}", fraction=None))
-        create_exporter(export_format).export(result, output_path)
+    if config.protocol_auto:
+        for export_format in config.export_formats:
+            output_path = (
+                config.output_dir / f"{config.input_file.stem}.{export_format.value}"
+            )
+            logger.info("Экспорт в %s: %s", export_format.value, output_path)
+            emit(ProgressEvent("export", f"Экспорт {export_format.value}", fraction=None))
+            create_exporter(export_format).export(result, output_path)
 
-    if config.timeline:
-        if build_speaker_tracks(result):
-            # Подробная сводка «кто когда говорил» — в лог (INFO), HTML — рядом
-            # с остальными результатами.
-            logger.info("Таймлайн говорящих:\n%s", render_timeline_text(result))
-            timeline_path = config.output_dir / f"{config.input_file.stem}.timeline.html"
-            logger.info("Экспорт таймлайна: %s", timeline_path)
-            emit(ProgressEvent("export", "Экспорт таймлайна", fraction=None))
-            write_timeline(result, timeline_path)
-        else:
-            logger.info("Таймлайн пропущен — нет данных о говорящих")
+        if config.timeline:
+            if build_speaker_tracks(result):
+                # Подробная сводка «кто когда говорил» — в лог (INFO), HTML —
+                # рядом с остальными результатами.
+                logger.info("Таймлайн говорящих:\n%s", render_timeline_text(result))
+                timeline_path = config.output_dir / f"{config.input_file.stem}.timeline.html"
+                logger.info("Экспорт таймлайна: %s", timeline_path)
+                emit(ProgressEvent("export", "Экспорт таймлайна", fraction=None))
+                write_timeline(result, timeline_path)
+            else:
+                logger.info("Таймлайн пропущен — нет данных о говорящих")
+    else:
+        logger.info(
+            "Протокол отложен (protocol_auto=False) — стенограмма готова, "
+            "экспорт и резюме будут выполнены по запросу"
+        )
 
     if config.export_speaker_samples:
         # Образцы голоса извлекаем из того же аудио, что шло в ASR/диаризацию

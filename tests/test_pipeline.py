@@ -12,6 +12,7 @@ from audio_transcriber.domain.models import (
     Speaker,
     SpeakerSegment,
     TranscriptEntry,
+    TranscriptionResult,
     TranscriptionSegment,
 )
 from audio_transcriber.merging.aligner import OverlapSegmentMerger
@@ -548,3 +549,172 @@ def test_run_pipeline_skips_enrollment_without_references(
     )
 
     assert calls == []
+
+
+# --- Пакет «протокол по кнопке»: protocol_auto / generate_protocol ----------
+
+
+class RecordingLlm:
+    """Минимальный LLM-клиент: запоминает закрытие, chat не вызывается."""
+
+    def __init__(self) -> None:
+        self.closed = 0
+
+    def chat(self, messages):  # pragma: no cover - не должен вызываться
+        raise AssertionError("LLM не должна запрашиваться в этом сценарии")
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+def test_run_pipeline_without_protocol_skips_summary_and_export(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    summary_calls: list[int] = []
+    monkeypatch.setattr(
+        "audio_transcriber.llm.summary.summarize_meeting",
+        lambda *_args, **_kwargs: summary_calls.append(1) or "РЕЗЮМЕ",
+    )
+    output_dir = tmp_path / "out"
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=output_dir,
+        export_formats=(ExportFormat.TXT, ExportFormat.DOCX),
+        llm_enabled=True,
+        llm_summary=True,
+        protocol_auto=False,
+        glossary_enabled=False,
+        export_speaker_samples=False,
+    )
+
+    result = run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=FakeRecognizer(),
+        diarizer=FakeDiarizer(),
+        merger=FakeMerger(),
+        llm_client=RecordingLlm(),
+    )
+
+    # Стенограмма построена, но резюме не считалось и файлы не писались.
+    assert [entry.text for entry in result.entries] == ["привет"]
+    assert result.summary is None
+    assert summary_calls == []
+    assert not (output_dir / f"{audio_file.stem}.txt").exists()
+    assert not (output_dir / f"{audio_file.stem}.docx").exists()
+
+
+def test_run_pipeline_with_protocol_auto_writes_files(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "out"
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=output_dir,
+        export_formats=(ExportFormat.TXT,),
+        protocol_auto=True,
+        export_speaker_samples=False,
+    )
+
+    run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=FakeRecognizer(),
+        diarizer=FakeDiarizer(),
+        merger=FakeMerger(),
+    )
+
+    assert (output_dir / f"{audio_file.stem}.txt").is_file()
+
+
+def _protocol_result(audio_file: Path) -> TranscriptionResult:
+    speaker = Speaker(id="SPEAKER_00", display_name="Пётр")
+    return TranscriptionResult(
+        source_path=audio_file,
+        language="ru",
+        duration=1.0,
+        entries=[TranscriptEntry(start=0.0, end=1.0, text="привет", speaker=speaker)],
+        speakers=[speaker],
+        low_confidence_threshold=-1.0,
+    )
+
+
+def test_generate_protocol_recomputes_summary_and_exports(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from audio_transcriber.protocol import generate_protocol
+
+    seen_speakers: dict[str, list[str]] = {}
+
+    def fake_summarize(entries, speakers, *, llm, max_chunk_chars=None):
+        seen_speakers["names"] = [speaker.display_name for speaker in speakers]
+        return "РЕЗЮМЕ"
+
+    monkeypatch.setattr("audio_transcriber.protocol.summarize_meeting", fake_summarize)
+
+    exported: dict[Path, object] = {}
+
+    class FakeExporter:
+        def export(self, result, output_path) -> None:
+            exported[Path(output_path)] = result
+
+    monkeypatch.setattr(
+        "audio_transcriber.protocol.create_exporter", lambda _fmt: FakeExporter()
+    )
+
+    output_dir = tmp_path / "out"
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=output_dir,
+        export_formats=(ExportFormat.TXT, ExportFormat.DOCX),
+        llm_enabled=True,
+        llm_summary=True,
+        protocol_auto=False,
+        timeline=False,
+    )
+    client = RecordingLlm()
+
+    artifacts = generate_protocol(config, _protocol_result(audio_file), llm_client=client)
+
+    assert artifacts.summary == "РЕЗЮМЕ"
+    assert {path.name for path in artifacts.paths} == {
+        f"{audio_file.stem}.txt",
+        f"{audio_file.stem}.docx",
+    }
+    assert all(result.summary == "РЕЗЮМЕ" for result in exported.values())
+    # Экспорт получил текущие имена говорящих, а не исходные/пустые.
+    first = next(iter(exported.values()))
+    assert first.entries[0].speaker.display_name == "Пётр"  # type: ignore[union-attr]
+    assert seen_speakers["names"] == ["Пётр"]
+    # Клиент передан снаружи — вызывающий владеет им и сам закрывает.
+    assert client.closed == 0
+
+
+def test_generate_protocol_without_llm_exports_without_summary(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from audio_transcriber.protocol import generate_protocol
+
+    class FakeExporter:
+        def export(self, result, output_path) -> None:
+            Path(output_path).write_text("ok", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "audio_transcriber.protocol.create_exporter", lambda _fmt: FakeExporter()
+    )
+    output_dir = tmp_path / "out"
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=output_dir,
+        export_formats=(ExportFormat.TXT,),
+        llm_enabled=False,
+        protocol_auto=False,
+        timeline=False,
+    )
+
+    artifacts = generate_protocol(config, _protocol_result(audio_file))
+
+    assert artifacts.summary is None
+    assert artifacts.paths == (output_dir / f"{audio_file.stem}.txt",)
+    assert artifacts.paths[0].is_file()
+
