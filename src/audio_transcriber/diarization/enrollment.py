@@ -7,6 +7,12 @@ speaker-эмбеддингов: у каждого образца и у кажд�
 усреднённый вектор, после чего выполняется жадный мэтчинг один-к-одному с
 порогом.
 
+Качество эмбеддинга сильно зависит от того, что попало в окно: паузы «размывают»
+вектор говорящего. Поэтому и у образцов, и у сегментов говорящих выбирается окно
+с **наибольшей энергией** (речь), а почти-тихие окна пропускаются с
+предупреждением. Матрица сходства и лучшие недобранные кандидаты пишутся в лог
+на уровне INFO, чтобы было видно, почему имя не присвоено.
+
 Компонент устроен так, чтобы любая проблема (нет образцов, модель недоступна,
 битый файл, ошибка инференса) приводила лишь к предупреждению в лог: имена не
 присваиваются, конвейер продолжает работу как раньше.
@@ -16,12 +22,14 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import numpy as np
 
 from audio_transcriber.config.defaults import DEFAULT_ENROLLMENT_MIN_SIMILARITY
+from audio_transcriber.diarization import energy
 from audio_transcriber.domain.enums import Device
 from audio_transcriber.domain.models import SpeakerSegment
 from audio_transcriber.utils.audio import SAMPLE_RATE, load_waveform
@@ -34,11 +42,33 @@ DEFAULT_EMBEDDING_WINDOW_SECONDS = 5.0
 #: Сегменты короче этого порога дают ненадёжный эмбеддинг и пропускаются.
 MIN_SEGMENT_SECONDS = 0.5
 
-#: Сколько самых длинных сегментов говорящего усреднять в его эмбеддинг.
+#: Сколько самых «звучных» сегментов говорящего усреднять в его эмбеддинг.
 MAX_REPRESENTATIVE_SEGMENTS = 3
 
 #: Окно меньше этого числа сэмплов не несёт полезного сигнала.
 MIN_WINDOW_SAMPLES = 160
+
+#: Минимальная доля речи в окне образца. Если окно с наибольшей энергией тише
+#: (содержит много пауз), образец обрезается до участка речи: паузы «размывают»
+#: эмбеддинг говорящего. Замеры на реальной записи: порог 0.6 чинит образцы с
+#: 34–37 % речи, не трогая чистые.
+DEFAULT_REFERENCE_MIN_SPEECH_RATIO = 0.6
+
+
+@dataclass(frozen=True, slots=True)
+class EnrollmentOutcome:
+    """Итог enrollment: применённые имена и лучшие недобранные кандидаты.
+
+    ``mapping`` — уверенные совпадения (сходство не ниже порога).
+    ``best_candidates`` — для каждого НЕсопоставленного говорящего лучшая пара
+    ``(имя, сходство)`` (ниже порога) — для диагностики в логе/TUI.
+    ``speaker_count`` — сколько говорящих вообще получили эмбеддинг.
+    """
+
+    mapping: dict[str, str] = field(default_factory=dict)
+    best_candidates: dict[str, tuple[str, float]] = field(default_factory=dict)
+    speaker_count: int = 0
+
 
 
 @runtime_checkable
@@ -204,28 +234,111 @@ def _segments_by_speaker(
     return grouped
 
 
-def _representative_windows(
-    segments: Sequence[SpeakerSegment], window_seconds: float
-) -> list[tuple[float, float]]:
-    """Самые длинные сегменты говорящего → окна эмбеддинга.
+def _best_reference_window(
+    waveform: np.ndarray, window_seconds: float, *, sample_rate: int = SAMPLE_RATE
+) -> tuple[float, float] | None:
+    """Окно образца с наибольшей энергией, обрезанное до речи при нужде.
 
-    Окно не длиннее ``window_seconds`` и не выходит за границы сегмента — иначе
-    в эмбеддинг попадёт речь соседнего говорящего.
+    Берётся окно ``window_seconds`` с наибольшей энергией по всему образцу (а не
+    первые секунды, как раньше). Если в этом окне меньше
+    ``DEFAULT_REFERENCE_MIN_SPEECH_RATIO`` речи (много пауз), образец обрезается
+    до участка речи вокруг пика — иначе паузы «размывают» эмбеддинг. Возвращает
+    ``(start, end)`` или ``None``, если образец почти тихий (нет речи).
+    """
+    total = waveform.size / sample_rate
+    if total <= 0:
+        return None
+    prefix = energy.prefix_squares(waveform)
+    threshold = energy.energy_threshold(
+        energy.median_energy(prefix, sample_rate=sample_rate)
+    )
+    best = energy.best_energy_window(
+        prefix, [(0.0, total)], duration=window_seconds, sample_rate=sample_rate
+    )
+    if best is None or best[0] < threshold:
+        return None
+    _, start, end = best
+    if (
+        energy.speech_fraction(
+            prefix, start, end, sample_rate=sample_rate, threshold=threshold
+        )
+        >= DEFAULT_REFERENCE_MIN_SPEECH_RATIO
+    ):
+        return start, end
+    trimmed = energy.speech_window_around_peak(
+        prefix,
+        [(0.0, total)],
+        sample_rate=sample_rate,
+        threshold=threshold,
+        max_duration=window_seconds,
+        min_duration=energy.DEFAULT_MIN_SPEECH_SECONDS,
+    )
+    return trimmed if trimmed is not None else (start, end)
+
+
+def _representative_windows(
+    segments: Sequence[SpeakerSegment],
+    prefix: np.ndarray,
+    *,
+    window_seconds: float,
+    threshold: float,
+    sample_rate: int = SAMPLE_RATE,
+) -> list[tuple[float, float]]:
+    """Окна эмбеддинга: самые длинные сегменты, окно внутри — по энергии.
+
+    Кандидаты — до ``MAX_REPRESENTATIVE_SEGMENTS`` самых длинных чистых сегментов
+    говорящего (длинные сегменты надёжнее для эмбеддинга). Внутри каждого берётся
+    подокно до ``window_seconds`` с **наибольшей энергией** — то есть речь, а не
+    первые секунды, которые могут оказаться паузой. Сегменты почти тише
+    ``threshold`` пропускаются с предупреждением; окно не выходит за границы
+    сегмента (иначе в эмбеддинг попадёт речь соседнего говорящего).
+
+    Замеры на реальной записи показали, что ранжирование сегментов *только* по
+    энергии ухудшает сопоставление (в топ попадают короткие громкие вставки), а
+    сохранение самых длинных сегментов с энергетическим выбором окна внутри не
+    уступает прежнему поведению и убирает паузы из эмбеддинга.
     """
     usable = [segment for segment in segments if segment.end - segment.start >= MIN_SEGMENT_SECONDS]
-    usable.sort(key=lambda segment: segment.end - segment.start, reverse=True)
-    return [
-        (segment.start, min(segment.end, segment.start + window_seconds))
-        for segment in usable[:MAX_REPRESENTATIVE_SEGMENTS]
-    ]
+    usable.sort(key=lambda segment: (-(segment.end - segment.start), segment.start))
+
+    windows: list[tuple[float, float]] = []
+    for segment in usable:
+        if len(windows) >= MAX_REPRESENTATIVE_SEGMENTS:
+            break
+        best = energy.best_energy_window(
+            prefix,
+            [(segment.start, segment.end)],
+            duration=window_seconds,
+            sample_rate=sample_rate,
+        )
+        if best is None:
+            continue
+        value, start, end = best
+        if value < threshold:
+            logger.warning(
+                "Enrollment: сегмент говорящего %s почти тихий (энергия %.2e < %.2e) — пропуск",
+                segment.speaker_id,
+                value,
+                threshold,
+            )
+            continue
+        windows.append((start, end))
+    return windows
 
 
 def _log_similarity_matrix(matrix: Mapping[str, Mapping[str, float]]) -> None:
-    if not logger.isEnabledFor(logging.DEBUG):
-        return
+    """Пишет матрицу сходства «говорящий × имя» на уровне INFO (для диагностики)."""
     for speaker_id, row in matrix.items():
         scores = ", ".join(f"{name}={score:.3f}" for name, score in sorted(row.items()))
-        logger.debug("Enrollment: сходство %s: %s", speaker_id, scores)
+        logger.info("Enrollment: сходство %s: %s", speaker_id, scores)
+
+
+def _best_candidate(row: Mapping[str, float]) -> tuple[str, float] | None:
+    """Лучшая пара ``(имя, сходство)`` в строке матрицы (или ``None``)."""
+    if not row:
+        return None
+    name = max(row, key=lambda candidate: row[candidate])
+    return name, float(row[name])
 
 
 def _clean_references(
@@ -238,6 +351,10 @@ def _clean_references(
         if name and usable:
             cleaned[name] = usable
     return cleaned
+
+
+def _empty_outcome() -> EnrollmentOutcome:
+    return EnrollmentOutcome()
 
 
 def assign_speaker_names(
@@ -255,15 +372,41 @@ def assign_speaker_names(
     Возвращает ``speaker_id -> имя`` только для уверенных совпадений (сходство
     не ниже ``min_similarity``). Любая ошибка (нет образцов, модель недоступна,
     битый файл) обрабатывается мягко: пишется предупреждение, возвращается
-    пустой словарь.
+    пустой словарь. Для диагностики используйте :func:`enroll_speakers`.
+    """
+    return enroll_speakers(
+        speaker_segments=speaker_segments,
+        references=references,
+        audio_path=audio_path,
+        min_similarity=min_similarity,
+        device=device,
+        local_model_path=local_model_path,
+        engine=engine,
+    ).mapping
+
+
+def enroll_speakers(
+    *,
+    speaker_segments: Sequence[SpeakerSegment],
+    references: Mapping[str, Sequence[Path]],
+    audio_path: Path,
+    min_similarity: float = DEFAULT_ENROLLMENT_MIN_SIMILARITY,
+    device: Device = Device.CPU,
+    local_model_path: Path | str | None = None,
+    engine: SpeakerEmbeddingEngine | None = None,
+) -> EnrollmentOutcome:
+    """Сопоставляет говорящих с именами и возвращает подробный итог.
+
+    Как :func:`assign_speaker_names`, но вместе с применёнными именами отдаёт
+    лучших недобранных кандидатов по каждому говорящему (для статуса TUI).
     """
     cleaned = _clean_references(references)
     if not cleaned:
         logger.debug("Enrollment: образцы голоса не заданы — пропуск")
-        return {}
+        return _empty_outcome()
     if not speaker_segments:
         logger.info("Enrollment: нет диаризованных говорящих — пропуск")
-        return {}
+        return _empty_outcome()
 
     try:
         active_engine = engine or PyannoteEmbeddingEngine(
@@ -276,7 +419,7 @@ def assign_speaker_names(
             "имена по образцам не применены: %s",
             exc,
         )
-        return {}
+        return _empty_outcome()
 
     reference_embeddings: dict[str, np.ndarray] = {}
     for name, paths in cleaned.items():
@@ -287,7 +430,13 @@ def assign_speaker_names(
             except Exception as exc:  # noqa: BLE001 — один битый образец не роняет всё
                 logger.warning("Enrollment: не удалось прочитать образец %s: %s", path, exc)
                 continue
-            window = _extract_window(waveform, 0.0, window_seconds)
+            bounds = _best_reference_window(waveform, window_seconds)
+            if bounds is None:
+                logger.warning(
+                    "Enrollment: образец %s почти тихий (нет речи) — пропускаю", path
+                )
+                continue
+            window = _extract_window(waveform, *bounds)
             if window.size < MIN_WINDOW_SAMPLES:
                 logger.warning("Enrollment: образец %s слишком короткий — пропускаю", path)
                 continue
@@ -301,18 +450,29 @@ def assign_speaker_names(
 
     if not reference_embeddings:
         logger.warning("Enrollment: ни один образец не обработан — имена не применены")
-        return {}
+        return _empty_outcome()
 
     try:
         audio = load_waveform(audio_path)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Enrollment: не удалось прочитать аудио %s: %s", audio_path, exc)
-        return {}
+        return _empty_outcome()
+
+    audio_prefix = energy.prefix_squares(audio)
+    audio_threshold = energy.energy_threshold(
+        energy.median_energy(audio_prefix, sample_rate=SAMPLE_RATE)
+    )
 
     speaker_embeddings: dict[str, np.ndarray] = {}
     for speaker_id, segments in _segments_by_speaker(speaker_segments).items():
         vectors = []
-        for start, end in _representative_windows(segments, window_seconds):
+        windows = _representative_windows(
+            segments,
+            audio_prefix,
+            window_seconds=window_seconds,
+            threshold=audio_threshold,
+        )
+        for start, end in windows:
             window = _extract_window(audio, start, end)
             if window.size < MIN_WINDOW_SAMPLES:
                 continue
@@ -328,7 +488,7 @@ def assign_speaker_names(
 
     if not speaker_embeddings:
         logger.warning("Enrollment: эмбеддинги говорящих не построены — имена не применены")
-        return {}
+        return _empty_outcome()
 
     similarities = cosine_similarities(speaker_embeddings, reference_embeddings)
     _log_similarity_matrix(similarities)
@@ -340,4 +500,27 @@ def assign_speaker_names(
             "Enrollment: уверенных совпадений нет (порог %.2f) — остаются прежние метки",
             min_similarity,
         )
-    return mapping
+
+    # Диагностика по недобранным говорящим: лучший кандидат и его score.
+    best_candidates: dict[str, tuple[str, float]] = {}
+    for speaker_id, row in similarities.items():
+        if speaker_id in mapping:
+            continue
+        candidate = _best_candidate(row)
+        if candidate is None:
+            continue
+        best_candidates[speaker_id] = candidate
+        name, score = candidate
+        logger.info(
+            "Enrollment: %s — лучший «%s» %.3f < %.2f",
+            speaker_id,
+            name,
+            score,
+            min_similarity,
+        )
+
+    return EnrollmentOutcome(
+        mapping=mapping,
+        best_candidates=best_candidates,
+        speaker_count=len(speaker_embeddings),
+    )

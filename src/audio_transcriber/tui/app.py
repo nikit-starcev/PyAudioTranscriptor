@@ -18,7 +18,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import ClassVar, NamedTuple
+from typing import ClassVar, Literal, NamedTuple
 
 from rich.text import Text
 from textual import work
@@ -57,7 +57,7 @@ from audio_transcriber.correction.defaults import (
     DEFAULT_CORRECTION_MIN_SIMILARITY,
     DEFAULT_CORRECTION_MIN_WORD_LENGTH,
 )
-from audio_transcriber.diarization.enrollment import assign_speaker_names
+from audio_transcriber.diarization.enrollment import EnrollmentOutcome, enroll_speakers
 from audio_transcriber.diarization.samples import find_speaker_samples, samples_directory
 from audio_transcriber.diarization.voices import (
     collect_voice_library,
@@ -1314,23 +1314,46 @@ class SpeakerEditorScreen(ModalScreen[TranscriptionResult | None]):
         references: Mapping[str, Sequence[Path]],
         speaker_segments: Sequence[SpeakerSegment],
     ) -> None:
-        mapping = assign_speaker_names(
+        outcome = enroll_speakers(
             speaker_segments=speaker_segments,
             references=references,
             audio_path=audio_path,
             min_similarity=self._min_similarity,
         )
-        self.app.call_from_thread(self._on_names_applied, mapping)
+        self.app.call_from_thread(self._on_names_applied, outcome)
 
-    def _on_names_applied(self, mapping: dict[str, str]) -> None:
-        if not mapping:
-            self._set_status("Имена по голосу не сопоставлены (ниже порога)")
-            return
+    @staticmethod
+    def _format_best_candidates(
+        candidates: Mapping[str, tuple[str, float]],
+    ) -> str:
+        """Короткая сводка лучших недобранных пар: ``SPEAKER_04≈«Имя» 0.48``."""
+        if not candidates:
+            return ""
+        ordered = sorted(candidates.items(), key=lambda item: (-item[1][1], item[0]))
+        return "; ".join(
+            f"{speaker_id}≈«{name}» {score:.2f}"
+            for speaker_id, (name, score) in ordered[:3]
+        )
+
+    def _on_names_applied(self, outcome: EnrollmentOutcome) -> None:
+        mapping = outcome.mapping
+        total = outcome.speaker_count
+        severity: Literal["information", "warning"]
         for speaker_id, name in mapping.items():
             self._result = rename_speaker(self._result, speaker_id, name)
-        self.reload()
-        applied = ", ".join(f"{speaker_id} → {name}" for speaker_id, name in mapping.items())
-        self._set_status(f"Применены имена: {applied}")
+        if mapping:
+            self.reload()
+            applied = ", ".join(f"{speaker_id} → {name}" for speaker_id, name in mapping.items())
+            message = f"Применены имена ({len(mapping)}/{total}): {applied}"
+            severity = "information"
+        else:
+            message = f"Имена по голосу не сопоставлены (0/{total}, ниже порога)"
+            severity = "warning"
+        unmatched = self._format_best_candidates(outcome.best_candidates)
+        if unmatched:
+            message += f" | не добрали: {unmatched}"
+        self._set_status(message)
+        self.app.notify(message, severity=severity, timeout=10)
 
     def action_save_to_library(self) -> None:
         """Копирует образец выбранного говорящего в библиотеку ``voices_dir`` (``l``)."""

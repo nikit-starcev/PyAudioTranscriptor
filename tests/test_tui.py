@@ -1232,11 +1232,13 @@ def test_apply_names_renames_speakers_with_enrollment(
     reference.write_bytes(b"audio")
     captured: dict[str, object] = {}
 
-    def fake_assign(**kwargs):
+    def fake_enroll(**kwargs):
         captured.update(kwargs)
-        return {"SPEAKER_00": "Пётр"}
+        return tui_app.EnrollmentOutcome(
+            mapping={"SPEAKER_00": "Пётр"}, best_candidates={}, speaker_count=1
+        )
 
-    monkeypatch.setattr(tui_app, "assign_speaker_names", fake_assign)
+    monkeypatch.setattr(tui_app, "enroll_speakers", fake_enroll)
     config = AppConfig(
         input_file=audio_file,
         output_dir=tmp_path / "out",
@@ -1302,6 +1304,60 @@ def test_apply_names_without_samples_reports_status(
             return str(screen.query_one("#editor_status", tui_app.Static).render())
 
     assert "Нет образцов" in asyncio.run(_run())
+
+
+def test_apply_names_reports_counts_and_best_unmatched(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+    reference = tmp_path / "ref.wav"
+    reference.write_bytes(b"audio")
+
+    def fake_enroll(**kwargs):
+        return tui_app.EnrollmentOutcome(
+            mapping={"SPEAKER_00": "Пётр"},
+            best_candidates={"SPEAKER_01": ("Анна", 0.483)},
+            speaker_count=2,
+        )
+
+    monkeypatch.setattr(tui_app, "enroll_speakers", fake_enroll)
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        voices_dir=tmp_path / "no_voices",
+        speaker_references={"Пётр": (reference,)},
+        timeline=False,
+    )
+
+    async def _run() -> str:
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            app._last_result = _search_result(audio_file)
+            app._last_config = config
+            app.action_edit_speakers()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, tui_app.SpeakerEditorScreen)
+            screen.action_apply_names()
+            for _ in range(50):
+                await asyncio.sleep(0.02)
+                await pilot.pause()
+                if any(
+                    speaker.display_name == "Пётр"
+                    for speaker in screen.edited_result.speakers
+                ):
+                    break
+            return str(screen.query_one("#editor_status", tui_app.Static).render())
+
+    status = asyncio.run(_run())
+
+    assert "1/2" in status
+    assert "Пётр" in status
+    assert "Анна" in status
+    assert "0.48" in status
+
 
 
 def test_speaker_editor_save_renames_sample_files(

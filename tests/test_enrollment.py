@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -18,6 +19,7 @@ from audio_transcriber.diarization.enrollment import (
     assign_speaker_names,
     average_embeddings,
     cosine_similarities,
+    enroll_speakers,
     l2_normalize,
     match_speakers,
 )
@@ -82,14 +84,18 @@ def test_l2_normalize_zero_vector_is_safe() -> None:
 
 
 class _FakeEngine:
-    """Фейковый движок: вектор выбирается по первому сэмплу окна."""
+    """Фейковый движок: вектор выбирается по среднему значению окна.
+
+    Так выбор окна (по энергии) влияет на результат: тест видит, какое именно
+    окно ушло в эмбеддинг.
+    """
 
     def __init__(self, vectors: dict[int, list[float]]) -> None:
         self.window_seconds = 5.0
         self._vectors = {key: np.asarray(value, dtype=np.float32) for key, value in vectors.items()}
 
     def embed(self, waveform: np.ndarray) -> np.ndarray:
-        key = round(float(waveform[0]))
+        key = round(float(np.mean(waveform)))
         return self._vectors[key]
 
 
@@ -104,14 +110,26 @@ class _RaisingEngine:
 
 @pytest.fixture
 def install_loader(monkeypatch: pytest.MonkeyPatch):
-    """Подменяет ``load_waveform``: образцы — константы, аудио — ось времени."""
+    """Подменяет ``load_waveform``: образцы — константы, аудио — блоки сигнала.
 
-    def install(reference_tags: dict[str, int], *, audio_seconds: float = 20.0) -> None:
+    Остальная часть аудио — тишина. Блоки задают «речь» нужной громкости в
+    нужные интервалы, чтобы энергетический выбор окна был проверяемым.
+    """
+
+    def install(
+        reference_tags: dict[str, int],
+        *,
+        audio_seconds: float = 20.0,
+        audio_blocks: dict[tuple[float, float], float] | None = None,
+    ) -> None:
         def loader(path: Path, *, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
             tag = reference_tags.get(path.name)
             if tag is not None:
                 return np.full(sample_rate, float(tag), dtype=np.float32)
-            return np.arange(int(audio_seconds * sample_rate), dtype=np.float32)
+            samples = np.zeros(int(audio_seconds * sample_rate), dtype=np.float32)
+            for (start, end), value in (audio_blocks or {}).items():
+                samples[round(start * sample_rate) : round(end * sample_rate)] = value
+            return samples
 
         monkeypatch.setattr(enrollment, "load_waveform", loader)
 
@@ -126,13 +144,16 @@ def _segment(path: Path) -> Path:
 def test_assign_speaker_names_matches_by_voice(
     tmp_path: Path, install_loader
 ) -> None:
-    install_loader({"ivan.wav": 11, "maria.wav": 22})
+    install_loader(
+        {"ivan.wav": 11, "maria.wav": 22},
+        audio_blocks={(0.0, 3.0): 100.0, (10.0, 13.0): 200.0},
+    )
     ivan = _segment(tmp_path / "ivan.wav")
     maria = _segment(tmp_path / "maria.wav")
     audio = tmp_path / "call.wav"
     audio.write_bytes(b"")
     engine = _FakeEngine(
-        {0: [1, 0, 0], 160000: [0, 1, 0], 11: [0.99, 0.01, 0], 22: [0.01, 0.99, 0]}
+        {100: [1, 0, 0], 200: [0, 1, 0], 11: [0.99, 0.01, 0], 22: [0.01, 0.99, 0]}
     )
     segments = [
         SpeakerSegment(start=0.0, end=3.0, speaker_id="SPEAKER_00"),
@@ -153,12 +174,12 @@ def test_assign_speaker_names_matches_by_voice(
 def test_assign_speaker_names_averages_multiple_samples_per_name(
     tmp_path: Path, install_loader
 ) -> None:
-    install_loader({"a.wav": 11, "b.wav": 12})
+    install_loader({"a.wav": 11, "b.wav": 12}, audio_blocks={(0.0, 3.0): 100.0})
     first = _segment(tmp_path / "a.wav")
     second = _segment(tmp_path / "b.wav")
     audio = tmp_path / "call.wav"
     audio.write_bytes(b"")
-    engine = _FakeEngine({0: [1, 0, 0], 11: [1, 0, 0], 12: [0.9, 0.1, 0]})
+    engine = _FakeEngine({100: [1, 0, 0], 11: [1, 0, 0], 12: [0.9, 0.1, 0]})
 
     mapping = assign_speaker_names(
         speaker_segments=[SpeakerSegment(start=0.0, end=3.0, speaker_id="SPEAKER_00")],
@@ -172,12 +193,12 @@ def test_assign_speaker_names_averages_multiple_samples_per_name(
 
 
 def test_assign_speaker_names_respects_threshold(tmp_path: Path, install_loader) -> None:
-    install_loader({"ivan.wav": 11})
+    install_loader({"ivan.wav": 11}, audio_blocks={(0.0, 3.0): 100.0})
     ivan = _segment(tmp_path / "ivan.wav")
     audio = tmp_path / "call.wav"
     audio.write_bytes(b"")
     # косинус([1, 0], [0.5, sqrt(3)/2]) = 0.5 — ниже порога 0.6, выше 0.4
-    engine = _FakeEngine({0: [1, 0], 11: [0.5, float(np.sqrt(0.75))]})
+    engine = _FakeEngine({100: [1, 0], 11: [0.5, float(np.sqrt(0.75))]})
     kwargs = {
         "speaker_segments": [SpeakerSegment(start=0.0, end=3.0, speaker_id="SPEAKER_00")],
         "references": {"Иван": (ivan,)},
@@ -243,7 +264,7 @@ def test_assign_speaker_names_degrades_when_model_unavailable(
 def test_assign_speaker_names_degrades_when_embedding_fails(
     tmp_path: Path, install_loader
 ) -> None:
-    install_loader({"ivan.wav": 11})
+    install_loader({"ivan.wav": 11}, audio_blocks={(0.0, 3.0): 100.0})
     reference = _segment(tmp_path / "ivan.wav")
     audio = tmp_path / "call.wav"
     audio.write_bytes(b"")
@@ -262,7 +283,7 @@ def test_assign_speaker_names_ignores_broken_reference(
     tmp_path: Path, install_loader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Битый образец пропускается, рабочий продолжает участвовать в матчинге."""
-    install_loader({"good.wav": 11})
+    install_loader({"good.wav": 11}, audio_blocks={(0.0, 3.0): 100.0})
     good = _segment(tmp_path / "good.wav")
     broken = _segment(tmp_path / "broken.wav")
     audio = tmp_path / "call.wav"
@@ -275,11 +296,157 @@ def test_assign_speaker_names_ignores_broken_reference(
         return real_loader(path, sample_rate=sample_rate)
 
     monkeypatch.setattr(enrollment, "load_waveform", loader)
-    engine = _FakeEngine({0: [1, 0, 0], 11: [0.99, 0.01, 0]})
+    engine = _FakeEngine({100: [1, 0, 0], 11: [0.99, 0.01, 0]})
 
     mapping = assign_speaker_names(
         speaker_segments=[SpeakerSegment(start=0.0, end=3.0, speaker_id="SPEAKER_00")],
         references={"Иван": (broken, good)},
+        audio_path=audio,
+        min_similarity=0.6,
+        engine=engine,
+    )
+
+    assert mapping == {"SPEAKER_00": "Иван"}
+
+
+# --- энергетический выбор окон и диагностика -------------------------------
+
+
+def test_reference_uses_most_energetic_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Образец: 12 с тишины, речь только в конце (7–12 с).
+
+    Старое поведение брало первые 5 секунд (тишину) — эмбеддинг не строился.
+    """
+    ref_wf = np.zeros(12 * SAMPLE_RATE, dtype=np.float32)
+    ref_wf[7 * SAMPLE_RATE : 12 * SAMPLE_RATE] = 42.0
+    audio_wf = np.zeros(20 * SAMPLE_RATE, dtype=np.float32)
+    audio_wf[0 : 3 * SAMPLE_RATE] = 42.0
+    reference = _segment(tmp_path / "ivan.wav")
+    audio = tmp_path / "call.wav"
+    audio.write_bytes(b"")
+
+    def loader(path: Path, *, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
+        return ref_wf if path.name == "ivan.wav" else audio_wf
+
+    monkeypatch.setattr(enrollment, "load_waveform", loader)
+    engine = _FakeEngine({42: [1, 0, 0]})
+
+    mapping = assign_speaker_names(
+        speaker_segments=[SpeakerSegment(start=0.0, end=3.0, speaker_id="SPEAKER_00")],
+        references={"Иван": (reference,)},
+        audio_path=audio,
+        min_similarity=0.6,
+        engine=engine,
+    )
+
+    assert mapping == {"SPEAKER_00": "Иван"}
+
+
+def test_speaker_uses_most_energetic_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Длинный сегмент 0–10 с, но речь только в конце (5–10 с).
+
+    Старое поведение брало начало сегмента (тишину) — эмбеддинг не строился.
+    """
+    audio_wf = np.zeros(20 * SAMPLE_RATE, dtype=np.float32)
+    audio_wf[5 * SAMPLE_RATE : 10 * SAMPLE_RATE] = 42.0
+    ref_wf = np.full(SAMPLE_RATE, 42.0, dtype=np.float32)
+    reference = _segment(tmp_path / "ivan.wav")
+    audio = tmp_path / "call.wav"
+    audio.write_bytes(b"")
+
+    def loader(path: Path, *, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
+        return ref_wf if path.name == "ivan.wav" else audio_wf
+
+    monkeypatch.setattr(enrollment, "load_waveform", loader)
+    engine = _FakeEngine({42: [1, 0, 0]})
+
+    mapping = assign_speaker_names(
+        speaker_segments=[SpeakerSegment(start=0.0, end=10.0, speaker_id="SPEAKER_00")],
+        references={"Иван": (reference,)},
+        audio_path=audio,
+        min_similarity=0.6,
+        engine=engine,
+    )
+
+    assert mapping == {"SPEAKER_00": "Иван"}
+
+
+def test_enroll_speakers_reports_best_candidate_when_below_threshold(
+    tmp_path: Path, install_loader, caplog: pytest.LogCaptureFixture
+) -> None:
+    """При отсутствии совпадений в лог (INFO) идут матрица и лучший кандидат."""
+    install_loader({"ivan.wav": 11}, audio_blocks={(0.0, 3.0): 100.0})
+    reference = _segment(tmp_path / "ivan.wav")
+    audio = tmp_path / "call.wav"
+    audio.write_bytes(b"")
+    # косинус = 0.5 — ниже порога 0.6.
+    engine = _FakeEngine({100: [1, 0], 11: [0.5, float(np.sqrt(0.75))]})
+
+    with caplog.at_level(logging.INFO, logger="audio_transcriber.diarization.enrollment"):
+        outcome = enroll_speakers(
+            speaker_segments=[SpeakerSegment(start=0.0, end=3.0, speaker_id="SPEAKER_00")],
+            references={"Иван": (reference,)},
+            audio_path=audio,
+            min_similarity=0.6,
+            engine=engine,
+        )
+
+    assert outcome.mapping == {}
+    assert outcome.speaker_count == 1
+    name, score = outcome.best_candidates["SPEAKER_00"]
+    assert name == "Иван"
+    assert score == pytest.approx(0.5, abs=1e-6)
+    assert "SPEAKER_00 — лучший «Иван» 0.500 < 0.60" in caplog.text
+    assert "Enrollment: сходство SPEAKER_00" in caplog.text
+
+
+def test_enroll_speakers_outcome_for_matched(
+    tmp_path: Path, install_loader
+) -> None:
+    install_loader({"ivan.wav": 11}, audio_blocks={(0.0, 3.0): 100.0})
+    reference = _segment(tmp_path / "ivan.wav")
+    audio = tmp_path / "call.wav"
+    audio.write_bytes(b"")
+    engine = _FakeEngine({100: [1, 0, 0], 11: [0.99, 0.01, 0]})
+
+    outcome = enroll_speakers(
+        speaker_segments=[SpeakerSegment(start=0.0, end=3.0, speaker_id="SPEAKER_00")],
+        references={"Иван": (reference,)},
+        audio_path=audio,
+        min_similarity=0.6,
+        engine=engine,
+    )
+
+    assert outcome.mapping == {"SPEAKER_00": "Иван"}
+    assert outcome.best_candidates == {}
+    assert outcome.speaker_count == 1
+
+
+def test_reference_trims_pause_heavy_sample_to_speech(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Образец 8 с, речь только 5–7 с: окно 5 с содержит паузы → режется до речи."""
+    ref_wf = np.zeros(8 * SAMPLE_RATE, dtype=np.float32)
+    ref_wf[5 * SAMPLE_RATE : 7 * SAMPLE_RATE] = 42.0
+    audio_wf = np.zeros(20 * SAMPLE_RATE, dtype=np.float32)
+    audio_wf[0 : 3 * SAMPLE_RATE] = 42.0
+    reference = _segment(tmp_path / "ivan.wav")
+    audio = tmp_path / "call.wav"
+    audio.write_bytes(b"")
+
+    def loader(path: Path, *, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
+        return ref_wf if path.name == "ivan.wav" else audio_wf
+
+    monkeypatch.setattr(enrollment, "load_waveform", loader)
+    engine = _FakeEngine({42: [1, 0, 0]})
+
+    mapping = assign_speaker_names(
+        speaker_segments=[SpeakerSegment(start=0.0, end=3.0, speaker_id="SPEAKER_00")],
+        references={"Иван": (reference,)},
         audio_path=audio,
         min_similarity=0.6,
         engine=engine,

@@ -143,9 +143,37 @@ def test_select_sample_segment_energy_does_not_cross_foreign_interval() -> None:
 
     assert segment is not None
     start, end = segment
-    assert start == pytest.approx(4.0, abs=0.01)
-    # Образец упирается в начало реплики Марии и не заходит в неё.
+    # Окно обрезано до речи (5–12 с) и упирается в начало реплики Марии.
+    assert start == pytest.approx(5.0, abs=0.05)
     assert end <= 12.0 + 1e-6
+
+
+def test_select_sample_segment_trims_to_speech_not_silence() -> None:
+    # Тон в середине длинной тишины: образец — почти только речь без пауз.
+    entries = [_entry(0.0, 60.0, IVAN)]
+    waveform = _tone_waveform(duration=60.0, windows=((25.0, 29.0),))
+
+    segment = select_sample_segment(
+        entries, "SPEAKER_00", max_duration=8.0, waveform=waveform
+    )
+
+    assert segment == pytest.approx((25.0, 29.0), abs=0.05)
+
+
+def test_select_sample_segment_pads_tiny_speech_to_minimum() -> None:
+    # Очень короткая «речь» дополняется до минимума ~1.5 с вокруг пика.
+    entries = [_entry(0.0, 60.0, IVAN)]
+    waveform = _tone_waveform(duration=60.0, windows=((30.0, 30.4),))
+
+    segment = select_sample_segment(
+        entries, "SPEAKER_00", max_duration=8.0, waveform=waveform
+    )
+
+    assert segment is not None
+    start, end = segment
+    assert end - start >= 1.5 - 1e-6
+    assert start <= 30.0 <= end
+
 
 
 def test_select_sample_segment_without_waveform_falls_back_to_longest() -> None:
@@ -305,6 +333,23 @@ def test_extract_speaker_samples_uses_energetic_window(
     # Взято 8 секунд реальной речи (тон), а не пауза.
     assert frames.shape[0] == 8 * SAMPLE_RATE
     assert np.abs(frames).max() > 0.9 * 32767
+
+
+def test_extract_speaker_samples_trims_pauses_from_sample(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Речь — только 4 секунды в середине: образец почти без тишины (не 8 секунд).
+    waveform = _tone_waveform(duration=60.0, windows=((25.0, 29.0),))
+    monkeypatch.setattr(samples, "load_waveform", _loader_for(waveform))
+    result = _result(audio_file, [_entry(0.0, 60.0, IVAN)])
+
+    written = extract_speaker_samples(
+        result, audio_path=audio_file, output_dir=tmp_path / "out"
+    )
+
+    _, _, _, frames = _read_wav(written["SPEAKER_00"])
+    assert 3.8 * SAMPLE_RATE <= frames.shape[0] <= 4.2 * SAMPLE_RATE
+
 
 
 def test_extract_speaker_samples_skips_silent_speaker(

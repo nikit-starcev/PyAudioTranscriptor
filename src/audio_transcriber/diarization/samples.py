@@ -2,8 +2,9 @@
 
 После диаризации у каждого говорящего есть реплики с временными метками.
 Компонент выбирает у говорящего непрерывный чистый участок (без наложений
-речи) и вырезает из него окно с **наибольшей средней энергией** (RMS) — то есть
-участок реальной речи, а не паузы/тишину внутри длинной текстовой реплики.
+речи), находит в нём пик энергии и **растит окно от него, пока энергия держится
+выше порога** — из-за пауз эмбеддинг говорящего «размывается», поэтому образец
+максимально обрезается до речи (а не просто берётся фиксированное окно).
 Готовый фрагмент нормализуется по пику и сохраняется отдельным WAV (16 кГц,
 моно) рядом с результатами. Эти файлы можно потом переиспользовать как образцы
 для enrollment-диаризации (``--speaker-reference`` или библиотека ``voices/``).
@@ -21,6 +22,15 @@ from pathlib import Path
 
 import numpy as np
 
+from audio_transcriber.diarization import energy
+from audio_transcriber.diarization.energy import (
+    DEFAULT_ENERGY_FRAME_SECONDS,
+    DEFAULT_MIN_SPEECH_SECONDS,
+    energy_threshold,
+    median_energy,
+    prefix_squares,
+    speech_window_around_peak,
+)
 from audio_transcriber.domain.models import TranscriptEntry, TranscriptionResult
 from audio_transcriber.utils.audio import SAMPLE_RATE, load_waveform, write_wav
 from audio_transcriber.utils.text import sanitize_filename
@@ -35,21 +45,12 @@ DEFAULT_MAX_SAMPLE_SECONDS = 8.0
 #: говорящего меньше — берём лучший доступный участок (без ошибки).
 DEFAULT_MIN_SAMPLE_SECONDS = 3.0
 
-#: Шаг скользящего окна при поиске самого «громкого» участка (секунды).
-DEFAULT_WINDOW_STEP_SECONDS = 0.25
+#: Длина кадра анализа энергии при поиске участка речи (секунды).
+DEFAULT_WINDOW_STEP_SECONDS = DEFAULT_ENERGY_FRAME_SECONDS
 
-#: Длина кадра, по которому оценивается «типичная» (медианная) энергия записи.
-DEFAULT_ENERGY_FRAME_SECONDS = 0.05
-
-#: Абсолютный порог энергии (средний квадрат): ниже — считаем цифровой тишиной.
-#: Соответствует RMS ~1e-4 (≈ −80 dBFS).
-DEFAULT_SILENCE_ENERGY = 1e-8
-
-#: Какая доля от медианной энергии записи считается «слишком тихой» речью.
-#: Окно тише этого порога не сохраняем: это почти наверняка пауза/шум, а не
-#: голос. Доля (а не сама медиана) выбрана сознательно: реальная речь почти
-#: всегда громче, поэтому порог не отсекает тихие, но валидные образцы.
-DEFAULT_ENERGY_THRESHOLD_RATIO = 0.25
+#: Псевдонимы для обратной совместимости (канонические значения — в energy).
+DEFAULT_SILENCE_ENERGY = energy.DEFAULT_SILENCE_ENERGY
+DEFAULT_ENERGY_THRESHOLD_RATIO = energy.DEFAULT_ENERGY_THRESHOLD_RATIO
 
 #: Пиковая амплитуда, к которой нормализуется образец (запас до клиппинга).
 DEFAULT_TARGET_PEAK = 0.97
@@ -134,78 +135,6 @@ def _subtract_intervals(base: Sequence[Interval], holes: Sequence[Interval]) -> 
     return [(start, end) for start, end in remaining if end > start]
 
 
-def _prefix_squares(waveform: np.ndarray) -> np.ndarray:
-    """Префиксная сумма квадратов сэмплов — для быстрой оценки энергии окон."""
-    values = np.asarray(waveform, dtype=np.float64).reshape(-1)
-    prefix = np.empty(values.size + 1, dtype=np.float64)
-    prefix[0] = 0.0
-    np.cumsum(np.square(values), out=prefix[1:])
-    return prefix
-
-
-def _window_energy(prefix: np.ndarray, first: int, last: int) -> float:
-    """Средний квадрат сэмплов ``[first, last)`` по префиксной сумме."""
-    first = max(0, min(first, prefix.size - 1))
-    last = max(0, min(last, prefix.size - 1))
-    if last <= first:
-        return 0.0
-    return float((prefix[last] - prefix[first]) / (last - first))
-
-
-def _median_energy(prefix: np.ndarray, *, sample_rate: int) -> float:
-    """Медианная энергия коротких кадров по всей записи (типичный уровень)."""
-    total = prefix.size - 1
-    if total <= 0:
-        return 0.0
-    frame = max(1, round(DEFAULT_ENERGY_FRAME_SECONDS * sample_rate))
-    if total < frame:
-        return _window_energy(prefix, 0, total)
-    starts = np.arange(0, total - frame + 1, frame)
-    energies = (prefix[starts + frame] - prefix[starts]) / frame
-    return float(np.median(energies))
-
-
-def _best_energy_window(
-    prefix: np.ndarray,
-    allowed: Sequence[Interval],
-    *,
-    duration: float,
-    sample_rate: int,
-    step: float,
-) -> tuple[float, float, float] | None:
-    """Окно ``duration`` с наибольшей энергией внутри ``allowed``.
-
-    Возвращает ``(energy, start, end)``; при равенстве энергий выбирается самое
-    раннее окно (детерминированность). ``None``, если валидных окон нет.
-    """
-    if duration <= 0 or step <= 0:
-        return None
-
-    best: tuple[float, float, float] | None = None
-    for allowed_start, allowed_end in allowed:
-        length = allowed_end - allowed_start
-        if length <= 0:
-            continue
-        window = min(duration, length)
-        last_start = allowed_end - window
-        starts = [allowed_start]
-        moment = allowed_start + step
-        while moment < last_start - 1e-9:
-            starts.append(round(moment, 6))
-            moment += step
-        if last_start > allowed_start + 1e-9:
-            starts.append(round(last_start, 6))
-
-        for start in starts:
-            end = start + window
-            first = round(start * sample_rate)
-            last = round(end * sample_rate)
-            energy = _window_energy(prefix, first, last)
-            if best is None or energy > best[0]:
-                best = (energy, start, end)
-    return best
-
-
 def _select_longest_clean_segment(
     entries: Sequence[TranscriptEntry],
     speaker_id: str,
@@ -254,12 +183,16 @@ def select_sample_segment(
 ) -> Interval | None:
     """Выбирает участок речи говорящего под образец голоса.
 
-    При переданном ``waveform`` выбирается окно (до ``max_duration`` секунд) с
-    наибольшей средней энергией внутри чистых реплик говорящего, не заходящее в
-    чужие интервалы. Окно тише ``DEFAULT_ENERGY_THRESHOLD_RATIO`` от медианной
-    энергии записи (или ниже абсолютного порога тишины) отбрасывается — вместо
-    тишины образец не создаётся. Без ``waveform`` работает прежняя эвристика по
-    самой длинной чистой реплике. Возвращает ``(start, end)`` или ``None``.
+    При переданном ``waveform`` внутри чистых реплик говорящего (без наложений и
+    чужих интервалов) находится пик энергии и окно растёт от него, пока энергия
+    держится выше порога (``DEFAULT_ENERGY_THRESHOLD_RATIO`` от медианы записи,
+    но не ниже ``DEFAULT_SILENCE_ENERGY``). Длина ограничена ``max_duration`` и
+    снизу — ``DEFAULT_MIN_SPEECH_SECONDS``; короткие паузы внутри речи
+    склеиваются. Так образец почти целиком состоит из речи, а не пауз. Если пик
+    энергии ниже порога (тишина), образец не создаётся. Без ``waveform``
+    работает прежняя эвристика по самой длинной чистой реплике.
+
+    Возвращает ``(start, end)`` или ``None``. ``step`` — длина кадра анализа.
     """
     if waveform is None:
         return _select_longest_clean_segment(entries, speaker_id, max_duration)
@@ -274,15 +207,17 @@ def select_sample_segment(
     if not allowed:
         return None
 
-    prefix = _prefix_squares(waveform)
-    median = _median_energy(prefix, sample_rate=sample_rate)
-    threshold = max(DEFAULT_SILENCE_ENERGY, DEFAULT_ENERGY_THRESHOLD_RATIO * median)
-    best = _best_energy_window(
-        prefix, allowed, duration=max_duration, sample_rate=sample_rate, step=step
+    prefix = prefix_squares(waveform)
+    threshold = energy_threshold(median_energy(prefix, sample_rate=sample_rate))
+    return speech_window_around_peak(
+        prefix,
+        allowed,
+        sample_rate=sample_rate,
+        threshold=threshold,
+        max_duration=max_duration,
+        min_duration=DEFAULT_MIN_SPEECH_SECONDS,
+        frame_seconds=step,
     )
-    if best is None or best[0] < threshold:
-        return None
-    return best[1], best[2]
 
 
 def normalize_sample(
