@@ -397,7 +397,9 @@ def run_pipeline(
                 ", ".join(path.name for path in written.values()),
             )
         else:
-            logger.info("Образцы голоса пропущены — нет чистой речи говорящих")
+            logger.info(
+                "Образцы голоса пропущены — нет чистой речи говорящих или она тише порога"
+            )
 
     emit(ProgressEvent("done", "Готово", fraction=1.0))
     return result

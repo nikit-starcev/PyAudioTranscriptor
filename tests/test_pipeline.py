@@ -475,6 +475,7 @@ def test_run_pipeline_enrollment_names_override_speaker_names(
         speaker_names={"SPEAKER_00": "Пётр"},
         speaker_references={"Иван": (reference,)},
         enrollment_min_similarity=0.55,
+        voices_dir=tmp_path / "no_voices",
     )
 
     result = run_pipeline(
@@ -506,6 +507,7 @@ def test_run_pipeline_falls_back_to_speaker_names_when_enrollment_misses(
         export_formats=(ExportFormat.TXT,),
         speaker_names={"SPEAKER_00": "Пётр"},
         speaker_references={"Иван": (reference,)},
+        voices_dir=tmp_path / "no_voices",
     )
 
     result = run_pipeline(
@@ -534,6 +536,7 @@ def test_run_pipeline_skips_enrollment_without_references(
         input_file=audio_file,
         output_dir=tmp_path / "out",
         export_formats=(ExportFormat.TXT,),
+        voices_dir=tmp_path / "no_voices",
     )
 
     run_pipeline(

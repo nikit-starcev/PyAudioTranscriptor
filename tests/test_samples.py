@@ -17,6 +17,7 @@ from audio_transcriber.diarization import samples
 from audio_transcriber.diarization.samples import (
     extract_speaker_samples,
     find_speaker_samples,
+    normalize_sample,
     samples_directory,
     select_sample_segment,
     slice_waveform,
@@ -32,6 +33,31 @@ def _entry(start: float, end: float, speaker: Speaker | None, *, overlap: bool =
     return TranscriptEntry(
         start=start, end=end, text="речь", speaker=speaker, overlap=overlap
     )
+
+
+def _tone_waveform(
+    duration: float = 60.0,
+    *,
+    windows: tuple[tuple[float, float], ...] = (),
+    amplitude: float = 0.6,
+) -> np.ndarray:
+    """Синтетическое аудио: тишина, в заданных окнах — тон 220 Гц."""
+    samples = np.zeros(round(duration * SAMPLE_RATE), dtype=np.float32)
+    times = np.arange(samples.size, dtype=np.float64) / SAMPLE_RATE
+    for start, end in windows:
+        first = round(start * SAMPLE_RATE)
+        last = round(end * SAMPLE_RATE)
+        samples[first:last] = amplitude * np.sin(2 * np.pi * 220.0 * times[first:last])
+    return samples
+
+
+def _loader_for(waveform: np.ndarray):
+    """Загрузчик сигнала с фиксированным содержимым (для monkeypatch)."""
+
+    def loader(path: Path, *, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
+        return waveform
+
+    return loader
 
 
 def _result(audio_file: Path, entries: list[TranscriptEntry]) -> TranscriptionResult:
@@ -83,6 +109,49 @@ def test_select_sample_segment_returns_none_without_clean_speech() -> None:
 
 def test_select_sample_segment_ignores_speaker_without_entries() -> None:
     assert select_sample_segment([_entry(0.0, 5.0, IVAN)], "SPEAKER_01") is None
+
+
+def test_select_sample_segment_prefers_high_energy_window() -> None:
+    # Длинная реплика 0–20 с, но речь (тон) только с 10 по 18 с — паузы не берём.
+    entries = [_entry(0.0, 20.0, IVAN)]
+    waveform = _tone_waveform(windows=((10.0, 18.0),))
+
+    segment = select_sample_segment(
+        entries, "SPEAKER_00", max_duration=8.0, waveform=waveform
+    )
+
+    assert segment == pytest.approx((10.0, 18.0))
+
+
+def test_select_sample_segment_returns_none_for_silence() -> None:
+    entries = [_entry(0.0, 20.0, IVAN)]
+    waveform = np.zeros(60 * SAMPLE_RATE, dtype=np.float32)
+
+    assert (
+        select_sample_segment(entries, "SPEAKER_00", max_duration=8.0, waveform=waveform)
+        is None
+    )
+
+
+def test_select_sample_segment_energy_does_not_cross_foreign_interval() -> None:
+    entries = [_entry(0.0, 20.0, IVAN), _entry(12.0, 13.0, MARIA)]
+    waveform = _tone_waveform(windows=((5.0, 12.0),))
+
+    segment = select_sample_segment(
+        entries, "SPEAKER_00", max_duration=8.0, waveform=waveform
+    )
+
+    assert segment is not None
+    start, end = segment
+    assert start == pytest.approx(4.0, abs=0.01)
+    # Образец упирается в начало реплики Марии и не заходит в неё.
+    assert end <= 12.0 + 1e-6
+
+
+def test_select_sample_segment_without_waveform_falls_back_to_longest() -> None:
+    entries = [_entry(0.0, 2.0, IVAN), _entry(5.0, 12.0, IVAN)]
+
+    assert select_sample_segment(entries, "SPEAKER_00") == (5.0, 12.0)
 
 
 def test_slice_waveform_clamps_to_bounds() -> None:
@@ -216,6 +285,86 @@ def test_find_speaker_samples_matches_sanitized_names(
     found = find_speaker_samples(result, directory)
 
     assert found == {"SPEAKER_00": ivan}
+
+
+def test_extract_speaker_samples_uses_energetic_window(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    waveform = _tone_waveform(windows=((10.0, 18.0),))
+    monkeypatch.setattr(
+        samples, "load_waveform", _loader_for(waveform)
+    )
+    result = _result(audio_file, [_entry(0.0, 20.0, IVAN)])
+
+    written = extract_speaker_samples(
+        result, audio_path=audio_file, output_dir=tmp_path / "out"
+    )
+
+    assert set(written) == {"SPEAKER_00"}
+    _, _, _, frames = _read_wav(written["SPEAKER_00"])
+    # Взято 8 секунд реальной речи (тон), а не пауза.
+    assert frames.shape[0] == 8 * SAMPLE_RATE
+    assert np.abs(frames).max() > 0.9 * 32767
+
+
+def test_extract_speaker_samples_skips_silent_speaker(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    waveform = np.zeros(60 * SAMPLE_RATE, dtype=np.float32)
+    monkeypatch.setattr(
+        samples, "load_waveform", _loader_for(waveform)
+    )
+    result = _result(audio_file, [_entry(0.0, 20.0, IVAN)])
+
+    written = extract_speaker_samples(
+        result, audio_path=audio_file, output_dir=tmp_path / "out"
+    )
+
+    assert written == {}
+
+
+def test_extract_speaker_samples_normalizes_peak(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Тихая речь усиливается до целевого пика, но не клиппится.
+    waveform = _tone_waveform(windows=((0.0, 20.0),), amplitude=0.1)
+    monkeypatch.setattr(
+        samples, "load_waveform", _loader_for(waveform)
+    )
+    result = _result(audio_file, [_entry(0.0, 20.0, IVAN)])
+
+    written = extract_speaker_samples(
+        result, audio_path=audio_file, output_dir=tmp_path / "out"
+    )
+
+    _, _, _, frames = _read_wav(written["SPEAKER_00"])
+    peak = np.abs(frames).max() / 32767
+    assert peak == pytest.approx(0.97, abs=0.01)
+
+
+def test_normalize_sample_scales_quiet_and_loud_without_clipping() -> None:
+    quiet = np.full(100, 0.2, dtype=np.float32)
+    assert np.abs(normalize_sample(quiet)).max() == pytest.approx(0.97, abs=1e-6)
+
+    loud = np.full(100, 2.0, dtype=np.float32)
+    normalized = normalize_sample(loud)
+    assert np.abs(normalized).max() <= 1.0
+    assert np.abs(normalized).max() == pytest.approx(0.97, abs=1e-6)
+
+
+def test_normalize_sample_limits_gain_for_near_silence() -> None:
+    tiny = np.full(100, 1e-4, dtype=np.float32)
+
+    normalized = normalize_sample(tiny)
+
+    # Усиление ограничено 10x, сигнал не «разгоняется» безмерно.
+    assert np.abs(normalized).max() == pytest.approx(1e-3, rel=1e-3)
+
+
+def test_normalize_sample_keeps_true_silence() -> None:
+    silence = np.zeros(100, dtype=np.float32)
+
+    assert np.array_equal(normalize_sample(silence), silence)
 
 
 def test_find_speaker_samples_missing_dir_is_empty(audio_file: Path, tmp_path: Path) -> None:
