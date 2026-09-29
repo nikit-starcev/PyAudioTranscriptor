@@ -736,6 +736,46 @@ def tui() -> None:
     TranscriberApp().run()
 
 
+@app.command()
+def web(
+    host: str = typer.Option(
+        "127.0.0.1",
+        "--host",
+        help="Адрес прослушивания (по умолчанию только локальный интерфейс).",
+    ),
+    port: int = typer.Option(
+        8765,
+        "--port",
+        min=1,
+        max=65535,
+        help="Порт локального сервера веб-интерфейса.",
+    ),
+    no_browser: bool = typer.Option(
+        False,
+        "--no-browser",
+        help="Не открывать браузер автоматически.",
+    ),
+    reload: bool = typer.Option(
+        False,
+        "--reload",
+        help="Автоперезапуск сервера при изменении кода (для разработки).",
+    ),
+) -> None:
+    """Запустить локальный веб-интерфейс транскрибации (127.0.0.1)."""
+    try:
+        from audio_transcriber.web.app import serve
+    except ImportError as exc:  # веб-зависимости не установлены
+        typer.echo(
+            "Веб-интерфейс недоступен: не установлены зависимости. "
+            'Установите их: uv pip install --python .venv/bin/python ".[web]"',
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"Веб-интерфейс: http://{host}:{port}/")
+    serve(host=host, port=port, open_browser=not no_browser, reload=reload)
+
+
 # --- Подкоманда glossary: локальная БД глоссария ---------------------------
 
 glossary_app = typer.Typer(

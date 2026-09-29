@@ -230,6 +230,12 @@ tempCodeRunnerFile.py
 # PyPI configuration file
 .pypirc
 
+# Веб-интерфейс: локальные данные сервера и зависимости фронтенда.
+# Собранный SPA (src/audio_transcriber/web/static/) специально коммитится.
+web-data/
+webui/node_modules/
+webui/dist/
+
 # Marimo
 marimo/_static/
 marimo/_lsp/

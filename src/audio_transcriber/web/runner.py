@@ -1,0 +1,243 @@
+"""Фоновый воркер очереди задач.
+
+Задачи обрабатываются строго по одной: распознавание и диаризация конкурируют
+за GPU/CPU, поэтому параллельный запуск только замедлил бы всех. Воркер —
+daemon-поток, который при старте задачи вызывает переданную ``pipeline_fn``
+(по умолчанию :func:`audio_transcriber.pipeline.run_pipeline`) с колбэком
+прогресса и сохраняет результат в JSON рядом с БД.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import queue
+import threading
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+
+from audio_transcriber.config.settings import AppConfig
+from audio_transcriber.diarization.samples import find_speaker_samples, samples_directory
+from audio_transcriber.domain.models import TranscriptionResult
+from audio_transcriber.pipeline import run_pipeline
+from audio_transcriber.progress import ProgressEvent
+from audio_transcriber.web.events import JobEventBus
+from audio_transcriber.web.paths import WebPaths
+from audio_transcriber.web.results import serialize_result
+from audio_transcriber.web.storage.jobs_db import (
+    STATUS_DONE,
+    STATUS_ERROR,
+    STATUS_RUNNING,
+    JobsDB,
+    utc_now_iso,
+)
+
+logger = logging.getLogger(__name__)
+
+#: Вызываемое построение конфигурации для задачи: ``(job_id, source_path) -> AppConfig``.
+ConfigBuilder = Callable[[str, Path], AppConfig]
+
+#: Функция конвейера (совместима с ``run_pipeline``); подменяется в тестах.
+PipelineFn = Callable[..., TranscriptionResult]
+
+
+@dataclass(slots=True)
+class JobRequest:
+    """Задача, поставленная воркеру на обработку."""
+
+    job_id: str
+    source_path: Path
+
+
+class JobRunner:
+    """Один фоновый воркер для последовательной обработки задач."""
+
+    def __init__(
+        self,
+        store: JobsDB,
+        bus: JobEventBus,
+        paths: WebPaths,
+        config_builder: ConfigBuilder,
+        *,
+        pipeline_fn: PipelineFn | None = None,
+    ) -> None:
+        self._store = store
+        self._bus = bus
+        self._paths = paths
+        self._config_builder = config_builder
+        self._pipeline_fn = pipeline_fn or run_pipeline
+        self._queue: queue.Queue[JobRequest | None] = queue.Queue()
+        self._lock = threading.Lock()
+        self._active: set[str] = set()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        """Запускает поток воркера (идемпотентно)."""
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._thread = threading.Thread(
+                target=self._worker, name="audio-transcriber-web-worker", daemon=True
+            )
+            self._thread.start()
+
+    def stop(self, *, timeout: float = 5.0) -> None:
+        """Останавливает воркер, дожидаясь завершения текущей задачи."""
+        with self._lock:
+            thread = self._thread
+            self._thread = None
+        if thread is None:
+            return
+        self._queue.put(None)
+        thread.join(timeout=timeout)
+
+    def submit(self, job_id: str, source_path: Path) -> bool:
+        """Ставит задачу в очередь; ``False``, если она уже в работе или очереди."""
+        with self._lock:
+            if job_id in self._active:
+                return False
+            self._active.add(job_id)
+        self._queue.put(JobRequest(job_id=job_id, source_path=source_path))
+        return True
+
+    def _worker(self) -> None:
+        while True:
+            request = self._queue.get()
+            if request is None:
+                break
+            try:
+                self._process(request)
+            except Exception:
+                logger.exception("Непредвиденная ошибка обработки задачи %s", request.job_id)
+            finally:
+                with self._lock:
+                    self._active.discard(request.job_id)
+
+    def _process(self, request: JobRequest) -> None:
+        job_id = request.job_id
+        self._store.update(
+            job_id,
+            status=STATUS_RUNNING,
+            started_at=utc_now_iso(),
+            error=None,
+            stage="queued",
+            fraction=0.0,
+        )
+        self._bus.publish(
+            job_id,
+            {
+                "stage": "queued",
+                "fraction": 0.0,
+                "message": "Запуск",
+                "status": STATUS_RUNNING,
+            },
+        )
+
+        try:
+            config = self._config_builder(job_id, request.source_path)
+            result = self._pipeline_fn(config, on_progress=self._progress_callback(job_id))
+        except Exception as exc:
+            logger.exception("Задача %s завершилась ошибкой", job_id)
+            self._store.update(
+                job_id,
+                status=STATUS_ERROR,
+                finished_at=utc_now_iso(),
+                error=str(exc),
+            )
+            self._bus.publish(
+                job_id,
+                {
+                    "stage": "error",
+                    "fraction": None,
+                    "message": str(exc),
+                    "status": STATUS_ERROR,
+                },
+            )
+            return
+
+        self._finish_success(job_id, config, result)
+
+    def _progress_callback(self, job_id: str) -> Callable[[ProgressEvent], None]:
+        def callback(event: ProgressEvent) -> None:
+            if event.stage == "done":
+                # Финальное событие отправляет сам воркер после записи результата.
+                return
+            self._store.update(job_id, stage=event.stage, fraction=event.fraction)
+            self._bus.publish(
+                job_id,
+                {
+                    "stage": event.stage,
+                    "fraction": event.fraction,
+                    "message": event.message,
+                    "status": STATUS_RUNNING,
+                },
+            )
+
+        return callback
+
+    def _finish_success(
+        self, job_id: str, config: AppConfig, result: TranscriptionResult
+    ) -> None:
+        samples = self._collect_samples(config, result)
+        payload = serialize_result(result, samples=samples)
+        payload["samples"] = samples
+        result_path = self._paths.results_dir / f"{job_id}.json"
+        try:
+            result_path.parent.mkdir(parents=True, exist_ok=True)
+            result_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except OSError as exc:
+            logger.exception("Не удалось сохранить результат задачи %s", job_id)
+            self._store.update(
+                job_id,
+                status=STATUS_ERROR,
+                finished_at=utc_now_iso(),
+                error=f"Не удалось сохранить результат: {exc}",
+            )
+            self._bus.publish(
+                job_id,
+                {
+                    "stage": "error",
+                    "fraction": None,
+                    "message": "Не удалось сохранить результат",
+                    "status": STATUS_ERROR,
+                },
+            )
+            return
+
+        self._store.update(
+            job_id,
+            status=STATUS_DONE,
+            finished_at=utc_now_iso(),
+            stage="done",
+            fraction=1.0,
+            language=result.language,
+            duration=result.duration,
+            result_path=str(result_path),
+        )
+        self._bus.publish(
+            job_id,
+            {
+                "stage": "done",
+                "fraction": 1.0,
+                "message": "Готово",
+                "status": STATUS_DONE,
+            },
+        )
+
+    def _collect_samples(
+        self, config: AppConfig, result: TranscriptionResult
+    ) -> dict[str, str]:
+        """Относительные пути сохранённых конвейером образцов голоса."""
+        directory = samples_directory(config.output_dir, result.source_path)
+        found = find_speaker_samples(result, directory)
+        samples: dict[str, str] = {}
+        for speaker_id, path in found.items():
+            try:
+                relative = path.resolve().relative_to(self._paths.data_dir.resolve())
+            except (OSError, ValueError):
+                continue
+            samples[speaker_id] = str(relative)
+        return samples
