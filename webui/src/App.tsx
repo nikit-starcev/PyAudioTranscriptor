@@ -1,75 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-type ConfigInfo = {
-  input_dir: string
-  output_dir: string
-  export_formats: string[]
-  llm_enabled: boolean
-  glossary_enabled: boolean
-  voices_dir: string
-}
-
-type FileItem = {
-  name: string
-  path: string
-  size: number
-  duration: number | null
-}
-
-type Job = {
-  id: string
-  name: string
-  source_path: string
-  status: string
-  stage: string | null
-  fraction: number | null
-  created_at: string
-  started_at: string | null
-  finished_at: string | null
-  language: string | null
-  duration: number | null
-  error: string | null
-}
-
-type Summary = {
-  language: string | null
-  duration: number | null
-  entries: number
-  speakers: number
-  samples: number
-}
-
-type JobDetails = Job & { summary: Summary | null }
-
-type SpeakerInfo = { id: string; display_name: string; has_sample: boolean }
-
-type Entry = {
-  start: number
-  end: number
-  speaker_id: string | null
-  text: string
-  low_confidence: boolean
-  overlap: boolean
-}
-
-type Mark = { key: string; symbol: string; label: string }
-
-type TranscriptResult = {
-  language: string | null
-  duration: number
-  speakers: SpeakerInfo[]
-  entries: Entry[]
-  marks: Mark[]
-  summary: string | null
-  samples: Record<string, string>
-}
-
-type JobEvent = {
-  stage: string
-  fraction: number | null
-  message: string
-  status: string
-}
+import {
+  api,
+  errorMessage,
+  formatDuration,
+  formatSize,
+  formatTime,
+  isTerminal,
+  speakerName,
+  type ApplyNamesResponse,
+  type ConfigInfo,
+  type FileItem,
+  type Job,
+  type JobDetails,
+  type JobEvent,
+  type SampleMeta,
+  type TranscriptResult,
+  type VoiceInfo,
+} from './api'
+import SpeakersPanel from './components/SpeakersPanel'
+import VoicesModal from './components/VoicesModal'
 
 const STAGES: { key: string; label: string }[] = [
   { key: 'denoise', label: 'Шумоподавление' },
@@ -98,46 +48,6 @@ const STATUS_STYLES: Record<string, string> = {
   cancelled: 'bg-amber-100 text-amber-700',
 }
 
-function isTerminal(status: string): boolean {
-  return status === 'done' || status === 'error' || status === 'cancelled'
-}
-
-async function api<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init)
-  if (!response.ok) {
-    let detail = `${response.status} ${response.statusText}`
-    try {
-      const body = await response.json()
-      if (body && typeof body.detail === 'string') detail = body.detail
-    } catch {
-      // тело не JSON — оставляем статус
-    }
-    throw new Error(detail)
-  }
-  return (await response.json()) as T
-}
-
-function formatTime(seconds: number): string {
-  const minutes = Math.floor(seconds / 60)
-  const rest = seconds - minutes * 60
-  return `${minutes}:${rest.toFixed(1).padStart(4, '0')}`
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} Б`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КБ`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`
-}
-
-function formatDuration(seconds: number | null): string {
-  return seconds == null ? '—' : formatTime(seconds)
-}
-
-function speakerName(speakers: SpeakerInfo[], id: string | null): string {
-  if (id == null) return '—'
-  return speakers.find((speaker) => speaker.id === id)?.display_name ?? id
-}
-
 function App() {
   const [version, setVersion] = useState<string>('')
   const [config, setConfig] = useState<ConfigInfo | null>(null)
@@ -146,6 +56,8 @@ function App() {
   const [activeJobId, setActiveJobId] = useState<string | null>(null)
   const [progress, setProgress] = useState<JobEvent | null>(null)
   const [result, setResult] = useState<TranscriptResult | null>(null)
+  const [samplesMeta, setSamplesMeta] = useState<Record<string, SampleMeta>>({})
+  const [voicesOpen, setVoicesOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -154,7 +66,7 @@ function App() {
     try {
       setJobs(await api<Job[]>('/api/jobs'))
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
+      setError(errorMessage(cause))
     }
   }, [])
 
@@ -162,17 +74,33 @@ function App() {
     try {
       setFiles(await api<FileItem[]>('/api/files'))
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
+      setError(errorMessage(cause))
     }
   }, [])
 
-  const loadResult = useCallback(async (jobId: string) => {
+  const refreshSamples = useCallback(async (jobId: string) => {
     try {
-      setResult(await api<TranscriptResult>(`/api/jobs/${jobId}/result`))
+      const items = await api<SampleMeta[]>(`/api/jobs/${jobId}/samples`)
+      const map: Record<string, SampleMeta> = {}
+      for (const item of items) map[item.speaker_id] = item
+      setSamplesMeta(map)
     } catch {
-      setResult(null)
+      setSamplesMeta({})
     }
   }, [])
+
+  const loadResult = useCallback(
+    async (jobId: string) => {
+      try {
+        setResult(await api<TranscriptResult>(`/api/jobs/${jobId}/result`))
+        await refreshSamples(jobId)
+      } catch {
+        setResult(null)
+        setSamplesMeta({})
+      }
+    },
+    [refreshSamples],
+  )
 
   useEffect(() => {
     void (async () => {
@@ -181,7 +109,7 @@ function App() {
         setVersion(health.version)
         setConfig(await api<ConfigInfo>('/api/config'))
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : String(cause))
+        setError(errorMessage(cause))
       }
     })()
     void refreshFiles()
@@ -216,9 +144,10 @@ function App() {
         setActiveJobId(job.id)
         setProgress({ stage: 'queued', fraction: 0, message: 'В очереди', status: 'queued' })
         setResult(null)
+        setSamplesMeta({})
         await refreshJobs()
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : String(cause))
+        setError(errorMessage(cause))
       }
     },
     [refreshJobs],
@@ -231,9 +160,10 @@ function App() {
         await api<Job>(`/api/jobs/${jobId}/run`, { method: 'POST' })
         setActiveJobId(jobId)
         setResult(null)
+        setSamplesMeta({})
         await refreshJobs()
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : String(cause))
+        setError(errorMessage(cause))
       }
     },
     [refreshJobs],
@@ -244,6 +174,7 @@ function App() {
       setError(null)
       setActiveJobId(jobId)
       setResult(null)
+      setSamplesMeta({})
       setProgress(null)
       try {
         const details = await api<JobDetails>(`/api/jobs/${jobId}`)
@@ -255,7 +186,7 @@ function App() {
         })
         if (details.status === 'done') await loadResult(jobId)
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : String(cause))
+        setError(errorMessage(cause))
       }
     },
     [loadResult],
@@ -269,11 +200,12 @@ function App() {
         if (activeJobId === jobId) {
           setActiveJobId(null)
           setResult(null)
+          setSamplesMeta({})
           setProgress(null)
         }
         await refreshJobs()
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : String(cause))
+        setError(errorMessage(cause))
       }
     },
     [activeJobId, refreshJobs],
@@ -288,10 +220,48 @@ function App() {
         await api<FileItem>('/api/files/upload', { method: 'POST', body })
         await refreshFiles()
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : String(cause))
+        setError(errorMessage(cause))
       }
     },
     [refreshFiles],
+  )
+
+  const patchSpeakers = useCallback(
+    async (jobId: string, body: Record<string, unknown>) => {
+      const updated = await api<TranscriptResult>(`/api/jobs/${jobId}/speakers`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      setResult(updated)
+      await refreshSamples(jobId)
+    },
+    [refreshSamples],
+  )
+
+  const applyNames = useCallback(
+    async (jobId: string): Promise<ApplyNamesResponse> => {
+      const response = await api<ApplyNamesResponse>(`/api/jobs/${jobId}/apply-names`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      setResult(response.result)
+      await refreshSamples(jobId)
+      return response
+    },
+    [refreshSamples],
+  )
+
+  const saveToLibrary = useCallback(
+    async (jobId: string, speakerId: string, name: string): Promise<VoiceInfo> => {
+      return api<VoiceInfo>(`/api/jobs/${jobId}/speakers/${speakerId}/to-library`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      })
+    },
+    [],
   )
 
   const stageIndex = useMemo(() => {
@@ -313,7 +283,7 @@ function App() {
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-6xl items-baseline gap-3 px-6 py-4">
           <h1 className="text-xl font-semibold">AudioTranscriber</h1>
-          <span className="text-sm text-slate-400">веб-интерфейс · этап 1</span>
+          <span className="text-sm text-slate-400">веб-интерфейс · этап 2</span>
           {version && <span className="ml-auto text-xs text-slate-400">v{version}</span>}
         </div>
       </header>
@@ -487,7 +457,7 @@ function App() {
           </section>
         )}
 
-        {result && (
+        {result && activeJobId && (
           <section className="space-y-4 rounded-lg border border-slate-200 bg-white p-4">
             <div className="flex flex-wrap items-center gap-3">
               <h2 className="font-medium">Стенограмма</h2>
@@ -513,28 +483,20 @@ function App() {
               <span>{filteredEntries.length} из {result.entries.length}</span>
             </div>
 
-            {result.speakers.length > 0 && (
-              <div className="flex flex-wrap gap-3">
-                {result.speakers.map((speaker) => (
-                  <div
-                    key={speaker.id}
-                    className="flex items-center gap-2 rounded-md border border-slate-200 px-3 py-1.5"
-                  >
-                    <span className="text-sm">{speaker.display_name}</span>
-                    {speaker.has_sample ? (
-                      <audio
-                        controls
-                        preload="none"
-                        className="h-8"
-                        src={`/api/jobs/${activeJobId}/samples/${speaker.id}`}
-                      />
-                    ) : (
-                      <span className="text-xs text-slate-400">нет образца</span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
+            <SpeakersPanel
+              jobId={activeJobId}
+              result={result}
+              sampleMeta={samplesMeta}
+              onRename={(speakerId, name) =>
+                patchSpeakers(activeJobId, { renames: { [speakerId]: name } })
+              }
+              onMerge={(source, target) =>
+                patchSpeakers(activeJobId, { merges: [{ source, target }] })
+              }
+              onToLibrary={(speakerId, name) => saveToLibrary(activeJobId, speakerId, name)}
+              onApplyNames={() => applyNames(activeJobId)}
+              onOpenVoices={() => setVoicesOpen(true)}
+            />
 
             <div className="max-h-[28rem] overflow-auto rounded-md border border-slate-200">
               <table className="w-full border-collapse text-sm">
@@ -571,6 +533,8 @@ function App() {
           </section>
         )}
       </main>
+
+      <VoicesModal open={voicesOpen} onClose={() => setVoicesOpen(false)} />
     </div>
   )
 }

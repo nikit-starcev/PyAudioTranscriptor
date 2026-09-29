@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import tempfile
 import threading
 import uuid
 import webbrowser
@@ -23,7 +24,7 @@ from pathlib import Path
 from typing import Annotated
 
 import av
-from fastapi import APIRouter, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -31,22 +32,41 @@ from fastapi.responses import (
     Response,
     StreamingResponse,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from audio_transcriber import __version__
+from audio_transcriber.config.defaults import DEFAULT_ENROLLMENT_MIN_SIMILARITY
 from audio_transcriber.config.settings import AppConfig
+from audio_transcriber.diarization.voices import (
+    collect_voice_library,
+    delete_voice_sample,
+    save_speaker_sample,
+)
+from audio_transcriber.utils.audio import load_waveform, write_wav
+from audio_transcriber.utils.playback import amplitude_envelope, read_duration
 from audio_transcriber.utils.text import sanitize_filename
-from audio_transcriber.web.config import build_job_config, public_config
+from audio_transcriber.web.config import build_job_config, env_defaults, public_config
 from audio_transcriber.web.events import JobEventBus
 from audio_transcriber.web.paths import STATIC_DIR, WebPaths
 from audio_transcriber.web.results import load_result_file, result_summary
 from audio_transcriber.web.runner import ConfigBuilder, JobRunner, PipelineFn
+from audio_transcriber.web.speakers import (
+    apply_names,
+    apply_speaker_changes,
+    build_speaker_segments,
+)
 from audio_transcriber.web.storage.jobs_db import (
     STATUS_DONE,
     STATUS_QUEUED,
     STATUS_RUNNING,
     Job,
     JobsDB,
+)
+from audio_transcriber.web.voices import (
+    VoiceSample,
+    find_voice_sample,
+    list_voice_samples,
+    resolve_voices_dir,
 )
 
 #: Заголовки SSE: без кэша и без буферизации прокси.
@@ -108,20 +128,50 @@ class CreateJobRequest(BaseModel):
     path: str
 
 
+class MergeSpec(BaseModel):
+    """Одно объединение говорящих: ``source`` сливается в ``target``."""
+
+    source: str
+    target: str
+
+
+class SpeakerEditsRequest(BaseModel):
+    """Тело ``PATCH /api/jobs/{id}/speakers``."""
+
+    renames: dict[str, str] = Field(default_factory=dict)
+    merges: list[MergeSpec] = Field(default_factory=list)
+
+
+class ToLibraryRequest(BaseModel):
+    """Тело ``POST /api/jobs/{id}/speakers/{sid}/to-library``."""
+
+    name: str
+
+
+class ApplyNamesRequest(BaseModel):
+    """Тело ``POST /api/jobs/{id}/apply-names``."""
+
+    min_similarity: float | None = None
+    references: dict[str, str] = Field(default_factory=dict)
+
+
 def create_app(
     *,
     paths: WebPaths | None = None,
     pipeline_fn: PipelineFn | None = None,
     config_builder: ConfigBuilder | None = None,
+    voices_dir: Path | None = None,
     heartbeat: float = 15.0,
 ) -> FastAPI:
     """Собирает приложение FastAPI с изолированным окружением данных.
 
     ``pipeline_fn`` и ``config_builder`` подменяются в тестах, чтобы не
-    требовать GPU/моделей и реального ``config.env``.
+    требовать GPU/моделей и реального ``config.env``. ``voices_dir`` позволяет
+    подменить каталог библиотеки голосов (в тестах) вместо ``VOICES_DIR``.
     """
     resolved_paths = paths or WebPaths.default()
     resolved_paths.ensure()
+    resolved_voices = resolve_voices_dir(voices_dir)
     store = JobsDB(resolved_paths.jobs_db)
     store.initialize()
     bus = JobEventBus(heartbeat=heartbeat)
@@ -160,8 +210,16 @@ def create_app(
     app.state.store = store
     app.state.bus = bus
     app.state.runner = runner
+    app.state.voices_dir = resolved_voices
     router = APIRouter(prefix="/api")
-    register_api(router, store=store, bus=bus, runner=runner, paths=resolved_paths)
+    register_api(
+        router,
+        store=store,
+        bus=bus,
+        runner=runner,
+        paths=resolved_paths,
+        voices_dir=resolved_voices,
+    )
     app.include_router(router)
 
     @app.get("/", response_class=HTMLResponse)
@@ -190,6 +248,7 @@ def register_api(
     bus: JobEventBus,
     runner: JobRunner,
     paths: WebPaths,
+    voices_dir: Path,
 ) -> None:
     """Регистрирует все маршруты API v1 на переданном роутере."""
 
@@ -276,6 +335,133 @@ def register_api(
             raise HTTPException(status_code=404, detail="Образец не найден")
         return FileResponse(sample_path, media_type="audio/wav", filename=sample_path.name)
 
+    @router.get("/jobs/{job_id}/samples")
+    def job_samples(job_id: str) -> list[dict[str, object]]:
+        """Метаданные образцов голоса говорящих задачи (длительность, размер)."""
+        job = _require_job(store, job_id)
+        result = load_result_file(_result_path(paths, job))
+        if result is None:
+            raise HTTPException(status_code=404, detail="Результат ещё не готов")
+        items: list[dict[str, object]] = []
+        for speaker_id, relative in _result_samples(result).items():
+            sample_path = _sample_path(paths, relative)
+            if sample_path is None or not sample_path.is_file():
+                items.append({"speaker_id": speaker_id, "duration": 0.0, "size": 0})
+                continue
+            items.append(
+                {
+                    "speaker_id": speaker_id,
+                    "duration": round(read_duration(sample_path), 2),
+                    "size": sample_path.stat().st_size,
+                }
+            )
+        return items
+
+    @router.patch("/jobs/{job_id}/speakers")
+    def edit_speakers(job_id: str, payload: SpeakerEditsRequest) -> Response:
+        """Переименовать/объединить говорящих и перезаписать JSON результата."""
+        job = _require_job(store, job_id)
+        result = _require_result(paths, job)
+        renames = {
+            speaker_id: name.strip()
+            for speaker_id, name in payload.renames.items()
+            if speaker_id and name.strip()
+        }
+        merges = [
+            (merge.source, merge.target)
+            for merge in payload.merges
+            if merge.source and merge.target and merge.source != merge.target
+        ]
+        try:
+            new_result = apply_speaker_changes(
+                result,
+                source_path=Path(job.source_path),
+                renames=renames,
+                merges=merges,
+                samples=_result_samples(result),
+                data_dir=paths.data_dir,
+            )
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Не удалось применить правки: {exc}") from exc
+        _write_result(paths, job, new_result)
+        return JSONResponse(new_result)
+
+    @router.post("/jobs/{job_id}/apply-names")
+    def apply_names_route(job_id: str, payload: ApplyNamesRequest | None = None) -> Response:
+        """Сопоставить говорящих с именами по образцам (библиотека + явные)."""
+        job = _require_job(store, job_id)
+        result = _require_result(paths, job)
+        threshold = (
+            payload.min_similarity
+            if payload is not None and payload.min_similarity is not None
+            else DEFAULT_ENROLLMENT_MIN_SIMILARITY
+        )
+        source = Path(job.source_path)
+        explicit = _explicit_references(payload.references if payload is not None else {})
+        library = collect_voice_library(voices_dir)
+        references_total = len(explicit) + len(library)
+        segments = build_speaker_segments(result)
+        if not source.is_file():
+            return _apply_names_error(result, threshold, "Исходное аудио не найдено")
+        if references_total == 0:
+            return _apply_names_error(
+                result, threshold, "Нет образцов голоса: библиотека пуста и явные не заданы"
+            )
+        if not segments:
+            return _apply_names_error(
+                result, threshold, "Нет сегментов говорящих для сопоставления"
+            )
+        try:
+            updated, outcome = apply_names(
+                result,
+                source_path=source,
+                explicit_references=explicit,
+                library_references=library,
+                samples=_result_samples(result),
+                data_dir=paths.data_dir,
+                min_similarity=threshold,
+                local_model_path=_local_model_path(),
+            )
+        except Exception as exc:  # noqa: BLE001 — модель/аудио недоступны: мягкая деградация
+            return _apply_names_error(result, threshold, f"Сопоставление недоступно: {exc}")
+        if outcome.mapping:
+            _write_result(paths, job, updated)
+        best = {
+            speaker_id: {"name": name, "score": round(float(score), 3)}
+            for speaker_id, (name, score) in outcome.best_candidates.items()
+        }
+        return JSONResponse(
+            {
+                "result": updated,
+                "matched": dict(outcome.mapping),
+                "best_candidates": best,
+                "threshold": threshold,
+                "error": None,
+            }
+        )
+
+    @router.post("/jobs/{job_id}/speakers/{speaker_id}/to-library", status_code=201)
+    def speaker_to_library(
+        job_id: str, speaker_id: str, payload: ToLibraryRequest
+    ) -> dict[str, object]:
+        """Копирует образец говорящего задачи в библиотеку голосов под именем."""
+        job = _require_job(store, job_id)
+        result = _require_result(paths, job)
+        relative = _result_samples(result).get(speaker_id)
+        sample_path = _sample_path(paths, relative) if relative else None
+        if sample_path is None or not sample_path.is_file():
+            raise HTTPException(status_code=404, detail="Образец говорящего не найден")
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Не указано имя образца")
+        try:
+            target = save_speaker_sample(sample_path, voices_dir, name)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Не удалось сохранить образец: {exc}"
+            ) from exc
+        return VoiceSample(name=sanitize_filename(name), path=target).as_dict()
+
     @router.get("/jobs/{job_id}/audio")
     def job_audio(job_id: str, request: Request) -> Response:
         job = _require_job(store, job_id)
@@ -319,6 +505,72 @@ def register_api(
             stream(), media_type="text/event-stream", headers=dict(SSE_HEADERS)
         )
 
+    @router.get("/voices")
+    def voices_list() -> list[dict[str, object]]:
+        return [sample.as_dict() for sample in list_voice_samples(voices_dir)]
+
+    @router.post("/voices", status_code=201)
+    async def voices_upload(
+        file: Annotated[UploadFile, File()],
+        name: Annotated[str, Form()],
+    ) -> dict[str, object]:
+        """Сохранить загруженный файл как образец библиотеки ``<имя>.wav``."""
+        raw_name = name.strip()
+        clean = sanitize_filename(raw_name)
+        if not raw_name or not clean:
+            raise HTTPException(status_code=400, detail="Не указано имя образца")
+        data = await file.read()
+        if not data:
+            raise HTTPException(status_code=400, detail="Пустой файл")
+        try:
+            voices_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Не удалось создать библиотеку: {exc}"
+            ) from exc
+        target = voices_dir / f"{clean}.wav"
+        suffix = Path(file.filename or "").suffix.lower()
+        if suffix == ".wav":
+            try:
+                target.write_bytes(data)
+            except OSError as exc:
+                raise HTTPException(
+                    status_code=500, detail=f"Не удалось сохранить образец: {exc}"
+                ) from exc
+        else:
+            _write_converted_wav(data, suffix, target)
+        sample = find_voice_sample(voices_dir, clean) or VoiceSample(name=clean, path=target)
+        return sample.as_dict()
+
+    @router.get("/voices/{name}/audio")
+    def voice_audio(name: str) -> Response:
+        sample = find_voice_sample(voices_dir, name)
+        if sample is None:
+            raise HTTPException(status_code=404, detail="Образец не найден")
+        return FileResponse(sample.path, media_type="audio/wav", filename=sample.path.name)
+
+    @router.get("/voices/{name}/envelope")
+    def voice_envelope(name: str, columns: int = 120) -> dict[str, object]:
+        sample = find_voice_sample(voices_dir, name)
+        if sample is None:
+            raise HTTPException(status_code=404, detail="Образец не найден")
+        width = max(1, min(columns, 2000))
+        return {
+            "name": sample.name,
+            "duration": round(read_duration(sample.path), 2),
+            "columns": width,
+            "envelope": amplitude_envelope(sample.path, width),
+        }
+
+    @router.delete("/voices/{name}")
+    def voice_delete(name: str) -> dict[str, object]:
+        sample = find_voice_sample(voices_dir, name)
+        if sample is None:
+            raise HTTPException(status_code=404, detail="Образец не найден")
+        if not delete_voice_sample(sample.path, voices_dir):
+            raise HTTPException(status_code=404, detail="Образец не найден")
+        return {"deleted": sample.name}
+
 
 def _terminal_message(job: Job) -> str:
     if job.status == STATUS_DONE:
@@ -328,6 +580,105 @@ def _terminal_message(job: Job) -> str:
 
 def _sse(event: Mapping[str, object]) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+
+def _require_result(paths: WebPaths, job: Job) -> dict[str, object]:
+    """Читает JSON-результат задачи или отвечает 404, если он ещё не готов."""
+    result = load_result_file(_result_path(paths, job))
+    if result is None:
+        raise HTTPException(status_code=404, detail="Результат ещё не готов")
+    return result
+
+
+def _result_samples(result: Mapping[str, object]) -> dict[str, str]:
+    """Отображение ``speaker_id -> относительный путь`` из JSON результата."""
+    samples = result.get("samples")
+    if not isinstance(samples, Mapping):
+        return {}
+    return {
+        str(key): value
+        for key, value in samples.items()
+        if isinstance(key, str) and isinstance(value, str)
+    }
+
+
+def _sample_path(paths: WebPaths, relative: str) -> Path | None:
+    """Разрешает относительный путь образца внутри каталога данных (без выхода)."""
+    try:
+        root = paths.data_dir.resolve()
+        candidate = (root / relative).resolve()
+    except OSError:
+        return None
+    return candidate if candidate.is_relative_to(root) else None
+
+
+def _write_result(paths: WebPaths, job: Job, payload: Mapping[str, object]) -> None:
+    """Перезаписывает JSON результата задачи (как в воркере — с отступами)."""
+    path = _result_path(paths, job)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Не удалось сохранить результат: {exc}"
+        ) from exc
+
+
+def _explicit_references(raw: Mapping[str, str]) -> dict[str, list[Path]]:
+    """Существующие файлы из тела запроса: ``имя -> [путь]``."""
+    references: dict[str, list[Path]] = {}
+    for name, value in raw.items():
+        clean = name.strip()
+        if not clean or not value.strip():
+            continue
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = path.resolve()
+        if path.is_file():
+            references.setdefault(clean, []).append(path)
+    return references
+
+
+def _local_model_path() -> Path | None:
+    """Локальный каталог модели эмбеддингов из настроек (``PYANNOTE_LOCAL_MODEL``)."""
+    raw = env_defaults().get("PYANNOTE_LOCAL_MODEL", "").strip()
+    return Path(raw) if raw else None
+
+
+def _apply_names_error(
+    result: Mapping[str, object], threshold: float, message: str
+) -> Response:
+    """Мягкий ответ ``apply-names``: 200 без изменений и с текстом причины."""
+    return JSONResponse(
+        {
+            "result": dict(result),
+            "matched": {},
+            "best_candidates": {},
+            "threshold": threshold,
+            "error": message,
+        }
+    )
+
+
+def _write_converted_wav(data: bytes, suffix: str, target: Path) -> None:
+    """Декодирует загруженный не-WAV файл и сохраняет его как 16 кГц моно WAV."""
+    temp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix or ".bin", delete=False) as handle:
+            handle.write(data)
+            temp_path = handle.name
+        waveform = load_waveform(Path(temp_path))
+        write_wav(target, waveform)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Не удалось декодировать аудио: {exc}"
+        ) from exc
+    finally:
+        if temp_path is not None:
+            Path(temp_path).unlink(missing_ok=True)
+
 
 
 def _index_response() -> Response:

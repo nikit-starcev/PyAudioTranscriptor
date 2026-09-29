@@ -68,6 +68,7 @@ from audio_transcriber.diarization.voices import (
     merge_references,
     save_speaker_sample,
 )
+from audio_transcriber.domain.editing import merge_speakers, rename_speaker
 from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
 from audio_transcriber.domain.models import SpeakerSegment, TranscriptionResult
 from audio_transcriber.llm.base import LlmClient
@@ -236,52 +237,6 @@ def filter_result_rows(rows: Sequence[ResultRow], query: str) -> list[ResultRow]
         if all(term in haystack for term in terms):
             matching.append(row)
     return matching
-
-
-def rename_speaker(
-    result: TranscriptionResult, speaker_id: str, new_name: str
-) -> TranscriptionResult:
-    """Возвращает копию результата с новым именем говорящего у него и реплик.
-
-    Ничего не делает, если говорящий с таким идентификатором не найден.
-    """
-
-    if not any(speaker.id == speaker_id for speaker in result.speakers):
-        return result
-    speakers = [
-        replace(speaker, display_name=new_name) if speaker.id == speaker_id else speaker
-        for speaker in result.speakers
-    ]
-    renamed = next(speaker for speaker in speakers if speaker.id == speaker_id)
-    entries = [
-        replace(entry, speaker=renamed)
-        if entry.speaker is not None and entry.speaker.id == speaker_id
-        else entry
-        for entry in result.entries
-    ]
-    return replace(result, speakers=speakers, entries=entries)
-
-
-def merge_speakers(
-    result: TranscriptionResult, source_id: str, target_id: str
-) -> TranscriptionResult:
-    """Сливает говорящего ``source_id`` в ``target_id``.
-
-    Все реплики источника переназначаются целевому говорящему, источник
-    удаляется из списка. Если целевого говорящего нет, результат не меняется.
-    """
-
-    target = next((speaker for speaker in result.speakers if speaker.id == target_id), None)
-    if target is None or source_id == target_id:
-        return result
-    speakers = [speaker for speaker in result.speakers if speaker.id != source_id]
-    entries = [
-        replace(entry, speaker=target)
-        if entry.speaker is not None and entry.speaker.id == source_id
-        else entry
-        for entry in result.entries
-    ]
-    return replace(result, speakers=speakers, entries=entries)
 
 
 class MediaDirectoryTree(DirectoryTree):

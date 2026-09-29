@@ -1,0 +1,307 @@
+import { useMemo, useState } from 'react'
+
+import {
+  errorMessage,
+  formatDuration,
+  type ApplyNamesResponse,
+  type SampleMeta,
+  type TranscriptResult,
+  type VoiceInfo,
+} from '../api'
+
+type Props = {
+  jobId: string
+  result: TranscriptResult
+  sampleMeta: Record<string, SampleMeta>
+  onRename: (speakerId: string, name: string) => Promise<void>
+  onMerge: (source: string, target: string) => Promise<void>
+  onToLibrary: (speakerId: string, name: string) => Promise<VoiceInfo>
+  onApplyNames: () => Promise<ApplyNamesResponse>
+  onOpenVoices: () => void
+}
+
+type EditState = { sid: string; kind: 'rename' | 'library'; value: string }
+
+function describeApply(response: ApplyNamesResponse, total: number): string {
+  if (response.error) return response.error
+  const matched = Object.entries(response.matched)
+  const parts = [`Сопоставлено ${matched.length} из ${total}`]
+  if (matched.length > 0) {
+    parts.push(matched.map(([sid, name]) => `${sid} → ${name}`).join(', '))
+  }
+  const candidates = Object.entries(response.best_candidates)
+    .sort((a, b) => b[1].score - a[1].score)
+    .slice(0, 3)
+    .map(
+      ([sid, candidate]) =>
+        `${sid} ≈ «${candidate.name}» ${candidate.score.toFixed(2)} < ${response.threshold.toFixed(2)}`,
+    )
+  if (candidates.length > 0) parts.push(`не добрали: ${candidates.join('; ')}`)
+  return parts.join(' · ')
+}
+
+function SpeakersPanel({
+  jobId,
+  result,
+  sampleMeta,
+  onRename,
+  onMerge,
+  onToLibrary,
+  onApplyNames,
+  onOpenVoices,
+}: Props) {
+  const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useState<{ kind: 'info' | 'error'; text: string } | null>(null)
+  const [edit, setEdit] = useState<EditState | null>(null)
+  const [mergeTarget, setMergeTarget] = useState<Record<string, string>>({})
+
+  const counts = useMemo(() => {
+    const map: Record<string, number> = {}
+    for (const entry of result.entries) {
+      if (entry.speaker_id) map[entry.speaker_id] = (map[entry.speaker_id] ?? 0) + 1
+    }
+    return map
+  }, [result.entries])
+
+  const run = async (task: () => Promise<void>) => {
+    setBusy(true)
+    setStatus(null)
+    try {
+      await task()
+    } catch (cause) {
+      setStatus({ kind: 'error', text: errorMessage(cause) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const submitEdit = (state: EditState) => {
+    const name = state.value.trim()
+    if (!name) {
+      setStatus({ kind: 'error', text: 'Введите имя' })
+      return
+    }
+    void run(async () => {
+      if (state.kind === 'rename') {
+        await onRename(state.sid, name)
+        setStatus({ kind: 'info', text: `${state.sid} → ${name}` })
+      } else {
+        const voice = await onToLibrary(state.sid, name)
+        setStatus({ kind: 'info', text: `Сохранено в библиотеку: ${voice.name}.wav` })
+      }
+      setEdit(null)
+    })
+  }
+
+  const applyNames = () => {
+    const total = result.speakers.length
+    void run(async () => {
+      const response = await onApplyNames()
+      setStatus({
+        kind: response.error ? 'error' : 'info',
+        text: describeApply(response, total),
+      })
+    })
+  }
+
+  const merge = (speakerId: string) => {
+    const target = mergeTarget[speakerId]
+    if (!target) return
+    void run(async () => {
+      await onMerge(speakerId, target)
+      setStatus({ kind: 'info', text: `${speakerId} объединён в ${target}` })
+      setMergeTarget((prev) => ({ ...prev, [speakerId]: '' }))
+    })
+  }
+
+  return (
+    <div className="rounded-md border border-slate-200 p-3">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <h3 className="font-medium">Говорящие</h3>
+        <span className="text-xs text-slate-400">{result.speakers.length} шт.</span>
+        <div className="ml-auto flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={applyNames}
+            disabled={busy || result.speakers.length === 0}
+            className="rounded-md bg-slate-800 px-3 py-1.5 text-xs text-white hover:bg-slate-700 disabled:opacity-40"
+          >
+            Применить имена
+          </button>
+          <button
+            type="button"
+            onClick={onOpenVoices}
+            className="rounded-md border border-slate-300 px-3 py-1.5 text-xs hover:bg-slate-100"
+          >
+            Библиотека голосов
+          </button>
+        </div>
+      </div>
+
+      {status && (
+        <p
+          role="status"
+          className={`mb-3 rounded-md px-3 py-1.5 text-xs ${
+            status.kind === 'error'
+              ? 'bg-red-50 text-red-700'
+              : 'bg-slate-50 text-slate-600'
+          }`}
+        >
+          {status.text}
+        </p>
+      )}
+
+      <ul className="space-y-2">
+        {result.speakers.map((speaker) => {
+          const editing = edit?.sid === speaker.id ? edit : null
+          const duration = sampleMeta[speaker.id]?.duration
+          const others = result.speakers.filter((item) => item.id !== speaker.id)
+          return (
+            <li
+              key={speaker.id}
+              className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-slate-100 bg-slate-50/60 px-3 py-2"
+            >
+              <span className="w-28 shrink-0 font-mono text-xs text-slate-500">
+                {speaker.id}
+              </span>
+
+              <div className="min-w-[12rem] flex-1">
+                {editing?.kind === 'rename' ? (
+                  <div className="flex items-center gap-1">
+                    <input
+                      autoFocus
+                      value={editing.value}
+                      onChange={(event) => setEdit({ ...editing, value: event.target.value })}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') submitEdit(editing)
+                        if (event.key === 'Escape') setEdit(null)
+                      }}
+                      className="w-48 rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => submitEdit(editing)}
+                      className="rounded-md bg-slate-800 px-2 py-1 text-xs text-white hover:bg-slate-700"
+                    >
+                      ОК
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEdit(null)}
+                      className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100"
+                    >
+                      Отмена
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-sm font-medium">{speaker.display_name}</span>
+                    <button
+                      type="button"
+                      title="Переименовать"
+                      onClick={() =>
+                        setEdit({ sid: speaker.id, kind: 'rename', value: speaker.display_name })
+                      }
+                      className="text-xs text-slate-400 hover:text-slate-700"
+                    >
+                      ✎
+                    </button>
+                  </div>
+                )}
+                <p className="text-xs text-slate-400">
+                  {counts[speaker.id] ?? 0} реплик · Образец {speaker.has_sample ? '✓' : '—'}
+                  {speaker.has_sample ? ` · ${formatDuration(duration ?? null)}` : ''}
+                </p>
+              </div>
+
+              {speaker.has_sample && (
+                <audio
+                  controls
+                  preload="none"
+                  className="h-8"
+                  src={`/api/jobs/${jobId}/samples/${encodeURIComponent(speaker.id)}`}
+                />
+              )}
+
+              <div className="flex flex-wrap items-center gap-2">
+                {editing?.kind === 'library' ? (
+                  <div className="flex items-center gap-1">
+                    <input
+                      autoFocus
+                      value={editing.value}
+                      onChange={(event) => setEdit({ ...editing, value: event.target.value })}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') submitEdit(editing)
+                        if (event.key === 'Escape') setEdit(null)
+                      }}
+                      className="w-40 rounded-md border border-slate-300 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => submitEdit(editing)}
+                      className="rounded-md bg-slate-800 px-2 py-1 text-xs text-white hover:bg-slate-700"
+                    >
+                      Сохранить
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEdit(null)}
+                      className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100"
+                    >
+                      Отмена
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={!speaker.has_sample || busy}
+                    title={speaker.has_sample ? undefined : 'Нет образца голоса'}
+                    onClick={() =>
+                      setEdit({
+                        sid: speaker.id,
+                        kind: 'library',
+                        value: speaker.display_name,
+                      })
+                    }
+                    className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100 disabled:opacity-40"
+                  >
+                    В библиотеку
+                  </button>
+                )}
+
+                {others.length > 0 && (
+                  <div className="flex items-center gap-1">
+                    <select
+                      value={mergeTarget[speaker.id] ?? ''}
+                      onChange={(event) =>
+                        setMergeTarget((prev) => ({ ...prev, [speaker.id]: event.target.value }))
+                      }
+                      className="rounded-md border border-slate-300 px-2 py-1 text-xs"
+                    >
+                      <option value="">Объединить в…</option>
+                      {others.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.display_name} ({item.id})
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      disabled={!mergeTarget[speaker.id] || busy}
+                      onClick={() => merge(speaker.id)}
+                      className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100 disabled:opacity-40"
+                    >
+                      →
+                    </button>
+                  </div>
+                )}
+              </div>
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
+export default SpeakersPanel
