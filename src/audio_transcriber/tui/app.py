@@ -59,6 +59,7 @@ from audio_transcriber.llm.client import (
 from audio_transcriber.llm.client import create_llm_client
 from audio_transcriber.pipeline import run_pipeline
 from audio_transcriber.progress import ProgressEvent
+from audio_transcriber.utils.config_env import load_config_env
 from audio_transcriber.utils.glossary_paths import normalize_glossary_paths_tuple
 
 logger = logging.getLogger(__name__)
@@ -188,19 +189,8 @@ class MediaDirectoryTree(DirectoryTree):
 
 def _load_env_defaults() -> dict[str, str]:
     """Читает ``config.env`` рядом с проектом и возвращает словарь настроек."""
-    candidates = (Path.cwd(), Path(__file__).resolve().parents[3])
-    for root in candidates:
-        config_path = root / "config.env"
-        if config_path.is_file():
-            defaults: dict[str, str] = {}
-            for line in config_path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                defaults[key.strip()] = value.strip().strip('"').strip("'")
-            return defaults
-    return {}
+    _, defaults = load_config_env()
+    return defaults
 
 
 class ProgressUpdate(Message):
@@ -384,6 +374,7 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
     mark_overlap = app.query_one("#overlap", Switch).value
     diarization_enabled = app.query_one("#diarization", Switch).value
     denoise_enabled = app.query_one("#denoise", Switch).value
+    use_cache = app.query_one("#cache", Switch).value
 
     backend_raw = str(app.query_one("#backend", Select).value or "")
     backend = (
@@ -435,6 +426,9 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
     low_conf_raw = app.query_one("#low_conf", Input).value.strip()
     low_confidence_threshold = _to_float(low_conf_raw or None, DEFAULT_LOW_CONFIDENCE_THRESHOLD)
 
+    cache_dir_raw = defaults.get("CACHE_DIR", "").strip()
+    cache_dir = Path(cache_dir_raw) if cache_dir_raw else None
+
     return AppConfig(
         input_file=input_file,
         output_dir=Path(output_dir),
@@ -456,6 +450,8 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
         normalize_text=normalize_text,
         denoise=denoise_enabled,
         mark_overlap=mark_overlap,
+        use_cache=use_cache,
+        cache_dir=cache_dir,
         low_confidence_threshold=low_confidence_threshold,
         enable_correction=enable_correction,
         correction_min_word_length=_to_int(
@@ -628,6 +624,12 @@ class TranscriberApp(App):
                         yield Switch(
                             value=_to_bool(self._defaults.get("DENOISE"), default=True),
                             id="denoise",
+                        )
+                    with Horizontal():
+                        yield Label("Кэш результатов", classes="field-label")
+                        yield Switch(
+                            value=_to_bool(self._defaults.get("USE_CACHE"), default=True),
+                            id="cache",
                         )
                     with Horizontal():
                         yield Label("Диаризация", classes="field-label")

@@ -459,3 +459,41 @@ def test_build_config_llm_prompt_extra_and_file(
 
     assert config.llm_prompt_extra == "Пиши кратко"
     assert config.llm_prompt_file == prompt_file
+
+
+# --- Пакет 3 «надёжность»: кэш результатов ---------------------------------
+
+
+def test_build_config_cache_enabled_by_default(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            return app._build_config(audio_file)
+
+    assert asyncio.run(_run()).use_cache is True
+
+
+def test_build_config_cache_toggle_and_dir_from_env(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache_dir = tmp_path / "custom-cache"
+    defaults = _defaults(tmp_path / "out")
+    defaults["USE_CACHE"] = "false"
+    defaults["CACHE_DIR"] = str(cache_dir)
+    monkeypatch.setattr(tui_app, "_load_env_defaults", lambda: defaults)
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            return app._build_config(audio_file)
+
+    config = asyncio.run(_run())
+
+    assert config.use_cache is False
+    assert config.cache_dir == cache_dir

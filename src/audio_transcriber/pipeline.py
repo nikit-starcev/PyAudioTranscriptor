@@ -11,6 +11,14 @@ from __future__ import annotations
 
 import logging
 
+from audio_transcriber.cache.denoiser import CachingDenoiser
+from audio_transcriber.cache.serialization import (
+    asr_from_payload,
+    asr_payload,
+    diarization_from_payload,
+    diarization_payload,
+)
+from audio_transcriber.cache.store import StageCache
 from audio_transcriber.cleaning.artifact_filter import ArtifactCleaner
 from audio_transcriber.cleaning.base import (
     ArtifactCleanerProtocol,
@@ -25,6 +33,9 @@ from audio_transcriber.correction.morph_corrector import MorphTextCorrector
 from audio_transcriber.denoising.base import DenoiserProtocol
 from audio_transcriber.denoising.deepfilter import DeepFilterDenoiser
 from audio_transcriber.diarization.base import SpeakerDiarizer
+from audio_transcriber.diarization.pyannote_engine import (
+    DEFAULT_PIPELINE as DIARIZATION_PIPELINE,
+)
 from audio_transcriber.diarization.pyannote_engine import PyannoteSpeakerDiarizer
 from audio_transcriber.domain.enums import AsrBackend, Device
 from audio_transcriber.domain.models import SpeakerOverlap, TranscriptionResult
@@ -63,6 +74,52 @@ def _build_recognizer(
         initial_prompt=config.initial_prompt,
         hotwords=config.hotwords,
     )
+
+
+def _asr_cache_params(
+    config: AppConfig, device: Device, recognizer: SpeechRecognizer
+) -> dict[str, object]:
+    """Релевантные параметры стадии ASR для ключа кэша.
+
+    Включается только то, что влияет на результат: бэкенд и его модель, язык,
+    устройство, подсказки и признак денойза (он меняет входное аудио).
+    Имя класса движка отсекает кэш при смене реализации.
+    """
+    params: dict[str, object] = {
+        "engine": type(recognizer).__name__,
+        "backend": config.asr_backend.value,
+        "language": config.language,
+        "device": device.value,
+        "denoise": config.denoise,
+        "initial_prompt": config.initial_prompt,
+        "hotwords": config.hotwords,
+    }
+    if config.asr_backend is AsrBackend.WHISPER_CPP:
+        params["whisper_cpp_model"] = (
+            str(config.whisper_cpp_model) if config.whisper_cpp_model else None
+        )
+        params["whisper_cpp_threads"] = config.whisper_cpp_threads
+    else:
+        params["model"] = config.model_name
+    return params
+
+
+def _diarization_cache_params(
+    config: AppConfig, device: Device, diarizer: SpeakerDiarizer
+) -> dict[str, object]:
+    """Релевантные параметры стадии диаризации для ключа кэша."""
+    return {
+        "engine": type(diarizer).__name__,
+        "device": device.value,
+        "denoise": config.denoise,
+        "num_speakers": config.num_speakers,
+        "pipeline": DIARIZATION_PIPELINE,
+        "local_model": (
+            str(config.pyannote_local_model) if config.pyannote_local_model else None
+        ),
+        # Пометка наложения влияет на то, собираются ли зоны перекрытий.
+        "mark_overlap": config.mark_overlap,
+    }
 
 
 def run_pipeline(
@@ -110,9 +167,14 @@ def run_pipeline(
             max_candidates=config.correction_max_candidates,
         )
 
+    # Дорогие стадии кэшируются по ключу от исходного файла и параметров.
+    cache = StageCache(config.resolved_cache_dir(), enabled=config.use_cache)
+
     # Шумоподавление идёт первым: и распознавание, и диаризация должны видеть
     # один и тот же очищенный файл, иначе временные метки разъедутся.
     denoiser = denoiser or (DeepFilterDenoiser() if config.denoise else None)
+    if denoiser is not None and config.use_cache:
+        denoiser = CachingDenoiser(denoiser, cache, source=config.input_file)
     audio_path = config.input_file
     overlaps: list[SpeakerOverlap] = []
     try:
@@ -121,11 +183,26 @@ def run_pipeline(
             emit(ProgressEvent("denoise", "Шумоподавление", fraction=None))
             audio_path = denoiser.denoise(config.input_file)
 
-        logger.info("Распознавание речи...")
-        emit(ProgressEvent("asr", "Распознавание речи", fraction=None))
-        transcription_segments, language, duration = recognizer.transcribe(
-            audio_path, language=config.language
-        )
+        asr_key = cache.key("asr", config.input_file, _asr_cache_params(config, device, recognizer))
+        cached_asr = cache.load("asr", asr_key)
+        if cached_asr is not None:
+            try:
+                transcription_segments, language, duration = asr_from_payload(cached_asr)
+            except (KeyError, TypeError, ValueError) as exc:
+                logger.warning("Кэш ASR повреждён, будет пересчитан: %s", exc)
+                cached_asr = None
+        if cached_asr is not None:
+            logger.info("Кэш ASR: попадание (%s)", asr_key[:12])
+            emit(ProgressEvent("asr", "Распознавание речи", fraction=None, detail="из кэша"))
+        else:
+            logger.info("Кэш ASR: промах — распознавание речи...")
+            emit(ProgressEvent("asr", "Распознавание речи", fraction=None))
+            transcription_segments, language, duration = recognizer.transcribe(
+                audio_path, language=config.language
+            )
+            cache.save(
+                "asr", asr_key, asr_payload(transcription_segments, language, duration)
+            )
 
         if config.diarization_enabled:
             # whisper.cpp сам использует GPU через Vulkan; pyannote.audio в этом
@@ -140,17 +217,40 @@ def run_pipeline(
                 local_model_path=config.pyannote_local_model,
                 on_progress=emit,
             )
-            logger.info("Определение говорящих...")
-            emit(ProgressEvent("diarization", "Определение говорящих", fraction=None))
-            speaker_segments = active_diarizer.diarize(
-                audio_path, num_speakers=config.num_speakers
+            dia_key = cache.key(
+                "diarization",
+                config.input_file,
+                _diarization_cache_params(config, diarization_device, active_diarizer),
             )
-            # Зоны наложения речи — из обычной (не эксклюзивной) разметки, если
-            # движок её умеет. Отсутствие метода — не ошибка (мягкая деградация).
-            if config.mark_overlap:
-                overlap_getter = getattr(active_diarizer, "overlap_regions", None)
-                if callable(overlap_getter):
-                    overlaps = list(overlap_getter())
+            cached_dia = cache.load("diarization", dia_key)
+            if cached_dia is not None:
+                try:
+                    speaker_segments, overlaps = diarization_from_payload(cached_dia)
+                except (KeyError, TypeError, ValueError) as exc:
+                    logger.warning("Кэш диаризации повреждён, будет пересчитан: %s", exc)
+                    cached_dia = None
+            if cached_dia is not None:
+                logger.info("Кэш диаризации: попадание (%s)", dia_key[:12])
+                emit(
+                    ProgressEvent(
+                        "diarization", "Определение говорящих", fraction=None, detail="из кэша"
+                    )
+                )
+            else:
+                logger.info("Кэш диаризации: промах — определение говорящих...")
+                emit(ProgressEvent("diarization", "Определение говорящих", fraction=None))
+                speaker_segments = active_diarizer.diarize(
+                    audio_path, num_speakers=config.num_speakers
+                )
+                # Зоны наложения речи — из обычной (не эксклюзивной) разметки, если
+                # движок её умеет. Отсутствие метода — не ошибка (мягкая деградация).
+                if config.mark_overlap:
+                    overlap_getter = getattr(active_diarizer, "overlap_regions", None)
+                    if callable(overlap_getter):
+                        overlaps = list(overlap_getter())
+                cache.save(
+                    "diarization", dia_key, diarization_payload(speaker_segments, overlaps)
+                )
         else:
             logger.info("Диаризация отключена — все реплики без разметки говорящих")
             emit(ProgressEvent("diarization", "Диаризация отключена", fraction=1.0))

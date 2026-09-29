@@ -70,6 +70,12 @@ class AppConfig:
     # Требует обычной (не эксклюзивной) разметки pyannote; иначе мягко
     # пропускается без пометок и без падения.
     mark_overlap: bool = True
+    # Постадийный кэш дорогих этапов (шумоподавление, распознавание, диаризация).
+    # При повторном запуске на том же файле с теми же параметрами стадии не
+    # пересчитываются — это и ускоряет прогоны, и даёт возобновление после сбоя.
+    use_cache: bool = True
+    # Каталог кэша; None — <output_dir>/.cache.
+    cache_dir: Path | None = None
     # Порог низкой уверенности ASR: реплики со средним avg_logprob ниже
     # порога помечаются в txt/docx/json. Логвероятности <= 0.
     low_confidence_threshold: float = DEFAULT_LOW_CONFIDENCE_THRESHOLD
@@ -148,6 +154,9 @@ class AppConfig:
         if not isinstance(self.mark_overlap, bool):
             raise ConfigurationError("MARK_OVERLAP должно быть true или false")
 
+        if not isinstance(self.use_cache, bool):
+            raise ConfigurationError("USE_CACHE должно быть true или false")
+
         if isinstance(self.low_confidence_threshold, bool) or not isinstance(
             self.low_confidence_threshold, (int, float)
         ):
@@ -205,6 +214,10 @@ class AppConfig:
         for glossary_path in self.glossary_path:
             if not glossary_path.is_file():
                 raise ConfigurationError(f"Файл глоссария не найден: {glossary_path}")
+
+    def resolved_cache_dir(self) -> Path:
+        """Каталог постадийного кэша: ``cache_dir`` или ``<output_dir>/.cache``."""
+        return self.cache_dir if self.cache_dir is not None else self.output_dir / ".cache"
 
     def ensure_output_dir(self) -> None:
         """Создаёт директорию результатов, если её ещё нет.

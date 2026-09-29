@@ -522,3 +522,79 @@ def test_transcribe_llm_prompt_extra_and_file(
     assert result.exit_code == 0
     assert captured["config"].llm_prompt_extra == "Пиши кратко"
     assert captured["config"].llm_prompt_file == prompt_file
+
+
+# --- Пакет 3 «надёжность»: кэш результатов ---------------------------------
+
+
+def test_transcribe_cache_enabled_by_default(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 0
+    assert captured["config"].use_cache is True
+
+
+def test_transcribe_no_cache_flag(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(
+        app,
+        ["transcribe", str(audio_file), "-o", str(tmp_path / "out"), "--no-cache"],
+    )
+
+    assert result.exit_code == 0
+    assert captured["config"].use_cache is False
+
+
+def test_transcribe_custom_cache_dir(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+    cache_dir = tmp_path / "cache"
+
+    result = runner.invoke(
+        app,
+        [
+            "transcribe",
+            str(audio_file),
+            "-o",
+            str(tmp_path / "out"),
+            "--cache-dir",
+            str(cache_dir),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["config"].cache_dir == cache_dir
+    assert captured["config"].resolved_cache_dir() == cache_dir
+
+
+def test_transcribe_clear_cache_removes_files(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stub_pipeline
+) -> None:
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+    output_dir = tmp_path / "out"
+    cache_dir = output_dir / ".cache"
+    cache_dir.mkdir(parents=True)
+    stale = cache_dir / "asr-deadbeef.json"
+    stale.write_text("{}", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        ["transcribe", str(audio_file), "-o", str(output_dir), "--clear-cache"],
+    )
+
+    assert result.exit_code == 0
+    assert not stale.exists()

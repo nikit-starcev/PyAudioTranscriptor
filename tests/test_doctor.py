@@ -1,0 +1,245 @@
+"""Тесты самопроверки окружения (команда ``doctor``)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from typer.testing import CliRunner
+
+from audio_transcriber import doctor
+from audio_transcriber.cli.app import app
+
+runner = CliRunner()
+
+
+def _patch_modules(monkeypatch: pytest.MonkeyPatch, *, available: bool = True) -> None:
+    monkeypatch.setattr(doctor, "_module_available", lambda _name: available)
+
+
+def _patch_writable(monkeypatch: pytest.MonkeyPatch, *, ok: bool = True) -> None:
+    monkeypatch.setattr(doctor, "_dir_writable", lambda _path: ok)
+
+
+def _base_env(tmp_path: Path, **overrides: str) -> dict[str, str]:
+    env = {
+        "ASR_BACKEND": "faster-whisper",
+        "DIARIZATION_ENABLED": "false",
+        "OUTPUT_DIR": str(tmp_path / "out"),
+    }
+    env.update(overrides)
+    return env
+
+
+def _find(checks: list[doctor.DoctorCheck], key: str) -> doctor.DoctorCheck:
+    return next(check for check in checks if check.key == key)
+
+
+def test_all_good_env_has_no_critical_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+
+    checks = doctor.run_doctor(None, _base_env(tmp_path))
+
+    assert not doctor.has_critical_failures(checks)
+    assert "✓" in doctor.format_report(checks)
+
+
+def test_missing_critical_dependency_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(doctor, "_module_available", lambda name: name != "av")
+    _patch_writable(monkeypatch)
+
+    checks = doctor.run_doctor(None, _base_env(tmp_path))
+
+    assert not _find(checks, "dep:av").ok
+    assert _find(checks, "dep:av").critical
+    assert doctor.has_critical_failures(checks)
+
+
+def test_optional_dependency_missing_is_not_critical(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(doctor, "_module_available", lambda name: name != "df")
+    _patch_writable(monkeypatch)
+
+    checks = doctor.run_doctor(None, _base_env(tmp_path))
+
+    deepfilter = _find(checks, "dep:df")
+    assert not deepfilter.ok
+    assert not deepfilter.critical
+
+
+def test_whisper_cpp_missing_binary_and_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+    monkeypatch.setattr(doctor, "_binary_available", lambda _binary: False)
+    monkeypatch.setattr(doctor, "_is_file", lambda _path: False)
+    monkeypatch.setattr(doctor, "_vulkan_devices", lambda _binary, _lib: None)
+
+    env = _base_env(
+        tmp_path,
+        ASR_BACKEND="whisper-cpp",
+        WHISPER_CPP_BINARY="/no/whisper-cli",
+        WHISPER_CPP_MODEL="/no/model.bin",
+    )
+    checks = doctor.run_doctor(None, env)
+
+    assert not _find(checks, "bin:whisper-cli").ok
+    assert not _find(checks, "model:whisper").ok
+    assert doctor.has_critical_failures(checks)
+
+
+def test_vulkan_device_reported_when_found(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+    monkeypatch.setattr(doctor, "_binary_available", lambda _binary: True)
+    monkeypatch.setattr(
+        doctor, "_vulkan_devices", lambda _binary, _lib: ["Vulkan0: AMD Radeon (b)"]
+    )
+
+    env = _base_env(tmp_path, ASR_BACKEND="whisper-cpp", WHISPER_CPP_BINARY="whisper-cli")
+    checks = doctor.run_doctor(None, env)
+
+    vulkan = _find(checks, "vulkan")
+    assert vulkan.ok
+    assert "Vulkan0" in vulkan.detail
+
+
+def test_vulkan_undetermined_is_not_critical(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+    monkeypatch.setattr(doctor, "_binary_available", lambda _binary: True)
+    monkeypatch.setattr(doctor, "_vulkan_devices", lambda _binary, _lib: None)
+
+    env = _base_env(tmp_path, ASR_BACKEND="whisper-cpp", WHISPER_CPP_BINARY="whisper-cli")
+    checks = doctor.run_doctor(None, env)
+
+    vulkan = _find(checks, "vulkan")
+    assert not vulkan.ok
+    assert not vulkan.critical
+
+
+def test_missing_hf_token_is_critical_and_value_never_printed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+
+    env = _base_env(tmp_path, DIARIZATION_ENABLED="true")
+    checks = doctor.run_doctor(None, env)
+
+    token_check = _find(checks, "hf_token")
+    assert not token_check.ok
+    assert token_check.critical
+    assert doctor.has_critical_failures(checks)
+
+
+def test_present_hf_token_is_masked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+    secret = "hf_supersecretvalue123"
+
+    env = _base_env(tmp_path, DIARIZATION_ENABLED="true", HF_TOKEN=secret)
+    checks = doctor.run_doctor(None, env)
+    report = doctor.format_report(checks)
+
+    assert _find(checks, "hf_token").ok
+    assert secret not in report
+
+
+def test_unwritable_output_dir_is_critical(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch, ok=False)
+
+    checks = doctor.run_doctor(None, _base_env(tmp_path))
+
+    output_check = _find(checks, "output_dir")
+    assert not output_check.ok
+    assert output_check.critical
+    assert doctor.has_critical_failures(checks)
+
+
+def test_config_env_check_reads_existing_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+    config_path = tmp_path / "config.env"
+    config_path.write_text("OUTPUT_DIR=out\n", encoding="utf-8")
+
+    checks = doctor.run_doctor(config_path, _base_env(tmp_path))
+
+    assert _find(checks, "config_env").ok
+
+
+def test_format_report_marks_failures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor, "_module_available", lambda name: name != "av")
+    _patch_writable(monkeypatch)
+
+    report = doctor.format_report(doctor.run_doctor(None, _base_env(tmp_path)))
+
+    assert "✗" in report
+    assert "→" in report  # подсказка
+
+
+# --- CLI-команда doctor ----------------------------------------------------
+
+
+def _patch_cli(monkeypatch: pytest.MonkeyPatch, env: dict[str, str], *, modules: bool = True):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    monkeypatch.setattr(doctor, "load_config_env", lambda: (None, env))
+    monkeypatch.setattr(doctor, "_module_available", lambda _name: modules)
+    monkeypatch.setattr(doctor, "_dir_writable", lambda _path: True)
+    monkeypatch.setattr(doctor, "_binary_available", lambda _binary: False)
+    monkeypatch.setattr(doctor, "_is_file", lambda _path: False)
+    monkeypatch.setattr(doctor, "_is_dir", lambda _path: False)
+    monkeypatch.setattr(doctor, "_vulkan_devices", lambda _binary, _lib: None)
+
+
+def test_doctor_cli_exit_zero_when_critical_ok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_cli(monkeypatch, _base_env(tmp_path))
+
+    result = runner.invoke(app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "✓" in result.stdout
+
+
+def test_doctor_cli_exit_one_on_critical_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_cli(monkeypatch, _base_env(tmp_path), modules=False)
+
+    result = runner.invoke(app, ["doctor"])
+
+    assert result.exit_code == 1
+    assert "✗" in result.stdout
+
+
+def test_doctor_cli_does_not_print_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = "hf_clisecret999"
+    env = _base_env(tmp_path, DIARIZATION_ENABLED="true", HF_TOKEN=secret)
+    _patch_cli(monkeypatch, env)
+
+    result = runner.invoke(app, ["doctor"])
+
+    assert secret not in result.stdout

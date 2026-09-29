@@ -298,3 +298,30 @@ def test_llm_prompt_file_existing_accepted(tmp_path: Path, audio_file: Path) -> 
     config = AppConfig(input_file=audio_file, llm_prompt_file=prompt_file)
 
     assert config.llm_prompt_file == prompt_file
+
+
+# --- Пакет 3 «надёжность»: кэш результатов ---------------------------------
+
+
+def test_use_cache_defaults_to_true(audio_file: Path) -> None:
+    assert AppConfig(input_file=audio_file).use_cache is True
+
+
+def test_use_cache_must_be_boolean(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, use_cache="yes")  # type: ignore[arg-type]
+
+
+def test_resolved_cache_dir_defaults_to_output_subdir(
+    tmp_path: Path, audio_file: Path
+) -> None:
+    config = AppConfig(input_file=audio_file, output_dir=tmp_path / "out")
+
+    assert config.resolved_cache_dir() == tmp_path / "out" / ".cache"
+
+
+def test_resolved_cache_dir_honors_explicit_value(tmp_path: Path, audio_file: Path) -> None:
+    custom = tmp_path / "custom-cache"
+    config = AppConfig(input_file=audio_file, output_dir=tmp_path / "out", cache_dir=custom)
+
+    assert config.resolved_cache_dir() == custom

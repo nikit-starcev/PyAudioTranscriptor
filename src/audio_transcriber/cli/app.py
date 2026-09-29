@@ -223,6 +223,25 @@ def transcribe(
             "недоступности данных о перекрытиях пометок не будет."
         ),
     ),
+    cache: bool = typer.Option(
+        True,
+        "--cache/--no-cache",
+        help=(
+            "Постадийный кэш дорогих этапов (денойз/ASR/диаризация): повторный "
+            "запуск на том же файле с теми же параметрами не пересчитывает их. "
+            "Это же даёт возобновление после сбоя. По умолчанию включён."
+        ),
+    ),
+    clear_cache: bool = typer.Option(
+        False,
+        "--clear-cache",
+        help="Очистить каталог кэша результатов перед запуском.",
+    ),
+    cache_dir: Path | None = typer.Option(
+        None,
+        "--cache-dir",
+        help="Каталог постадийного кэша. По умолчанию <output_dir>/.cache.",
+    ),
     low_confidence_threshold: float = typer.Option(
         DEFAULT_LOW_CONFIDENCE_THRESHOLD,
         "--low-confidence-threshold",
@@ -433,6 +452,8 @@ def transcribe(
             normalize_text=normalize_text,
             denoise=denoise,
             mark_overlap=mark_overlap,
+            use_cache=cache,
+            cache_dir=cache_dir,
             low_confidence_threshold=low_confidence_threshold,
             enable_correction=enable_correction,
             correction_min_word_length=correction_min_word_length,
@@ -458,6 +479,11 @@ def transcribe(
             glossary_path=normalize_glossary_paths_tuple(glossary),
         )
         config.ensure_output_dir()
+        if clear_cache:
+            from audio_transcriber.cache.store import StageCache
+
+            removed = StageCache(config.resolved_cache_dir()).clear()
+            logger.info("Кэш очищен: удалено %d файл(ов)", removed)
         resolved_device = resolve_device(config.device)
 
         logger.info("Входной файл: %s", config.input_file)
@@ -487,6 +513,11 @@ def transcribe(
         logger.info(
             "Пометка наложения речи: %s",
             "включена" if config.mark_overlap else "выключена",
+        )
+        logger.info(
+            "Постадийный кэш: %s (%s)",
+            "включён" if config.use_cache else "выключен",
+            config.resolved_cache_dir(),
         )
         logger.info(
             "Порог низкой уверенности ASR: %.2f",
@@ -537,6 +568,28 @@ def transcribe(
         raise typer.Exit(code=1) from exc
 
     logger.info("Готово: %d реплик(и), %d говорящих", len(result.entries), len(result.speakers))
+
+
+@app.command()
+def doctor() -> None:
+    """Проверить окружение и показать отчёт со статусами ✓/✗.
+
+    Код возврата 0, если всё критичное в порядке, иначе 1. Команда ничего не
+    считает и не загружает моделей — только быстрые проверки.
+    """
+    import os
+
+    from audio_transcriber import doctor as doctor_module
+
+    config_path, file_env = doctor_module.load_config_env()
+    # Переменные окружения процесса могут дополнять/переопределять config.env
+    # (например, HF_TOKEN без записи в файл); приоритет — у config.env.
+    env = dict(os.environ)
+    env.update(file_env)
+    checks = doctor_module.run_doctor(config_path, env)
+    typer.echo(doctor_module.format_report(checks))
+    if doctor_module.has_critical_failures(checks):
+        raise typer.Exit(code=1)
 
 
 @app.command()
