@@ -341,3 +341,63 @@ def test_notifications_accepts_explicit_false(audio_file: Path) -> None:
 def test_notifications_must_be_boolean(audio_file: Path) -> None:
     with pytest.raises(ConfigurationError):
         AppConfig(input_file=audio_file, notifications="yes")  # type: ignore[arg-type]
+
+
+# --- Пакет 5 «enrollment-диаризация»: образцы голоса ------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (["Иван=ivan.wav"], {"Иван": (Path("ivan.wav"),)}),
+        (
+            ["Иван=a.wav", "Иван=b.wav", "Мария=c.wav"],
+            {"Иван": (Path("a.wav"), Path("b.wav")), "Мария": (Path("c.wav"),)},
+        ),
+        ([], {}),
+    ],
+)
+def test_parse_speaker_references_valid(raw: list[str], expected: dict[str, tuple[Path, ...]]) -> None:
+    assert AppConfig.parse_speaker_references(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        ["без-разделителя"],
+        ["=ivan.wav"],
+        ["Иван="],
+        ["Иван=   "],
+        ["   =x.wav"],
+    ],
+)
+def test_parse_speaker_references_invalid(raw: list[str]) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig.parse_speaker_references(raw)
+
+
+def test_speaker_references_accept_single_path_value(tmp_path: Path, audio_file: Path) -> None:
+    reference = tmp_path / "ivan.wav"
+    reference.write_bytes(b"")
+
+    config = AppConfig(input_file=audio_file, speaker_references={"Иван": reference})
+
+    assert config.speaker_references == {"Иван": (reference,)}
+
+
+def test_speaker_references_missing_file_rejected(tmp_path: Path, audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(
+            input_file=audio_file,
+            speaker_references={"Иван": tmp_path / "missing.wav"},
+        )
+
+
+def test_enrollment_min_similarity_default(audio_file: Path) -> None:
+    assert AppConfig(input_file=audio_file).enrollment_min_similarity == pytest.approx(0.6)
+
+
+@pytest.mark.parametrize("value", [-1.5, 1.01])
+def test_enrollment_min_similarity_out_of_range(audio_file: Path, value: float) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, enrollment_min_similarity=value)

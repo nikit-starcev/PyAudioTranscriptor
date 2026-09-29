@@ -33,6 +33,10 @@ from audio_transcriber.correction.morph_corrector import MorphTextCorrector
 from audio_transcriber.denoising.base import DenoiserProtocol
 from audio_transcriber.denoising.deepfilter import DeepFilterDenoiser
 from audio_transcriber.diarization.base import SpeakerDiarizer
+from audio_transcriber.diarization.enrollment import (
+    SpeakerEmbeddingEngine,
+    assign_speaker_names,
+)
 from audio_transcriber.diarization.pyannote_engine import (
     DEFAULT_PIPELINE as DIARIZATION_PIPELINE,
 )
@@ -136,6 +140,7 @@ def run_pipeline(
     corrector: TextCorrector | None = None,
     llm_client: LlmClient | None = None,
     denoiser: DenoiserProtocol | None = None,
+    enrollment_engine: SpeakerEmbeddingEngine | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> TranscriptionResult:
     """Прогоняет входной файл через полный конвейер и экспортирует результат.
@@ -177,6 +182,9 @@ def run_pipeline(
         denoiser = CachingDenoiser(denoiser, cache, source=config.input_file)
     audio_path = config.input_file
     overlaps: list[SpeakerOverlap] = []
+    # Имена, сопоставленные говорящим по образцам голоса (enrollment).
+    # Приоритетнее переименования по индексу (``--speaker-name``).
+    enrollment_names: dict[str, str] = {}
     try:
         if denoiser is not None:
             logger.info("Шумоподавление (DeepFilterNet)...")
@@ -204,13 +212,13 @@ def run_pipeline(
                 "asr", asr_key, asr_payload(transcription_segments, language, duration)
             )
 
+        # whisper.cpp сам использует GPU через Vulkan; pyannote.audio в этом
+        # гибриде не имеет GPU-бэкенда (ROCm не поддерживает старые AMD-карты),
+        # поэтому диаризация всегда выполняется на CPU.
+        diarization_device = (
+            Device.CPU if config.asr_backend is AsrBackend.WHISPER_CPP else device
+        )
         if config.diarization_enabled:
-            # whisper.cpp сам использует GPU через Vulkan; pyannote.audio в этом
-            # гибриде не имеет GPU-бэкенда (ROCm не поддерживает старые AMD-карты),
-            # поэтому диаризация всегда выполняется на CPU.
-            diarization_device = (
-                Device.CPU if config.asr_backend is AsrBackend.WHISPER_CPP else device
-            )
             active_diarizer = diarizer or PyannoteSpeakerDiarizer(
                 diarization_device,
                 hf_token=config.hf_token,
@@ -255,6 +263,26 @@ def run_pipeline(
             logger.info("Диаризация отключена — все реплики без разметки говорящих")
             emit(ProgressEvent("diarization", "Диаризация отключена", fraction=1.0))
             speaker_segments = []
+
+        # Enrollment: сопоставляем говорящих с именами по образцам голоса.
+        # Делаем это здесь, пока доступно аудио (денойзенный файл закрывается
+        # в finally). Приоритет у enrollment-имён выше ``--speaker-name``.
+        if (
+            config.diarization_enabled
+            and config.speaker_references
+            and speaker_segments
+        ):
+            logger.info("Сопоставление говорящих с образцами голоса (enrollment)...")
+            emit(ProgressEvent("diarization", "Сопоставление голосов", fraction=None))
+            enrollment_names = assign_speaker_names(
+                speaker_segments=speaker_segments,
+                references=config.speaker_references,
+                audio_path=audio_path,
+                min_similarity=config.enrollment_min_similarity,
+                device=diarization_device,
+                local_model_path=config.pyannote_local_model,
+                engine=enrollment_engine,
+            )
     finally:
         # Временный денойзенный WAV нужен только ASR и диаризации; удаляем его,
         # как только оба этапа завершились (в т.ч. при ошибке).
@@ -263,7 +291,8 @@ def run_pipeline(
             close()
 
     emit(ProgressEvent("merge", "Объединение сегментов", fraction=None))
-    entries, speakers = merger.merge(transcription_segments, speaker_segments, config.speaker_names)
+    known_speakers = {**config.speaker_names, **enrollment_names}
+    entries, speakers = merger.merge(transcription_segments, speaker_segments, known_speakers)
 
     # Чистим неречевые пометки Whisper ([СМЕХ], [BLANK_AUDIO], ♪ и т.п.),
     # схлопываем зацикленные повторы и аккуратно нормализуем текст — всё до

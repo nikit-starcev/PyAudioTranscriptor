@@ -668,3 +668,86 @@ def test_transcribe_notifies_on_pipeline_error(
     assert len(notify_calls) == 1
     assert notify_calls[0][0] == "Транскрибация не удалась"
     assert "сбой распознавания" in notify_calls[0][1]
+
+
+# --- Пакет 5 «enrollment-диаризация»: образцы голоса ------------------------
+
+
+def test_transcribe_rejects_malformed_speaker_reference(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "transcribe",
+            str(audio_file),
+            "-o",
+            str(tmp_path / "out"),
+            "--speaker-reference",
+            "not-valid",
+        ],
+    )
+
+    assert result.exit_code == 1
+
+
+def test_transcribe_passes_speaker_references(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    first = tmp_path / "ivan.wav"
+    second = tmp_path / "ivan2.wav"
+    first.write_bytes(b"")
+    second.write_bytes(b"")
+
+    def fake_run_pipeline(config: AppConfig, **kwargs):
+        captured["config"] = config
+        speaker = Speaker(id="SPEAKER_00", display_name="Иван")
+        return TranscriptionResult(
+            source_path=config.input_file,
+            language="ru",
+            duration=1.0,
+            entries=[TranscriptEntry(start=0.0, end=1.0, text="привет", speaker=speaker)],
+            speakers=[speaker],
+        )
+
+    monkeypatch.setattr(app_module, "run_pipeline", fake_run_pipeline)
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(
+        app,
+        [
+            "transcribe",
+            str(audio_file),
+            "-o",
+            str(tmp_path / "out"),
+            "--speaker-reference",
+            f"Иван={first}",
+            "--speaker-reference",
+            f"Иван={second}",
+            "--enrollment-min-similarity",
+            "0.7",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["config"].speaker_references == {"Иван": (first, second)}
+    assert captured["config"].enrollment_min_similarity == pytest.approx(0.7)
+
+
+def test_transcribe_rejects_missing_speaker_reference_file(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "transcribe",
+            str(audio_file),
+            "-o",
+            str(tmp_path / "out"),
+            "--speaker-reference",
+            f"Иван={tmp_path / 'missing.wav'}",
+        ],
+    )
+
+    assert result.exit_code == 1

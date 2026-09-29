@@ -70,6 +70,14 @@ if [ -n "${SPEAKER_NAMES:-}" ]; then
     done
 fi
 
+if [ -n "${SPEAKER_REFERENCES:-}" ]; then
+    IFS=',' read -ra REF_LIST <<< "$SPEAKER_REFERENCES"
+    for ref in "${REF_LIST[@]}"; do
+        ARGS+=(--speaker-reference "$(echo "$ref" | xargs)")
+    done
+fi
+[ -n "${ENROLLMENT_MIN_SIMILARITY:-}" ] && ARGS+=(--enrollment-min-similarity "$ENROLLMENT_MIN_SIMILARITY")
+
 [ -n "${HF_TOKEN:-}" ] && ARGS+=(--hf-token "$HF_TOKEN")
 [ -n "${PYANNOTE_LOCAL_MODEL:-}" ] && ARGS+=(--pyannote-local-model "$PYANNOTE_LOCAL_MODEL")
 [ "${ENABLE_CORRECTION:-false}" = "true" ] && ARGS+=(--enable-correction)

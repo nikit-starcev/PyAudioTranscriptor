@@ -14,6 +14,7 @@ from audio_transcriber.domain.models import (
     TranscriptEntry,
     TranscriptionSegment,
 )
+from audio_transcriber.merging.aligner import OverlapSegmentMerger
 from audio_transcriber.pipeline import run_pipeline
 
 
@@ -446,3 +447,101 @@ def test_run_pipeline_closes_denoiser_on_error(audio_file: Path, tmp_path: Path)
     assert denoiser.closed == 1
 
 
+
+# --- Пакет 5 «enrollment-диаризация»: имена по образцам голоса --------------
+
+
+def _reference_file(tmp_path: Path) -> Path:
+    reference = tmp_path / "voice.wav"
+    reference.write_bytes(b"")
+    return reference
+
+
+def test_run_pipeline_enrollment_names_override_speaker_names(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reference = _reference_file(tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_assign(**kwargs: object) -> dict[str, str]:
+        captured.update(kwargs)
+        return {"SPEAKER_00": "Иван"}
+
+    monkeypatch.setattr("audio_transcriber.pipeline.assign_speaker_names", fake_assign)
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+        speaker_names={"SPEAKER_00": "Пётр"},
+        speaker_references={"Иван": (reference,)},
+        enrollment_min_similarity=0.55,
+    )
+
+    result = run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=FakeRecognizer(),
+        diarizer=FakeDiarizer(),
+        merger=OverlapSegmentMerger(),
+    )
+
+    # Enrollment-имя приоритетнее переименования по индексу.
+    assert result.entries[0].speaker is not None
+    assert result.entries[0].speaker.display_name == "Иван"
+    assert result.speakers[0].display_name == "Иван"
+    # Параметры сопоставления переданы в движок enrollment.
+    assert captured["min_similarity"] == 0.55
+    assert captured["references"] == {"Иван": (reference,)}
+    assert captured["audio_path"] == audio_file
+
+
+def test_run_pipeline_falls_back_to_speaker_names_when_enrollment_misses(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reference = _reference_file(tmp_path)
+    monkeypatch.setattr("audio_transcriber.pipeline.assign_speaker_names", lambda **_: {})
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+        speaker_names={"SPEAKER_00": "Пётр"},
+        speaker_references={"Иван": (reference,)},
+    )
+
+    result = run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=FakeRecognizer(),
+        diarizer=FakeDiarizer(),
+        merger=OverlapSegmentMerger(),
+    )
+
+    assert result.entries[0].speaker is not None
+    assert result.entries[0].speaker.display_name == "Пётр"
+
+
+def test_run_pipeline_skips_enrollment_without_references(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_assign(**kwargs: object) -> dict[str, str]:
+        calls.append(kwargs)
+        return {}
+
+    monkeypatch.setattr("audio_transcriber.pipeline.assign_speaker_names", fake_assign)
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+    )
+
+    run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=FakeRecognizer(),
+        diarizer=FakeDiarizer(),
+        merger=OverlapSegmentMerger(),
+    )
+
+    assert calls == []

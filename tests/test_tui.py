@@ -746,3 +746,45 @@ def test_queue_done_does_not_notify_when_disabled(
     asyncio.run(_run())
 
     assert tui_notify_calls == []
+
+
+# --- Пакет 5 «enrollment-диаризация»: образцы голоса ------------------------
+
+
+def test_build_config_speaker_references_and_threshold_from_env(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reference = tmp_path / "ivan.wav"
+    reference.write_bytes(b"")
+    defaults = _defaults(tmp_path / "out")
+    defaults["SPEAKER_REFERENCES"] = f"Иван={reference}"
+    defaults["ENROLLMENT_MIN_SIMILARITY"] = "0.65"
+    monkeypatch.setattr(tui_app, "_load_env_defaults", lambda: defaults)
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            return app._build_config(audio_file)
+
+    config = asyncio.run(_run())
+
+    assert config.speaker_references == {"Иван": (reference,)}
+    assert config.enrollment_min_similarity == pytest.approx(0.65)
+
+
+def test_build_config_speaker_references_default_to_none(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            return app._build_config(audio_file)
+
+    config = asyncio.run(_run())
+
+    assert config.speaker_references == {}
+    assert config.enrollment_min_similarity == pytest.approx(0.6)

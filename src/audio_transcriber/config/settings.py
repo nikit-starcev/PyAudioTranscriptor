@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_CONTEXT_SIZE as DEFAULT_LLM_CONTEXT_SIZE,
 )
 from audio_transcriber.config.defaults import (
+    DEFAULT_ENROLLMENT_MIN_SIMILARITY,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
 )
 from audio_transcriber.correction.defaults import (
@@ -33,6 +35,26 @@ from audio_transcriber.utils.glossary_paths import normalize_glossary_paths_tupl
 logger = logging.getLogger(__name__)
 
 _SPEAKER_ID_TEMPLATE = "SPEAKER_{index:02d}"
+
+
+def _normalize_speaker_references(
+    references: Mapping[str, Path | str | Sequence[Path | str]],
+) -> dict[str, tuple[Path, ...]]:
+    """Приводит образцы голоса к инварианту ``имя -> кортеж путей``.
+
+    Значение может быть одиночным путём/строкой или последовательностью —
+    это позволяет задать несколько образцов на одно имя.
+    """
+    normalized: dict[str, tuple[Path, ...]] = {}
+    for raw_name, raw_value in references.items():
+        name = raw_name.strip()
+        paths: tuple[Path, ...]
+        if isinstance(raw_value, (str, Path)):
+            paths = (Path(raw_value),)
+        else:
+            paths = tuple(Path(item) for item in raw_value)
+        normalized[name] = paths
+    return normalized
 
 
 @dataclass(slots=True)
@@ -50,6 +72,12 @@ class AppConfig:
     # локальная модель и токен Hugging Face не нужны.
     diarization_enabled: bool = True
     speaker_names: dict[str, str] = field(default_factory=dict)
+    # Образцы голоса участников для enrollment-диаризации: имя -> клип(ы).
+    # Если заданы и сопоставление уверенное, имя говорящего берётся по голосу
+    # и приоритетнее ``speaker_names`` (переименование по индексу). Несколько
+    # образцов на одно имя усредняются. Инвариант после нормализации — кортеж.
+    speaker_references: dict[str, tuple[Path, ...]] = field(default_factory=dict)
+    enrollment_min_similarity: float = DEFAULT_ENROLLMENT_MIN_SIMILARITY
     hf_token: str | None = None
     pyannote_local_model: Path | None = None
     initial_prompt: str | None = None
@@ -118,6 +146,8 @@ class AppConfig:
         # поэтому из кода сюда приходит уже кортеж, но CLI/тесты могут передать
         # любой из поддерживаемых форматов).
         self.glossary_path = normalize_glossary_paths_tuple(self.glossary_path)
+        # Образцы голоса: допускаем одиночный путь или последовательность на имя.
+        self.speaker_references = _normalize_speaker_references(self.speaker_references)
         self._validate()
 
     def _validate(self) -> None:
@@ -221,6 +251,24 @@ class AppConfig:
             if not glossary_path.is_file():
                 raise ConfigurationError(f"Файл глоссария не найден: {glossary_path}")
 
+        if isinstance(self.enrollment_min_similarity, bool) or not isinstance(
+            self.enrollment_min_similarity, (int, float)
+        ):
+            raise ConfigurationError("ENROLLMENT_MIN_SIMILARITY должно быть числом")
+        if not (-1.0 <= self.enrollment_min_similarity <= 1.0):
+            raise ConfigurationError(
+                "ENROLLMENT_MIN_SIMILARITY должно быть числом в диапазоне [-1; 1]"
+            )
+
+        for name, reference_paths in self.speaker_references.items():
+            if not name:
+                raise ConfigurationError("В образцах голоса не указано имя участника")
+            if not reference_paths:
+                raise ConfigurationError(f"Для «{name}» не указан ни один образец голоса")
+            for reference_path in reference_paths:
+                if not reference_path.is_file():
+                    raise ConfigurationError(f"Образец голоса не найден: {reference_path}")
+
     def resolved_cache_dir(self) -> Path:
         """Каталог постадийного кэша: ``cache_dir`` или ``<output_dir>/.cache``."""
         return self.cache_dir if self.cache_dir is not None else self.output_dir / ".cache"
@@ -267,3 +315,29 @@ class AppConfig:
             mapping[speaker_id] = name
 
         return mapping
+
+    @staticmethod
+    def parse_speaker_references(raw_values: list[str]) -> dict[str, tuple[Path, ...]]:
+        """Разбирает значения ``--speaker-reference`` вида ``"Иван=путь.wav"``.
+
+        Возвращает отображение имени участника на кортеж путей к образцам
+        голоса. Одно и то же имя можно указать несколько раз — тогда у него
+        будет несколько образцов (они усредняются при сопоставлении).
+        """
+
+        grouped: dict[str, list[Path]] = {}
+        for raw in raw_values:
+            if "=" not in raw:
+                raise ConfigurationError(
+                    f"Некорректный формат --speaker-reference: '{raw}'. "
+                    "Ожидается Имя=путь.wav, например: --speaker-reference Иван=ivan.wav"
+                )
+            name_part, path_part = (part.strip() for part in raw.split("=", maxsplit=1))
+            if not name_part:
+                raise ConfigurationError(f"Не указано имя участника в '{raw}'")
+            if not path_part:
+                raise ConfigurationError(f"Не указан путь к образцу голоса в '{raw}'")
+            grouped.setdefault(name_part, []).append(Path(path_part))
+
+        return {name: tuple(paths) for name, paths in grouped.items()}
+

@@ -12,7 +12,10 @@ from audio_transcriber.cleaning.repetition_filter import (
     DEFAULT_REPEAT_MIN_WORDS,
     DEFAULT_REPEAT_SIMILARITY,
 )
-from audio_transcriber.config.defaults import DEFAULT_LOW_CONFIDENCE_THRESHOLD
+from audio_transcriber.config.defaults import (
+    DEFAULT_ENROLLMENT_MIN_SIMILARITY,
+    DEFAULT_LOW_CONFIDENCE_THRESHOLD,
+)
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.correction.defaults import (
     DEFAULT_CORRECTION_MAX_CANDIDATES,
@@ -128,6 +131,25 @@ def transcribe(
         help=(
             "Пользовательское имя говорящего в формате ИНДЕКС=Имя "
             "(например: --speaker-name 0=Иван). Можно указать несколько раз."
+        ),
+    ),
+    speaker_reference: list[str] = typer.Option(
+        [],
+        "--speaker-reference",
+        help=(
+            "Образец голоса участника в формате Имя=путь.wav. Говорящие "
+            "сопоставляются с именами по голосу (косинусное сходство "
+            "эмбеддингов), а не по индексу. Можно указать несколько раз, в том "
+            "числе несколько образцов на одно имя. Приоритетнее --speaker-name."
+        ),
+    ),
+    enrollment_min_similarity: float = typer.Option(
+        DEFAULT_ENROLLMENT_MIN_SIMILARITY,
+        "--enrollment-min-similarity",
+        help=(
+            "Порог косинусного сходства [-1; 1] для присвоения имени по образцу "
+            f"голоса. Ниже порога говорящий остаётся «Спикер N». "
+            f"По умолчанию {DEFAULT_ENROLLMENT_MIN_SIMILARITY}."
         ),
     ),
     hf_token: str | None = typer.Option(
@@ -450,6 +472,8 @@ def transcribe(
             num_speakers=num_speakers,
             diarization_enabled=diarization,
             speaker_names=AppConfig.parse_speaker_names(speaker_name),
+            speaker_references=AppConfig.parse_speaker_references(speaker_reference),
+            enrollment_min_similarity=enrollment_min_similarity,
             hf_token=hf_token,
             pyannote_local_model=pyannote_local_model,
             initial_prompt=initial_prompt,
@@ -508,6 +532,14 @@ def transcribe(
             logger.info("Количество говорящих: %s", config.num_speakers or "автоопределение")
         if config.speaker_names:
             logger.info("Пользовательские имена говорящих: %s", config.speaker_names)
+        if config.speaker_references:
+            logger.info(
+                "Образцы голоса (enrollment): %s",
+                ", ".join(
+                    f"{name} ({len(paths)})" for name, paths in config.speaker_references.items()
+                ),
+            )
+            logger.info("Порог сопоставления по голосу: %.2f", config.enrollment_min_similarity)
         logger.info(
             "Очистка неречевых артефактов: %s",
             "включена" if config.clean_artifacts else "выключена",

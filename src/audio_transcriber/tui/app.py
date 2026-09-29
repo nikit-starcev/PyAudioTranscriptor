@@ -43,7 +43,10 @@ from audio_transcriber.cleaning.repetition_filter import (
     DEFAULT_REPEAT_MIN_WORDS,
     DEFAULT_REPEAT_SIMILARITY,
 )
-from audio_transcriber.config.defaults import DEFAULT_LOW_CONFIDENCE_THRESHOLD
+from audio_transcriber.config.defaults import (
+    DEFAULT_ENROLLMENT_MIN_SIMILARITY,
+    DEFAULT_LOW_CONFIDENCE_THRESHOLD,
+)
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.correction.defaults import (
     DEFAULT_CORRECTION_MAX_CANDIDATES,
@@ -435,6 +438,19 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
         else {}
     )
 
+    speaker_references_raw = app.query_one("#speaker_references", Input).value.strip()
+    speaker_references = (
+        AppConfig.parse_speaker_references(
+            [p.strip() for p in speaker_references_raw.split(",") if p.strip()]
+        )
+        if speaker_references_raw
+        else {}
+    )
+    enrollment_min_raw = app.query_one("#enrollment_min_similarity", Input).value.strip()
+    enrollment_min_similarity = _to_float(
+        enrollment_min_raw or None, DEFAULT_ENROLLMENT_MIN_SIMILARITY
+    )
+
     hotwords = app.query_one("#hotwords", Input).value.strip() or None
     output_dir = app.query_one("#output_dir", Input).value.strip() or "output"
 
@@ -475,6 +491,8 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
         num_speakers=num_speakers,
         diarization_enabled=diarization_enabled,
         speaker_names=speaker_names,
+        speaker_references=speaker_references,
+        enrollment_min_similarity=enrollment_min_similarity,
         hf_token=defaults.get("HF_TOKEN") or None,
         pyannote_local_model=pyannote_local_model,
         initial_prompt=defaults.get("INITIAL_PROMPT") or None,
@@ -813,6 +831,22 @@ class TranscriberApp(App):
                             yield Label("Имена говорящих", classes="field-label")
                             yield Input(
                                 value=self._defaults.get("SPEAKER_NAMES", ""), id="speaker_names"
+                            )
+                        with Horizontal():
+                            yield Label("Образцы голоса", classes="field-label")
+                            yield Input(
+                                value=self._defaults.get("SPEAKER_REFERENCES", ""),
+                                placeholder="Имя=путь.wav,Имя2=путь2.wav",
+                                id="speaker_references",
+                            )
+                        with Horizontal():
+                            yield Label("Порог голоса", classes="field-label")
+                            yield Input(
+                                value=self._defaults.get(
+                                    "ENROLLMENT_MIN_SIMILARITY",
+                                    str(DEFAULT_ENROLLMENT_MIN_SIMILARITY),
+                                ),
+                                id="enrollment_min_similarity",
                             )
                         with Horizontal():
                             yield Label("Hotwords", classes="field-label")
