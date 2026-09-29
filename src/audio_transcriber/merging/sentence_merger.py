@@ -28,6 +28,15 @@ def _join_text(left: str, right: str) -> str:
     return _normalize_text(f"{left} {right}")
 
 
+def _min_logprob(left: float | None, right: float | None) -> float | None:
+    """Наихудшая (минимальная) уверенность из двух реплик.
+
+    ``None`` (значение отсутствует) игнорируется; если оба ``None`` — ``None``.
+    """
+    values = [value for value in (left, right) if value is not None]
+    return min(values) if values else None
+
+
 class SentenceMerger:
     """Объединяет соседние реплики одного говорящего в одну.
 
@@ -38,7 +47,9 @@ class SentenceMerger:
     наоборот.
 
     При склейке ``start`` берётся у первой реплики, ``end`` — у последней,
-    тексты соединяются через пробел.
+    тексты соединяются через пробел. Уверенность распознавания объединённой
+    реплики — наихудшая (минимум ``avg_logprob``, ``None`` игнорируется),
+    признак наложения речи — логическое ИЛИ по склеенным репликам.
     """
 
     def __init__(self, *, max_gap: float = DEFAULT_MAX_GAP) -> None:
@@ -56,6 +67,8 @@ class SentenceMerger:
                     previous,
                     end=entry.end,
                     text=_join_text(previous.text, entry.text),
+                    avg_logprob=_min_logprob(previous.avg_logprob, entry.avg_logprob),
+                    overlap=previous.overlap or entry.overlap,
                 )
             else:
                 merged.append(entry)

@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from audio_transcriber.domain.models import SpeakerSegment
+from audio_transcriber.domain.models import SpeakerOverlap, SpeakerSegment
 
 
 @runtime_checkable
@@ -24,5 +24,14 @@ class SpeakerDiarizer(Protocol):
         :param num_speakers: точное количество говорящих, если известно;
             ``None`` — определить автоматически.
         :return: список временных интервалов, отнесённых к говорящим.
+        """
+        ...
+
+    def overlap_regions(self) -> list[SpeakerOverlap]:
+        """Интервалы наложения речи из последнего вызова ``diarize``.
+
+        Возвращает зоны, где одновременно говорили два и более человек. Если
+        движок не поддерживает определение перекрытий, вернётся пустой список
+        — потребитель не должен падать.
         """
         ...

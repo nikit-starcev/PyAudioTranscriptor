@@ -40,6 +40,17 @@ class Speaker:
 
 
 @dataclass(frozen=True, slots=True)
+class SpeakerOverlap:
+    """Интервал, в котором одновременно активны два и более говорящих.
+
+    Используется, чтобы пометить реплики, попавшие в зону наложения речи.
+    """
+
+    start: float
+    end: float
+
+
+@dataclass(frozen=True, slots=True)
 class TranscriptEntry:
     """Финальная реплика стенограммы: текст, привязанный к говорящему."""
 
@@ -47,6 +58,11 @@ class TranscriptEntry:
     end: float
     text: str
     speaker: Speaker | None = None
+    # Средняя логвероятность распознавания реплики (уверенность ASR).
+    # ``None`` — движок не предоставил значение (например, старый whisper.cpp).
+    avg_logprob: float | None = None
+    # Реплика попала в зону наложения речи (одновременно говорят >= 2 человек).
+    overlap: bool = False
 
 
 @dataclass(slots=True)
@@ -59,3 +75,6 @@ class TranscriptionResult:
     entries: list[TranscriptEntry] = field(default_factory=list)
     speakers: list[Speaker] = field(default_factory=list)
     participants: list[str] | None = None
+    # Порог «низкой уверенности» для экспортёров: реплики со средним
+    # avg_logprob ниже порога помечаются. ``None`` — не помечать.
+    low_confidence_threshold: float | None = None

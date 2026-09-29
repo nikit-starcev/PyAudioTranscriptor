@@ -39,6 +39,11 @@ from textual.widgets import (
     Switch,
 )
 
+from audio_transcriber.cleaning.repetition_filter import (
+    DEFAULT_REPEAT_MIN_WORDS,
+    DEFAULT_REPEAT_SIMILARITY,
+)
+from audio_transcriber.config.defaults import DEFAULT_LOW_CONFIDENCE_THRESHOLD
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.correction.defaults import (
     DEFAULT_CORRECTION_MAX_CANDIDATES,
@@ -374,6 +379,9 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
 
     enable_correction = app.query_one("#correction", Switch).value
     clean_artifacts = app.query_one("#clean", Switch).value
+    collapse_repeats = app.query_one("#collapse_repeats", Switch).value
+    normalize_text = app.query_one("#normalize", Switch).value
+    mark_overlap = app.query_one("#overlap", Switch).value
     diarization_enabled = app.query_one("#diarization", Switch).value
     denoise_enabled = app.query_one("#denoise", Switch).value
 
@@ -420,6 +428,9 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
     wcp_threads_raw = defaults.get("WHISPER_CPP_THREADS", "").strip()
     whisper_cpp_threads = int(wcp_threads_raw) if wcp_threads_raw.isdigit() else None
 
+    low_conf_raw = app.query_one("#low_conf", Input).value.strip()
+    low_confidence_threshold = _to_float(low_conf_raw or None, DEFAULT_LOW_CONFIDENCE_THRESHOLD)
+
     return AppConfig(
         input_file=input_file,
         output_dir=Path(output_dir),
@@ -435,7 +446,13 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
         initial_prompt=defaults.get("INITIAL_PROMPT") or None,
         hotwords=hotwords,
         clean_artifacts=clean_artifacts,
+        collapse_repeats=collapse_repeats,
+        repeat_min_words=_to_int(defaults.get("REPEAT_MIN_WORDS"), DEFAULT_REPEAT_MIN_WORDS),
+        repeat_similarity=_to_float(defaults.get("REPEAT_SIMILARITY"), DEFAULT_REPEAT_SIMILARITY),
+        normalize_text=normalize_text,
         denoise=denoise_enabled,
+        mark_overlap=mark_overlap,
+        low_confidence_threshold=low_confidence_threshold,
         enable_correction=enable_correction,
         correction_min_word_length=_to_int(
             defaults.get("CORRECTION_MIN_WORD_LENGTH"),
@@ -621,6 +638,30 @@ class TranscriberApp(App):
                             id="clean",
                         )
                     with Horizontal():
+                        yield Label("Схлопывать повторы", classes="field-label")
+                        yield Switch(
+                            value=_to_bool(self._defaults.get("COLLAPSE_REPEATS"), default=True),
+                            id="collapse_repeats",
+                        )
+                    with Horizontal():
+                        yield Label("Нормализация текста", classes="field-label")
+                        yield Switch(
+                            value=_to_bool(self._defaults.get("NORMALIZE_TEXT"), default=True),
+                            id="normalize",
+                        )
+                    with Horizontal():
+                        yield Label("Наложение речи", classes="field-label")
+                        yield Switch(
+                            value=_to_bool(self._defaults.get("MARK_OVERLAP"), default=True),
+                            id="overlap",
+                        )
+                    with Horizontal():
+                        yield Label("Порог уверенности", classes="field-label")
+                        yield Input(
+                            value=self._defaults.get("LOW_CONFIDENCE_THRESHOLD", "-1.0"),
+                            id="low_conf",
+                        )
+                    with Horizontal():
                         yield Label("LLM-обработка", classes="field-label")
                         yield Switch(
                             value=_to_bool(self._defaults.get("LLM_ENABLED")),
@@ -708,6 +749,7 @@ class TranscriberApp(App):
         results = self.query_one("#results", DataTable)
         results.add_column("Время", key="time", width=10)
         results.add_column("Говорящий", key="speaker", width=16)
+        results.add_column("Метки", key="marks", width=8)
         results.add_column("Текст", key="text")
 
         queue = self.query_one("#queue", DataTable)
@@ -849,11 +891,18 @@ class TranscriberApp(App):
     def _populate_results(self, result: TranscriptionResult) -> None:
         table = self.query_one("#results", DataTable)
         table.clear()
+        from audio_transcriber.export.annotations import is_low_confidence
         from audio_transcriber.export.timestamps import format_timestamp
 
+        threshold = result.low_confidence_threshold
         for entry in result.entries:
             speaker = entry.speaker.display_name if entry.speaker else "?"
-            table.add_row(format_timestamp(entry.start), speaker, entry.text)
+            marks = ""
+            if is_low_confidence(entry, threshold):
+                marks += "⚠"
+            if entry.overlap:
+                marks += "⇄"
+            table.add_row(format_timestamp(entry.start), speaker, marks, entry.text)
 
     def _tick(self) -> None:
         if self._transcribing and self._run_start_time is not None:

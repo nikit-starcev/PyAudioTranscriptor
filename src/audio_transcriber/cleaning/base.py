@@ -23,3 +23,28 @@ class ArtifactCleanerProtocol(Protocol):
         Реплики, состоящие только из артефактов, из результата исключаются.
         """
         ...
+
+
+@runtime_checkable
+class RepetitionCleanerProtocol(Protocol):
+    """Контракт компонента, схлопывающего подряд повторяющиеся реплики."""
+
+    def clean(self, entries: list[TranscriptEntry]) -> list[TranscriptEntry]:
+        """Схлопывает идущие подряд одинаковые/почти одинаковые реплики.
+
+        Из серии повторов остаётся первая реплика (её ``end`` расширяется до
+        конца последней); осмысленная короткая повторяющаяся речь сохраняется.
+        """
+        ...
+
+
+@runtime_checkable
+class TextNormalizerProtocol(Protocol):
+    """Контракт компонента безопасной нормализации текста реплик."""
+
+    def normalize(self, entries: list[TranscriptEntry]) -> list[TranscriptEntry]:
+        """Возвращает реплики с нормализованными пробелами и пунктуацией.
+
+        Слова не переписываются; текст без отклонений от нормы не меняется.
+        """
+        ...

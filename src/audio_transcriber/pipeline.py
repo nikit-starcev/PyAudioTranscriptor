@@ -12,7 +12,13 @@ from __future__ import annotations
 import logging
 
 from audio_transcriber.cleaning.artifact_filter import ArtifactCleaner
-from audio_transcriber.cleaning.base import ArtifactCleanerProtocol
+from audio_transcriber.cleaning.base import (
+    ArtifactCleanerProtocol,
+    RepetitionCleanerProtocol,
+    TextNormalizerProtocol,
+)
+from audio_transcriber.cleaning.repetition_filter import RepetitionCleaner
+from audio_transcriber.cleaning.text_normalizer import TextNormalizer
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.correction.base import TextCorrector
 from audio_transcriber.correction.morph_corrector import MorphTextCorrector
@@ -21,11 +27,12 @@ from audio_transcriber.denoising.deepfilter import DeepFilterDenoiser
 from audio_transcriber.diarization.base import SpeakerDiarizer
 from audio_transcriber.diarization.pyannote_engine import PyannoteSpeakerDiarizer
 from audio_transcriber.domain.enums import AsrBackend, Device
-from audio_transcriber.domain.models import TranscriptionResult
+from audio_transcriber.domain.models import SpeakerOverlap, TranscriptionResult
 from audio_transcriber.export.factory import create_exporter
 from audio_transcriber.llm.base import LlmClient
 from audio_transcriber.merging.aligner import OverlapSegmentMerger
 from audio_transcriber.merging.base import SegmentMerger
+from audio_transcriber.merging.overlap import mark_overlap_entries
 from audio_transcriber.merging.sentence_merger import SentenceMerger
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.transcription.base import SpeechRecognizer
@@ -67,6 +74,8 @@ def run_pipeline(
     merger: SegmentMerger | None = None,
     sentence_merger: SentenceMerger | None = None,
     artifact_cleaner: ArtifactCleanerProtocol | None = None,
+    repetition_cleaner: RepetitionCleanerProtocol | None = None,
+    text_normalizer: TextNormalizerProtocol | None = None,
     corrector: TextCorrector | None = None,
     llm_client: LlmClient | None = None,
     denoiser: DenoiserProtocol | None = None,
@@ -87,6 +96,13 @@ def run_pipeline(
     sentence_merger = sentence_merger or SentenceMerger()
     if artifact_cleaner is None and config.clean_artifacts:
         artifact_cleaner = ArtifactCleaner()
+    if repetition_cleaner is None and config.collapse_repeats:
+        repetition_cleaner = RepetitionCleaner(
+            min_words=config.repeat_min_words,
+            similarity=config.repeat_similarity,
+        )
+    if text_normalizer is None and config.normalize_text:
+        text_normalizer = TextNormalizer()
     if corrector is None and config.enable_correction:
         corrector = MorphTextCorrector(
             min_word_length=config.correction_min_word_length,
@@ -98,6 +114,7 @@ def run_pipeline(
     # один и тот же очищенный файл, иначе временные метки разъедутся.
     denoiser = denoiser or (DeepFilterDenoiser() if config.denoise else None)
     audio_path = config.input_file
+    overlaps: list[SpeakerOverlap] = []
     try:
         if denoiser is not None:
             logger.info("Шумоподавление (DeepFilterNet)...")
@@ -128,6 +145,12 @@ def run_pipeline(
             speaker_segments = active_diarizer.diarize(
                 audio_path, num_speakers=config.num_speakers
             )
+            # Зоны наложения речи — из обычной (не эксклюзивной) разметки, если
+            # движок её умеет. Отсутствие метода — не ошибка (мягкая деградация).
+            if config.mark_overlap:
+                overlap_getter = getattr(active_diarizer, "overlap_regions", None)
+                if callable(overlap_getter):
+                    overlaps = list(overlap_getter())
         else:
             logger.info("Диаризация отключена — все реплики без разметки говорящих")
             emit(ProgressEvent("diarization", "Диаризация отключена", fraction=1.0))
@@ -142,13 +165,22 @@ def run_pipeline(
     emit(ProgressEvent("merge", "Объединение сегментов", fraction=None))
     entries, speakers = merger.merge(transcription_segments, speaker_segments, config.speaker_names)
 
-    # Чистим неречевые пометки Whisper ([СМЕХ], [BLANK_AUDIO], ♪ и т.п.) до
+    # Чистим неречевые пометки Whisper ([СМЕХ], [BLANK_AUDIO], ♪ и т.п.),
+    # схлопываем зацикленные повторы и аккуратно нормализуем текст — всё до
     # склейки предложений, чтобы корректор, LLM и экспорт работали с готовым
     # текстом. Реплики, состоящие только из пометок, здесь же отбрасываются.
     if artifact_cleaner is not None:
         logger.info("Очистка неречевых артефактов...")
         emit(ProgressEvent("clean", "Очистка артефактов", fraction=None))
         entries = artifact_cleaner.clean(entries)
+
+    if repetition_cleaner is not None:
+        logger.info("Схлопывание повторяющихся реплик...")
+        entries = repetition_cleaner.clean(entries)
+
+    if text_normalizer is not None:
+        logger.info("Нормализация текста...")
+        entries = text_normalizer.normalize(entries)
 
     # Склеиваем подряд идущие короткие сегменты одного говорящего в реплики-
     # предложения — корректор и LLM должны видеть уже цельный текст.
@@ -175,6 +207,11 @@ def run_pipeline(
             config, entries, speakers, client=llm_client, on_progress=emit
         )
 
+    # Помечаем реплики в зонах наложения речи в самом конце — после всех
+    # текстовых правок, чтобы пометка соответствовала финальным репликам.
+    if config.mark_overlap and overlaps:
+        entries = mark_overlap_entries(entries, overlaps)
+
     result = TranscriptionResult(
         source_path=config.input_file,
         language=language,
@@ -182,6 +219,7 @@ def run_pipeline(
         entries=entries,
         speakers=speakers,
         participants=participants,
+        low_confidence_threshold=config.low_confidence_threshold,
     )
 
     for export_format in config.export_formats:

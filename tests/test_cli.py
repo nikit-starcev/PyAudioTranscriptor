@@ -358,6 +358,79 @@ def test_transcribe_no_denoise_flag(
     assert captured["config"].denoise is False
 
 
+def test_transcribe_quality_defaults(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 0
+    config = captured["config"]
+    assert config.collapse_repeats is True
+    assert config.normalize_text is True
+    assert config.mark_overlap is True
+    assert config.low_confidence_threshold == pytest.approx(-1.0)
+
+
+def test_transcribe_quality_flags(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(
+        app,
+        [
+            "transcribe",
+            str(audio_file),
+            "-o",
+            str(tmp_path / "out"),
+            "--no-collapse-repeats",
+            "--no-normalize",
+            "--no-overlap",
+            "--low-confidence-threshold=-2.5",
+            "--repeat-min-words",
+            "3",
+            "--repeat-similarity",
+            "0.8",
+        ],
+    )
+
+    assert result.exit_code == 0
+    config = captured["config"]
+    assert config.collapse_repeats is False
+    assert config.normalize_text is False
+    assert config.mark_overlap is False
+    assert config.low_confidence_threshold == pytest.approx(-2.5)
+    assert config.repeat_min_words == 3
+    assert config.repeat_similarity == pytest.approx(0.8)
+
+
+def test_transcribe_rejects_positive_confidence_threshold(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(
+        app,
+        [
+            "transcribe",
+            str(audio_file),
+            "-o",
+            str(tmp_path / "out"),
+            "--low-confidence-threshold=0.5",
+        ],
+    )
+
+    assert result.exit_code == 1
+
+
 def test_transcribe_hotwords_warns_when_over_limit(
     audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stub_pipeline
 ) -> None:

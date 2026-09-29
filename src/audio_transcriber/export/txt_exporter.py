@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from audio_transcriber.domain.models import TranscriptionResult
+from audio_transcriber.export.annotations import entry_markers
 from audio_transcriber.export.timestamps import format_timestamp
 from audio_transcriber.utils.exceptions import ExportError
 
@@ -20,9 +21,11 @@ class TxtExporter:
             lines.extend(f"  {participant}" for participant in result.participants)
             lines.append("")
 
+        threshold = result.low_confidence_threshold
         lines.extend(
             f"[{format_timestamp(entry.start)}] "
-            f"{entry.speaker.display_name if entry.speaker else '?'}: {entry.text}"
+            f"{entry.speaker.display_name if entry.speaker else '?'}: "
+            f"{entry.text}{entry_markers(entry, threshold)}"
             for entry in result.entries
         )
 

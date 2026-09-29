@@ -8,6 +8,11 @@ from pathlib import Path
 import typer
 
 from audio_transcriber import __version__
+from audio_transcriber.cleaning.repetition_filter import (
+    DEFAULT_REPEAT_MIN_WORDS,
+    DEFAULT_REPEAT_SIMILARITY,
+)
+from audio_transcriber.config.defaults import DEFAULT_LOW_CONFIDENCE_THRESHOLD
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.correction.defaults import (
     DEFAULT_CORRECTION_MAX_CANDIDATES,
@@ -172,6 +177,59 @@ def transcribe(
             "Шумоподавление (DeepFilterNet) перед распознаванием и диаризацией. "
             "По умолчанию включено; при отсутствии DeepFilterNet этап "
             "пропускается без ошибки."
+        ),
+    ),
+    collapse_repeats: bool = typer.Option(
+        True,
+        "--collapse-repeats/--no-collapse-repeats",
+        help=(
+            "Схлопывать подряд идущие одинаковые/почти одинаковые реплики "
+            "(зацикливания Whisper: «Продолжение следует» ×N и т.п.). "
+            "По умолчанию включено."
+        ),
+    ),
+    repeat_min_words: int = typer.Option(
+        DEFAULT_REPEAT_MIN_WORDS,
+        "--repeat-min-words",
+        min=1,
+        help=(
+            "Минимальная длина (в словах) повторяющейся реплики для схлопывания. "
+            f"Защищает короткую осмысленную речь («да, да»). "
+            f"По умолчанию {DEFAULT_REPEAT_MIN_WORDS}."
+        ),
+    ),
+    repeat_similarity: float = typer.Option(
+        DEFAULT_REPEAT_SIMILARITY,
+        "--repeat-similarity",
+        help=(
+            "Порог сходства «почти одинаковых» реплик (0; 1] "
+            f"(по умолчанию {DEFAULT_REPEAT_SIMILARITY})."
+        ),
+    ),
+    normalize_text: bool = typer.Option(
+        True,
+        "--normalize/--no-normalize",
+        help=(
+            "Безопасная нормализация текста: повторная пунктуация, лишние "
+            "многоточия, пробелы. Слова не переписываются. По умолчанию включена."
+        ),
+    ),
+    mark_overlap: bool = typer.Option(
+        True,
+        "--overlap/--no-overlap",
+        help=(
+            "Помечать реплики, попавшие в зоны наложения речи (одновременно "
+            "говорили несколько человек). По умолчанию включено; при "
+            "недоступности данных о перекрытиях пометок не будет."
+        ),
+    ),
+    low_confidence_threshold: float = typer.Option(
+        DEFAULT_LOW_CONFIDENCE_THRESHOLD,
+        "--low-confidence-threshold",
+        help=(
+            "Порог низкой уверенности ASR (<= 0): реплики со средним "
+            "avg_logprob ниже порога помечаются в экспорте. "
+            f"По умолчанию {DEFAULT_LOW_CONFIDENCE_THRESHOLD}."
         ),
     ),
     enable_correction: bool = typer.Option(
@@ -344,7 +402,13 @@ def transcribe(
             initial_prompt=initial_prompt,
             hotwords=hotwords,
             clean_artifacts=clean_artifacts,
+            collapse_repeats=collapse_repeats,
+            repeat_min_words=repeat_min_words,
+            repeat_similarity=repeat_similarity,
+            normalize_text=normalize_text,
             denoise=denoise,
+            mark_overlap=mark_overlap,
+            low_confidence_threshold=low_confidence_threshold,
             enable_correction=enable_correction,
             correction_min_word_length=correction_min_word_length,
             correction_min_similarity=correction_min_similarity,
@@ -383,6 +447,22 @@ def transcribe(
         logger.info(
             "Очистка неречевых артефактов: %s",
             "включена" if config.clean_artifacts else "выключена",
+        )
+        logger.info(
+            "Схлопывание повторяющихся реплик: %s",
+            "включено" if config.collapse_repeats else "выключено",
+        )
+        logger.info(
+            "Нормализация текста: %s",
+            "включена" if config.normalize_text else "выключена",
+        )
+        logger.info(
+            "Пометка наложения речи: %s",
+            "включена" if config.mark_overlap else "выключена",
+        )
+        logger.info(
+            "Порог низкой уверенности ASR: %.2f",
+            config.low_confidence_threshold,
         )
         logger.info(
             "Шумоподавление (DeepFilterNet): %s",

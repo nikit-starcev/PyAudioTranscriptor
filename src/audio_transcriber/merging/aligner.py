@@ -48,7 +48,11 @@ class OverlapSegmentMerger:
                 speaker = speakers_by_id[speaker_id]
             entries.append(
                 TranscriptEntry(
-                    start=segment.start, end=segment.end, text=segment.text, speaker=speaker
+                    start=segment.start,
+                    end=segment.end,
+                    text=segment.text,
+                    speaker=speaker,
+                    avg_logprob=segment.avg_logprob,
                 )
             )
 

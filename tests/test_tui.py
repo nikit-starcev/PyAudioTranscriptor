@@ -197,6 +197,93 @@ def test_build_config_cleaning_can_be_disabled_via_env(
     assert asyncio.run(_run()).clean_artifacts is False
 
 
+def test_build_config_quality_defaults(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            return app._build_config(audio_file)
+
+    config = asyncio.run(_run())
+
+    assert config.collapse_repeats is True
+    assert config.normalize_text is True
+    assert config.mark_overlap is True
+    assert config.repeat_min_words == 2
+    assert config.low_confidence_threshold == pytest.approx(-1.0)
+
+
+def test_build_config_quality_toggles_from_env(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    defaults = _defaults(tmp_path / "out")
+    defaults.update(
+        {
+            "COLLAPSE_REPEATS": "false",
+            "NORMALIZE_TEXT": "false",
+            "MARK_OVERLAP": "false",
+            "LOW_CONFIDENCE_THRESHOLD": "-3.5",
+            "REPEAT_MIN_WORDS": "4",
+            "REPEAT_SIMILARITY": "0.75",
+        }
+    )
+    monkeypatch.setattr(tui_app, "_load_env_defaults", lambda: defaults)
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            return app._build_config(audio_file)
+
+    config = asyncio.run(_run())
+
+    assert config.collapse_repeats is False
+    assert config.normalize_text is False
+    assert config.mark_overlap is False
+    assert config.repeat_min_words == 4
+    assert config.repeat_similarity == pytest.approx(0.75)
+    assert config.low_confidence_threshold == pytest.approx(-3.5)
+
+
+def test_populate_results_renders_marks_column(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from audio_transcriber.domain.models import TranscriptEntry
+
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            app._populate_results(
+                TranscriptionResult(
+                    source_path=audio_file,
+                    language="ru",
+                    duration=2.0,
+                    entries=[
+                        TranscriptEntry(start=0.0, end=1.0, text="плохо", avg_logprob=-2.0),
+                        TranscriptEntry(start=1.0, end=2.0, text="спор", overlap=True),
+                    ],
+                    speakers=[],
+                    low_confidence_threshold=-1.0,
+                )
+            )
+            table = app.query_one("#results", tui_app.DataTable)
+            return table.row_count, len(table.columns), str(table.get_row_at(0))
+
+    rows, columns, first_row = asyncio.run(_run())
+
+    assert rows == 2
+    assert columns == 4
+    assert "⚠" in first_row
+
+
 def test_stages_start_with_denoise() -> None:
     # Шумоподавление — первый этап конвейера, и он виден в списке стадий TUI.
     assert tui_app.STAGES[0] == ("denoise", "Шумоподавление")

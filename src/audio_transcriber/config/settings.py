@@ -11,7 +11,16 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from audio_transcriber.config.defaults import DEFAULT_CONTEXT_SIZE as DEFAULT_LLM_CONTEXT_SIZE
+from audio_transcriber.cleaning.repetition_filter import (
+    DEFAULT_REPEAT_MIN_WORDS,
+    DEFAULT_REPEAT_SIMILARITY,
+)
+from audio_transcriber.config.defaults import (
+    DEFAULT_CONTEXT_SIZE as DEFAULT_LLM_CONTEXT_SIZE,
+)
+from audio_transcriber.config.defaults import (
+    DEFAULT_LOW_CONFIDENCE_THRESHOLD,
+)
 from audio_transcriber.correction.defaults import (
     DEFAULT_CORRECTION_MAX_CANDIDATES,
     DEFAULT_CORRECTION_MIN_SIMILARITY,
@@ -47,9 +56,23 @@ class AppConfig:
     hotwords: str | None = None
     # Удалять неречевые пометки Whisper ([СМЕХ], [BLANK_AUDIO], ♪ и т.п.).
     clean_artifacts: bool = True
+    # Схлопывать подряд идущие одинаковые/почти одинаковые реплики
+    # (зацикливания Whisper: «Продолжение следует» ×N и т.п.).
+    collapse_repeats: bool = True
+    repeat_min_words: int = DEFAULT_REPEAT_MIN_WORDS
+    repeat_similarity: float = DEFAULT_REPEAT_SIMILARITY
+    # Безопасная нормализация текста (пробелы, повторная пунктуация, многоточия).
+    normalize_text: bool = True
     # Шумоподавление (DeepFilterNet) перед распознаванием и диаризацией.
     # При отсутствии движка этап мягко пропускается с предупреждением в лог.
     denoise: bool = True
+    # Помечать реплики, попавшие в зоны наложения речи (говорят >= 2 человек).
+    # Требует обычной (не эксклюзивной) разметки pyannote; иначе мягко
+    # пропускается без пометок и без падения.
+    mark_overlap: bool = True
+    # Порог низкой уверенности ASR: реплики со средним avg_logprob ниже
+    # порога помечаются в txt/docx/json. Логвероятности <= 0.
+    low_confidence_threshold: float = DEFAULT_LOW_CONFIDENCE_THRESHOLD
     enable_correction: bool = False
     correction_min_word_length: int = DEFAULT_CORRECTION_MIN_WORD_LENGTH
     correction_min_similarity: float = DEFAULT_CORRECTION_MIN_SIMILARITY
@@ -102,6 +125,31 @@ class AppConfig:
 
         if not isinstance(self.denoise, bool):
             raise ConfigurationError("DENOISE должно быть true или false")
+
+        if not isinstance(self.collapse_repeats, bool):
+            raise ConfigurationError("COLLAPSE_REPEATS должно быть true или false")
+
+        if not isinstance(self.normalize_text, bool):
+            raise ConfigurationError("NORMALIZE_TEXT должно быть true или false")
+
+        if self.repeat_min_words < 1:
+            raise ConfigurationError("REPEAT_MIN_WORDS должно быть целым числом >= 1")
+
+        if not (0.0 < self.repeat_similarity <= 1.0):
+            raise ConfigurationError("REPEAT_SIMILARITY должно быть числом в диапазоне (0; 1]")
+
+        if not isinstance(self.mark_overlap, bool):
+            raise ConfigurationError("MARK_OVERLAP должно быть true или false")
+
+        if isinstance(self.low_confidence_threshold, bool) or not isinstance(
+            self.low_confidence_threshold, (int, float)
+        ):
+            raise ConfigurationError("LOW_CONFIDENCE_THRESHOLD должно быть числом")
+        if self.low_confidence_threshold > 0.0:
+            raise ConfigurationError(
+                "LOW_CONFIDENCE_THRESHOLD должно быть числом <= 0 "
+                "(логвероятности не превышают нуля)"
+            )
 
         if self.correction_min_word_length < 1:
             raise ConfigurationError("CORRECTION_MIN_WORD_LENGTH должно быть целым числом >= 1")

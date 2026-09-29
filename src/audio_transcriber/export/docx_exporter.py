@@ -7,6 +7,7 @@ from pathlib import Path
 from docx import Document
 
 from audio_transcriber.domain.models import TranscriptionResult
+from audio_transcriber.export.annotations import entry_markers
 from audio_transcriber.export.timestamps import format_timestamp
 from audio_transcriber.utils.exceptions import ExportError
 
@@ -23,11 +24,12 @@ class DocxExporter:
             for participant in result.participants:
                 document.add_paragraph(participant, style="List Bullet")
 
+        threshold = result.low_confidence_threshold
         for entry in result.entries:
             speaker_label = entry.speaker.display_name if entry.speaker else "?"
             paragraph = document.add_paragraph()
             paragraph.add_run(f"[{format_timestamp(entry.start)}] {speaker_label}: ").bold = True
-            paragraph.add_run(entry.text)
+            paragraph.add_run(entry.text + entry_markers(entry, threshold))
 
         try:
             document.save(str(output_path))

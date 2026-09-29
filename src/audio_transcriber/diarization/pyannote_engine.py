@@ -7,8 +7,9 @@ import os
 from pathlib import Path
 from typing import Any
 
+from audio_transcriber.diarization.overlap import compute_overlap_regions
 from audio_transcriber.domain.enums import Device
-from audio_transcriber.domain.models import SpeakerSegment
+from audio_transcriber.domain.models import SpeakerOverlap, SpeakerSegment
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.utils.audio import SAMPLE_RATE, load_waveform
 from audio_transcriber.utils.exceptions import DiarizationError
@@ -38,6 +39,7 @@ class PyannoteSpeakerDiarizer:
             hf_token or os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
         )
         self._pipeline: Any = None
+        self._overlaps: list[SpeakerOverlap] = []
 
     def _load_pipeline(self) -> Any:
         if self._pipeline is not None:
@@ -134,9 +136,27 @@ class PyannoteSpeakerDiarizer:
                 f"Ошибка при определении говорящих в файле {audio_path}: {exc}"
             ) from exc
 
-        annotation = getattr(output, "exclusive_speaker_diarization", output)
-
-        return [
+        # Эксклюзивная разметка: в каждый момент один говорящий — её и отдаём
+        # на объединение с ASR.
+        exclusive = getattr(output, "exclusive_speaker_diarization", output)
+        segments = [
             SpeakerSegment(start=turn.start, end=turn.end, speaker_id=speaker)
-            for turn, _, speaker in annotation.itertracks(yield_label=True)
+            for turn, _, speaker in exclusive.itertracks(yield_label=True)
         ]
+
+        # Интервалы наложения речи берём из обычной (не эксклюзивной) разметки,
+        # если она есть. В старых версиях pyannote её нет — тогда перекрытий
+        # не будет (пустой список), конвейер не падает.
+        overlap_source = getattr(output, "speaker_diarization", None)
+        source = overlap_source if overlap_source is not None else exclusive
+        source_segments = [
+            SpeakerSegment(start=turn.start, end=turn.end, speaker_id=speaker)
+            for turn, _, speaker in source.itertracks(yield_label=True)
+        ]
+        self._overlaps = compute_overlap_regions(source_segments)
+
+        return segments
+
+    def overlap_regions(self) -> list[SpeakerOverlap]:
+        """Интервалы наложения речи из последнего вызова :meth:`diarize`."""
+        return list(self._overlaps)

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -29,6 +30,44 @@ from audio_transcriber.utils.subprocess_registry import register_process, termin
 logger = logging.getLogger(__name__)
 
 _PROGRESS_RE = re.compile(r"progress\s*=\s*(\d+(?:\.\d+)?)%")
+
+# Служебные токены whisper.cpp в полном JSON (``-ojf``): ``[_BEG_]``,
+# ``[_TT_129]``, ``[_EOT_]`` и т.п. У них тоже есть вероятность ``p``, но она
+# относится не к речи, поэтому в среднюю уверенность не входит.
+_SPECIAL_TOKEN_RE = re.compile(r"^\[_.*\]$")
+
+
+def _segment_avg_logprob(item: dict) -> float | None:
+    """Средняя логвероятность сегмента из полного JSON whisper.cpp (``-ojf``).
+
+    whisper.cpp отдаёт вероятность ``p`` каждого токена. Аналог
+    ``avg_logprob`` faster-whisper — среднее натуральных логарифмов ``p`` по
+    «речевым» токенам (служебные ``[_...]`` пропускаются). Если токенов с
+    вероятностями нет (например, запуск без ``-ojf``), возвращается ``None`` —
+    фича мягко деградирует и не роняет конвейер.
+    """
+    tokens = item.get("tokens")
+    if not isinstance(tokens, list):
+        return None
+
+    logprobs: list[float] = []
+    for token in tokens:
+        if not isinstance(token, dict):
+            continue
+        text = str(token.get("text", "")).strip()
+        if _SPECIAL_TOKEN_RE.match(text):
+            continue
+        probability = token.get("p")
+        if isinstance(probability, bool) or not isinstance(probability, (int, float)):
+            continue
+        probability = float(probability)
+        if probability <= 0.0:
+            continue
+        logprobs.append(math.log(probability))
+
+    if not logprobs:
+        return None
+    return sum(logprobs) / len(logprobs)
 
 
 class WhisperCppRecognizer:
@@ -95,7 +134,10 @@ class WhisperCppRecognizer:
                 str(wav_path),
                 "-l",
                 language or "auto",
-                "-oj",
+                # -ojf (полный JSON) дополнительно отдаёт вероятности токенов,
+                # по которым считается средняя уверенность реплики
+                # (аналог avg_logprob faster-whisper).
+                "-ojf",
                 "-of",
                 str(output_base),
                 # -pp печатает «progress = N%» в stderr — по нему TUI
@@ -154,6 +196,7 @@ class WhisperCppRecognizer:
                 start=item["offsets"]["from"] / 1000.0,
                 end=item["offsets"]["to"] / 1000.0,
                 text=item["text"].strip(),
+                avg_logprob=_segment_avg_logprob(item),
             )
             for item in data.get("transcription", [])
             if item.get("text", "").strip()

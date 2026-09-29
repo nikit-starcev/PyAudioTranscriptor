@@ -86,6 +86,55 @@ def test_denoise_must_be_boolean(audio_file: Path) -> None:
         AppConfig(input_file=audio_file, denoise="yes")  # type: ignore[arg-type]
 
 
+def test_quality_features_defaults(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file)
+
+    assert config.collapse_repeats is True
+    assert config.normalize_text is True
+    assert config.mark_overlap is True
+    assert config.repeat_min_words == 2
+    assert config.repeat_similarity == pytest.approx(0.9)
+    assert config.low_confidence_threshold == pytest.approx(-1.0)
+
+
+def test_collapse_repeats_must_be_boolean(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, collapse_repeats="yes")  # type: ignore[arg-type]
+
+
+def test_normalize_text_must_be_boolean(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, normalize_text="yes")  # type: ignore[arg-type]
+
+
+def test_mark_overlap_must_be_boolean(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, mark_overlap="yes")  # type: ignore[arg-type]
+
+
+def test_repeat_min_words_must_be_positive(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, repeat_min_words=0)
+
+
+def test_repeat_similarity_must_be_in_unit_interval(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, repeat_similarity=0.0)
+
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, repeat_similarity=1.5)
+
+
+def test_low_confidence_threshold_must_be_non_positive(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, low_confidence_threshold=0.5)
+
+    assert (
+        AppConfig(input_file=audio_file, low_confidence_threshold=-3.0).low_confidence_threshold
+        == -3.0
+    )
+
+
 def test_at_least_one_export_format_required(audio_file: Path) -> None:
     with pytest.raises(ConfigurationError):
         AppConfig(input_file=audio_file, export_formats=())
