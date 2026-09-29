@@ -85,6 +85,63 @@ export type JobEvent = {
   status: string
 }
 
+export type WebSettings = {
+  glossary_enabled: boolean
+  glossary_db: string
+  voices_dir: string
+  export_formats: string[]
+  llm_enabled: boolean
+  llm_summary: boolean
+  denoise: boolean
+  mark_overlap: boolean
+  normalize_text: boolean
+  clean_artifacts: boolean
+  protocol_auto: boolean
+  input_dir: string
+  output_dir: string
+  glossary_db_path: string
+  voices_dir_resolved: string
+}
+
+export type GlossarySource = {
+  name: string
+  kind: string
+  enabled: boolean
+  count: number
+  path: string | null
+}
+
+export type GlossaryEntry = {
+  id: number
+  canonical: string
+  variant: string | null
+  category: string | null
+  note: string | null
+  source: string | null
+  enabled: boolean
+}
+
+export type GlossaryEntriesPage = { entries: GlossaryEntry[]; total: number }
+
+export type GlossaryStats = { sources: number; entries: number; enabled: number }
+
+export type GlossaryImportReport = {
+  source: string
+  kind: string
+  added: number
+  skipped: number
+  total: number
+  replaced: boolean
+}
+
+export type ProtocolResponse = {
+  paths: string[]
+  summary: string | null
+  protocol: Record<string, string>
+}
+
+export const EXPORT_FORMATS = ['txt', 'docx', 'json', 'srt'] as const
+
 export async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init)
   if (!response.ok) {

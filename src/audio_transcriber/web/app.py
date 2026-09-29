@@ -18,7 +18,7 @@ import tempfile
 import threading
 import uuid
 import webbrowser
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
@@ -42,18 +42,27 @@ from audio_transcriber.diarization.voices import (
     delete_voice_sample,
     save_speaker_sample,
 )
+from audio_transcriber.protocol import ProtocolArtifacts, generate_protocol
 from audio_transcriber.utils.audio import load_waveform, write_wav
 from audio_transcriber.utils.playback import amplitude_envelope, read_duration
 from audio_transcriber.utils.text import sanitize_filename
 from audio_transcriber.web.config import build_job_config, env_defaults, public_config
 from audio_transcriber.web.events import JobEventBus
+from audio_transcriber.web.glossary_api import register_glossary_routes
 from audio_transcriber.web.paths import STATIC_DIR, WebPaths
 from audio_transcriber.web.results import load_result_file, result_summary
 from audio_transcriber.web.runner import ConfigBuilder, JobRunner, PipelineFn
+from audio_transcriber.web.settings import (
+    SettingsError,
+    SettingsStore,
+    settings_from_mapping,
+    validate_settings,
+)
 from audio_transcriber.web.speakers import (
     apply_names,
     apply_speaker_changes,
     build_speaker_segments,
+    result_from_payload,
 )
 from audio_transcriber.web.storage.jobs_db import (
     STATUS_DONE,
@@ -66,8 +75,12 @@ from audio_transcriber.web.voices import (
     VoiceSample,
     find_voice_sample,
     list_voice_samples,
-    resolve_voices_dir,
 )
+
+#: Функция формирования протокола (совместима с ``generate_protocol``).
+ProtocolFn = Callable[..., ProtocolArtifacts]
+#: Провайдер каталога библиотеки голосов (читает актуальные настройки).
+VoicesResolver = Callable[[], Path]
 
 #: Заголовки SSE: без кэша и без буферизации прокси.
 SSE_HEADERS = {
@@ -155,39 +168,64 @@ class ApplyNamesRequest(BaseModel):
     references: dict[str, str] = Field(default_factory=dict)
 
 
+class SettingsUpdate(BaseModel):
+    """Тело ``PUT /api/settings``: частичное обновление (``None`` — не менять)."""
+
+    glossary_enabled: bool | None = None
+    glossary_db: str | None = None
+    voices_dir: str | None = None
+    export_formats: list[str] | None = None
+    llm_enabled: bool | None = None
+    llm_summary: bool | None = None
+    denoise: bool | None = None
+    mark_overlap: bool | None = None
+    normalize_text: bool | None = None
+    clean_artifacts: bool | None = None
+    protocol_auto: bool | None = None
+
+
 def create_app(
     *,
     paths: WebPaths | None = None,
     pipeline_fn: PipelineFn | None = None,
     config_builder: ConfigBuilder | None = None,
+    protocol_fn: ProtocolFn | None = None,
     voices_dir: Path | None = None,
     heartbeat: float = 15.0,
 ) -> FastAPI:
     """Собирает приложение FastAPI с изолированным окружением данных.
 
-    ``pipeline_fn`` и ``config_builder`` подменяются в тестах, чтобы не
-    требовать GPU/моделей и реального ``config.env``. ``voices_dir`` позволяет
-    подменить каталог библиотеки голосов (в тестах) вместо ``VOICES_DIR``.
+    ``pipeline_fn``, ``config_builder`` и ``protocol_fn`` подменяются в тестах,
+    чтобы не требовать GPU/моделей и реального ``config.env``. ``voices_dir``
+    позволяет подменить каталог библиотеки голосов (в тестах) вместо
+    ``VOICES_DIR``; в остальных случаях он берётся из сохранённых настроек.
     """
     resolved_paths = paths or WebPaths.default()
     resolved_paths.ensure()
-    resolved_voices = resolve_voices_dir(voices_dir)
+    settings_store = SettingsStore(resolved_paths.settings_json)
     store = JobsDB(resolved_paths.jobs_db)
     store.initialize()
     bus = JobEventBus(heartbeat=heartbeat)
+
+    def resolve_voices() -> Path:
+        if voices_dir is not None:
+            return Path(voices_dir)
+        return settings_store.load().resolved_voices_dir()
 
     def default_config_builder(job_id: str, source_path: Path) -> AppConfig:
         return build_job_config(
             source_path,
             output_dir=resolved_paths.results_dir / job_id,
             data_dir=resolved_paths.data_dir,
+            overrides=settings_store.load().env_overrides(),
         )
 
+    effective_builder = config_builder or default_config_builder
     runner = JobRunner(
         store,
         bus,
         resolved_paths,
-        config_builder or default_config_builder,
+        effective_builder,
         pipeline_fn=pipeline_fn,
     )
 
@@ -210,7 +248,8 @@ def create_app(
     app.state.store = store
     app.state.bus = bus
     app.state.runner = runner
-    app.state.voices_dir = resolved_voices
+    app.state.settings_store = settings_store
+    app.state.voices_dir = resolve_voices()
     router = APIRouter(prefix="/api")
     register_api(
         router,
@@ -218,7 +257,10 @@ def create_app(
         bus=bus,
         runner=runner,
         paths=resolved_paths,
-        voices_dir=resolved_voices,
+        settings_store=settings_store,
+        resolve_voices=resolve_voices,
+        config_builder=effective_builder,
+        protocol_fn=protocol_fn or generate_protocol,
     )
     app.include_router(router)
 
@@ -248,9 +290,17 @@ def register_api(
     bus: JobEventBus,
     runner: JobRunner,
     paths: WebPaths,
-    voices_dir: Path,
+    settings_store: SettingsStore,
+    resolve_voices: VoicesResolver,
+    config_builder: ConfigBuilder,
+    protocol_fn: ProtocolFn,
 ) -> None:
     """Регистрирует все маршруты API v1 на переданном роутере."""
+
+    def _glossary_db_path() -> Path:
+        return settings_store.load().resolved_glossary_db()
+
+    register_glossary_routes(router, db_path=_glossary_db_path)
 
     @router.get("/health")
     def health() -> dict[str, object]:
@@ -259,6 +309,33 @@ def register_api(
     @router.get("/config")
     def get_config() -> dict[str, object]:
         return public_config(input_dir=paths.input_dir, output_dir=paths.results_dir).as_dict()
+
+    @router.get("/settings")
+    def get_settings() -> dict[str, object]:
+        settings = settings_store.load()
+        payload = settings.as_dict()
+        payload["input_dir"] = str(paths.input_dir)
+        payload["output_dir"] = str(paths.results_dir)
+        payload["glossary_db_path"] = str(settings.resolved_glossary_db())
+        payload["voices_dir_resolved"] = str(resolve_voices())
+        return payload
+
+    @router.put("/settings")
+    def put_settings(payload: SettingsUpdate) -> dict[str, object]:
+        current = settings_store.load()
+        updates = payload.model_dump(exclude_none=True)
+        try:
+            merged = settings_from_mapping(updates, base=current)
+            validate_settings(merged)
+            saved = settings_store.save(merged)
+        except SettingsError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        result = saved.as_dict()
+        result["input_dir"] = str(paths.input_dir)
+        result["output_dir"] = str(paths.results_dir)
+        result["glossary_db_path"] = str(saved.resolved_glossary_db())
+        result["voices_dir_resolved"] = str(resolve_voices())
+        return result
 
     @router.get("/files")
     def list_files() -> list[dict[str, object]]:
@@ -319,6 +396,59 @@ def register_api(
         if result is None:
             raise HTTPException(status_code=404, detail="Результат ещё не готов")
         return JSONResponse(result)
+
+    @router.post("/jobs/{job_id}/protocol")
+    def job_protocol(job_id: str) -> dict[str, object]:
+        """Формирует протокол по текущему результату (резюме + экспорт).
+
+        Синхронный вызов: FastAPI выполняет его в рабочем потоке, поэтому
+        остальные запросы не блокируются. LLM-резюме считается по актуальной
+        стенограмме — уже с применёнными именами говорящих.
+        """
+        job = _require_job(store, job_id)
+        if job.status != STATUS_DONE:
+            raise HTTPException(status_code=409, detail="Результат ещё не готов")
+        source = Path(job.source_path)
+        if not source.is_file():
+            raise HTTPException(status_code=400, detail="Исходный файл не найден")
+        payload = _require_result(paths, job)
+        try:
+            config = config_builder(job_id, source)
+            result = result_from_payload(payload, source_path=source)
+            artifacts = protocol_fn(config, result)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Не удалось сформировать протокол: {exc}"
+            ) from exc
+        updated = _store_protocol(paths, job, payload, artifacts)
+        return {
+            "paths": [str(path) for path in artifacts.paths],
+            "summary": artifacts.summary,
+            "protocol": updated,
+        }
+
+    @router.get("/jobs/{job_id}/summary")
+    def job_summary(job_id: str) -> dict[str, object]:
+        job = _require_job(store, job_id)
+        payload = _require_result(paths, job)
+        summary = payload.get("summary")
+        return {"summary": summary if isinstance(summary, str) else None}
+
+    @router.get("/jobs/{job_id}/protocol/download")
+    def protocol_download(job_id: str, fmt: str = "txt") -> Response:
+        job = _require_job(store, job_id)
+        value = fmt.strip().casefold()
+        if value not in {"txt", "docx"}:
+            raise HTTPException(status_code=400, detail="fmt должен быть txt или docx")
+        target = _protocol_file(paths, job, value)
+        if target is None:
+            raise HTTPException(status_code=404, detail="Протокол ещё не сформирован")
+        media_type = (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            if value == "docx"
+            else "text/plain"
+        )
+        return FileResponse(target, media_type=media_type, filename=target.name)
 
     @router.get("/jobs/{job_id}/samples/{speaker_id}")
     def job_sample(job_id: str, speaker_id: str) -> Response:
@@ -398,7 +528,7 @@ def register_api(
         )
         source = Path(job.source_path)
         explicit = _explicit_references(payload.references if payload is not None else {})
-        library = collect_voice_library(voices_dir)
+        library = collect_voice_library(resolve_voices())
         references_total = len(explicit) + len(library)
         segments = build_speaker_segments(result)
         if not source.is_file():
@@ -455,7 +585,7 @@ def register_api(
         if not name:
             raise HTTPException(status_code=400, detail="Не указано имя образца")
         try:
-            target = save_speaker_sample(sample_path, voices_dir, name)
+            target = save_speaker_sample(sample_path, resolve_voices(), name)
         except OSError as exc:
             raise HTTPException(
                 status_code=500, detail=f"Не удалось сохранить образец: {exc}"
@@ -507,7 +637,7 @@ def register_api(
 
     @router.get("/voices")
     def voices_list() -> list[dict[str, object]]:
-        return [sample.as_dict() for sample in list_voice_samples(voices_dir)]
+        return [sample.as_dict() for sample in list_voice_samples(resolve_voices())]
 
     @router.post("/voices", status_code=201)
     async def voices_upload(
@@ -522,13 +652,14 @@ def register_api(
         data = await file.read()
         if not data:
             raise HTTPException(status_code=400, detail="Пустой файл")
+        directory = resolve_voices()
         try:
-            voices_dir.mkdir(parents=True, exist_ok=True)
+            directory.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             raise HTTPException(
                 status_code=500, detail=f"Не удалось создать библиотеку: {exc}"
             ) from exc
-        target = voices_dir / f"{clean}.wav"
+        target = directory / f"{clean}.wav"
         suffix = Path(file.filename or "").suffix.lower()
         if suffix == ".wav":
             try:
@@ -539,19 +670,19 @@ def register_api(
                 ) from exc
         else:
             _write_converted_wav(data, suffix, target)
-        sample = find_voice_sample(voices_dir, clean) or VoiceSample(name=clean, path=target)
+        sample = find_voice_sample(directory, clean) or VoiceSample(name=clean, path=target)
         return sample.as_dict()
 
     @router.get("/voices/{name}/audio")
     def voice_audio(name: str) -> Response:
-        sample = find_voice_sample(voices_dir, name)
+        sample = find_voice_sample(resolve_voices(), name)
         if sample is None:
             raise HTTPException(status_code=404, detail="Образец не найден")
         return FileResponse(sample.path, media_type="audio/wav", filename=sample.path.name)
 
     @router.get("/voices/{name}/envelope")
     def voice_envelope(name: str, columns: int = 120) -> dict[str, object]:
-        sample = find_voice_sample(voices_dir, name)
+        sample = find_voice_sample(resolve_voices(), name)
         if sample is None:
             raise HTTPException(status_code=404, detail="Образец не найден")
         width = max(1, min(columns, 2000))
@@ -564,10 +695,10 @@ def register_api(
 
     @router.delete("/voices/{name}")
     def voice_delete(name: str) -> dict[str, object]:
-        sample = find_voice_sample(voices_dir, name)
+        sample = find_voice_sample(resolve_voices(), name)
         if sample is None:
             raise HTTPException(status_code=404, detail="Образец не найден")
-        if not delete_voice_sample(sample.path, voices_dir):
+        if not delete_voice_sample(sample.path, resolve_voices()):
             raise HTTPException(status_code=404, detail="Образец не найден")
         return {"deleted": sample.name}
 
@@ -624,6 +755,49 @@ def _write_result(paths: WebPaths, job: Job, payload: Mapping[str, object]) -> N
         raise HTTPException(
             status_code=500, detail=f"Не удалось сохранить результат: {exc}"
         ) from exc
+
+
+def _store_protocol(
+    paths: WebPaths,
+    job: Job,
+    payload: Mapping[str, object],
+    artifacts: ProtocolArtifacts,
+) -> dict[str, str]:
+    """Сохраняет пути протокола и резюме в JSON результата; возвращает карту путей."""
+    protocol_map: dict[str, str] = {}
+    for path in artifacts.paths:
+        suffix = path.suffix.lstrip(".").casefold()
+        if suffix:
+            protocol_map[suffix] = str(path)
+    updated: dict[str, object] = dict(payload)
+    if artifacts.summary is not None:
+        updated["summary"] = artifacts.summary
+    updated["protocol"] = protocol_map
+    _write_result(paths, job, updated)
+    return protocol_map
+
+
+def _protocol_file(paths: WebPaths, job: Job, fmt: str) -> Path | None:
+    """Путь к файлу протокола: из JSON результата, иначе — по умолчанию."""
+    payload = load_result_file(_result_path(paths, job))
+    candidates: list[Path] = []
+    if payload is not None:
+        protocol_map = payload.get("protocol")
+        if isinstance(protocol_map, Mapping):
+            raw = protocol_map.get(fmt)
+            if isinstance(raw, str) and raw:
+                candidates.append(Path(raw))
+    source = Path(job.source_path)
+    candidates.append(paths.results_dir / job.id / f"{source.stem}.{fmt}")
+    root = paths.data_dir.resolve()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if resolved.is_relative_to(root) and resolved.is_file():
+            return resolved
+    return None
 
 
 def _explicit_references(raw: Mapping[str, str]) -> dict[str, list[Path]]:

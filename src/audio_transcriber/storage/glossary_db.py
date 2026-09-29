@@ -424,9 +424,19 @@ class GlossaryDB:
             entries = entries[: max(limit, 0)]
         return entries
 
+    def get_entry(self, entry_id: int) -> Entry | None:
+        """Возвращает запись по id или ``None``."""
+        row = self._conn.execute("SELECT * FROM entries WHERE id = ?", (entry_id,)).fetchone()
+        return _row_to_entry(row) if row is not None else None
+
     def count(self) -> int:
         """Общее число записей глоссария."""
         row = self._conn.execute("SELECT COUNT(*) AS c FROM entries").fetchone()
+        return int(row["c"]) if row is not None else 0
+
+    def count_enabled(self) -> int:
+        """Число включённых записей глоссария."""
+        row = self._conn.execute("SELECT COUNT(*) AS c FROM entries WHERE enabled = 1").fetchone()
         return int(row["c"]) if row is not None else 0
 
     def entry_counts(self) -> dict[str, int]:
@@ -497,6 +507,49 @@ class GlossaryDB:
             cursor = self._conn.execute(
                 "UPDATE entries SET enabled = ?, updated_at = ? WHERE id = ?",
                 (1 if enabled else 0, _now_iso(), entry_id),
+            )
+        return cursor.rowcount > 0
+
+    def update_entry(
+        self,
+        entry_id: int,
+        *,
+        canonical: str | None = None,
+        variant: str | None = None,
+        note: str | None = None,
+        category: str | None = None,
+        enabled: bool | None = None,
+    ) -> bool:
+        """Обновляет переданные поля записи. ``False`` — записи не было.
+
+        ``None`` означает «поле не трогать»; пустой ``variant``/``note``/
+        ``category`` очищает соответствующее поле. Пустой ``canonical``
+        недопустим (``ValueError``). Конфликт уникальности ``(canonical,
+        variant, source)`` поднимает :class:`sqlite3.IntegrityError`.
+        """
+        fields: dict[str, object] = {}
+        if canonical is not None:
+            canonical_value = _normalize_spaces(canonical.strip()) if canonical else ""
+            if not canonical_value:
+                raise ValueError("Канонический термин не может быть пустым")
+            fields["canonical"] = canonical_value
+        if variant is not None:
+            variant_value = _normalize_spaces(variant.strip())
+            fields["variant"] = variant_value or None
+        if note is not None:
+            fields["note"] = note.strip() or None
+        if category is not None:
+            fields["category"] = category.strip() or None
+        if enabled is not None:
+            fields["enabled"] = 1 if enabled else 0
+        if not fields:
+            return self.get_entry(entry_id) is not None
+        fields["updated_at"] = _now_iso()
+        assignments = ", ".join(f"{key} = ?" for key in fields)
+        with self._conn:
+            cursor = self._conn.execute(
+                f"UPDATE entries SET {assignments} WHERE id = ?",
+                [*fields.values(), entry_id],
             )
         return cursor.rowcount > 0
 

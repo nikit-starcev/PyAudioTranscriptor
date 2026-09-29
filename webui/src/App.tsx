@@ -14,10 +14,14 @@ import {
   type Job,
   type JobDetails,
   type JobEvent,
+  type ProtocolResponse,
   type SampleMeta,
   type TranscriptResult,
   type VoiceInfo,
+  type WebSettings,
 } from './api'
+import GlossaryModal from './components/GlossaryModal'
+import SettingsModal from './components/SettingsModal'
 import SpeakersPanel from './components/SpeakersPanel'
 import VoicesModal from './components/VoicesModal'
 
@@ -58,6 +62,12 @@ function App() {
   const [result, setResult] = useState<TranscriptResult | null>(null)
   const [samplesMeta, setSamplesMeta] = useState<Record<string, SampleMeta>>({})
   const [voicesOpen, setVoicesOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [glossaryOpen, setGlossaryOpen] = useState(false)
+  const [protocol, setProtocol] = useState<ProtocolResponse | null>(null)
+  const [protocolBusy, setProtocolBusy] = useState(false)
+  const [protocolError, setProtocolError] = useState<string | null>(null)
+  const [summary, setSummary] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -92,10 +102,15 @@ function App() {
   const loadResult = useCallback(
     async (jobId: string) => {
       try {
-        setResult(await api<TranscriptResult>(`/api/jobs/${jobId}/result`))
+        const loaded = await api<TranscriptResult>(`/api/jobs/${jobId}/result`)
+        setResult(loaded)
+        setSummary(loaded.summary)
+        setProtocol(null)
+        setProtocolError(null)
         await refreshSamples(jobId)
       } catch {
         setResult(null)
+        setSummary(null)
         setSamplesMeta({})
       }
     },
@@ -144,6 +159,8 @@ function App() {
         setActiveJobId(job.id)
         setProgress({ stage: 'queued', fraction: 0, message: 'В очереди', status: 'queued' })
         setResult(null)
+        setSummary(null)
+        setProtocol(null)
         setSamplesMeta({})
         await refreshJobs()
       } catch (cause) {
@@ -160,6 +177,8 @@ function App() {
         await api<Job>(`/api/jobs/${jobId}/run`, { method: 'POST' })
         setActiveJobId(jobId)
         setResult(null)
+        setSummary(null)
+        setProtocol(null)
         setSamplesMeta({})
         await refreshJobs()
       } catch (cause) {
@@ -174,6 +193,8 @@ function App() {
       setError(null)
       setActiveJobId(jobId)
       setResult(null)
+      setSummary(null)
+      setProtocol(null)
       setSamplesMeta({})
       setProgress(null)
       try {
@@ -200,6 +221,8 @@ function App() {
         if (activeJobId === jobId) {
           setActiveJobId(null)
           setResult(null)
+          setSummary(null)
+          setProtocol(null)
           setSamplesMeta({})
           setProgress(null)
         }
@@ -264,6 +287,22 @@ function App() {
     [],
   )
 
+  const generateProtocol = useCallback(async (jobId: string) => {
+    setProtocolBusy(true)
+    setProtocolError(null)
+    try {
+      const response = await api<ProtocolResponse>(`/api/jobs/${jobId}/protocol`, {
+        method: 'POST',
+      })
+      setProtocol(response)
+      setSummary(response.summary)
+    } catch (cause) {
+      setProtocolError(errorMessage(cause))
+    } finally {
+      setProtocolBusy(false)
+    }
+  }, [])
+
   const stageIndex = useMemo(() => {
     if (!progress) return -1
     return STAGES.findIndex((stage) => stage.key === progress.stage)
@@ -283,8 +322,22 @@ function App() {
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-6xl items-baseline gap-3 px-6 py-4">
           <h1 className="text-xl font-semibold">AudioTranscriber</h1>
-          <span className="text-sm text-slate-400">веб-интерфейс · этап 2</span>
-          {version && <span className="ml-auto text-xs text-slate-400">v{version}</span>}
+          <span className="text-sm text-slate-400">веб-интерфейс · этап 3</span>
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              onClick={() => setGlossaryOpen(true)}
+              className="rounded-md border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-100"
+            >
+              Глоссарий
+            </button>
+            <button
+              onClick={() => setSettingsOpen(true)}
+              className="rounded-md border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-100"
+            >
+              Настройки
+            </button>
+          </div>
+          {version && <span className="text-xs text-slate-400">v{version}</span>}
         </div>
       </header>
 
@@ -530,11 +583,75 @@ function App() {
                 <p className="py-6 text-center text-sm text-slate-400">Ничего не найдено</p>
               )}
             </div>
+
+            <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  onClick={() => void generateProtocol(activeJobId)}
+                  disabled={protocolBusy}
+                  className="rounded-md bg-slate-800 px-3 py-1.5 text-sm text-white hover:bg-slate-700 disabled:opacity-40"
+                >
+                  {protocolBusy ? 'Формирование протокола…' : 'Сформировать протокол'}
+                </button>
+                {protocolBusy && (
+                  <span className="animate-pulse text-xs text-slate-500">
+                    Считается резюме и экспорт — это может занять время
+                  </span>
+                )}
+                {protocol && (
+                  <span className="flex items-center gap-2 text-sm">
+                    <a
+                      className="rounded-md border border-slate-300 bg-white px-3 py-1 hover:bg-slate-100"
+                      href={`/api/jobs/${activeJobId}/protocol/download?fmt=txt`}
+                    >
+                      Скачать .txt
+                    </a>
+                    <a
+                      className="rounded-md border border-slate-300 bg-white px-3 py-1 hover:bg-slate-100"
+                      href={`/api/jobs/${activeJobId}/protocol/download?fmt=docx`}
+                    >
+                      Скачать .docx
+                    </a>
+                  </span>
+                )}
+              </div>
+              {protocolError && (
+                <p className="mt-2 rounded-md bg-red-50 px-3 py-1.5 text-xs text-red-700">
+                  {protocolError}
+                </p>
+              )}
+              {summary && (
+                <div className="mt-3">
+                  <p className="mb-1 text-xs font-medium uppercase text-slate-500">
+                    Резюме встречи
+                  </p>
+                  <p className="whitespace-pre-wrap text-sm text-slate-700">{summary}</p>
+                </div>
+              )}
+            </div>
           </section>
         )}
       </main>
 
       <VoicesModal open={voicesOpen} onClose={() => setVoicesOpen(false)} />
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        onSaved={(saved: WebSettings) =>
+          setConfig((current) =>
+            current
+              ? {
+                  ...current,
+                  glossary_enabled: saved.glossary_enabled,
+                  export_formats: saved.export_formats,
+                  llm_enabled: saved.llm_enabled,
+                  voices_dir: saved.voices_dir_resolved,
+                }
+              : current,
+          )
+        }
+      />
+      <GlossaryModal open={glossaryOpen} onClose={() => setGlossaryOpen(false)} />
     </div>
   )
 }

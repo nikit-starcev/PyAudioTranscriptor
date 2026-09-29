@@ -40,6 +40,11 @@ class WebPaths:
         return self.data_dir / "jobs.db"
 
     @property
+    def settings_json(self) -> Path:
+        """JSON с редактируемыми настройками веб-интерфейса."""
+        return self.data_dir / "settings.json"
+
+    @property
     def input_dir(self) -> Path:
         """Каталог загруженных/выбираемых аудиофайлов."""
         return self.data_dir / "uploads"

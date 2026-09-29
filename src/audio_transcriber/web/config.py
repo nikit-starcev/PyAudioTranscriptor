@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -122,9 +123,24 @@ def build_job_config(
     *,
     output_dir: Path,
     data_dir: Path,
+    overrides: Mapping[str, str] | None = None,
 ) -> AppConfig:
-    """Собирает :class:`AppConfig` для одной веб-задачи из настроек окружения."""
-    defaults = env_defaults()
+    """Собирает :class:`AppConfig` для одной веб-задачи из настроек окружения.
+
+    ``overrides`` — срез настроек веб-интерфейса (``web-data/settings.json``),
+    накладываемый поверх ``config.env``: ключи совпадают с переменными
+    ``config.env`` (``GLOSSARY_ENABLED``, ``EXPORT_FORMATS`` и т.д.). Пустые
+    значения пропускаются — тогда действует значение из окружения.
+    """
+    defaults = dict(env_defaults())
+    if overrides:
+        defaults.update(
+            {
+                key: value
+                for key, value in overrides.items()
+                if isinstance(value, str) and value != ""
+            }
+        )
     glossary_db_raw = defaults.get("GLOSSARY_DB", "").strip()
     glossary_db = Path(glossary_db_raw) if glossary_db_raw else Path(DEFAULT_GLOSSARY_DB)
     voices_raw = defaults.get("VOICES_DIR", "").strip()
@@ -186,6 +202,7 @@ def build_job_config(
         glossary_db=glossary_db,
         glossary_enabled=_as_bool(defaults.get("GLOSSARY_ENABLED"), default=True),
         voices_dir=Path(voices_raw) if voices_raw else None,
-        # Этап 1: экспорт и резюме по кнопке — конвейер отдаёт только стенограмму.
-        protocol_auto=False,
+        # Экспорт по кнопке (протокол) — по умолчанию; может быть включён
+        # настройкой веб-интерфейса (PROTOCOL_AUTO).
+        protocol_auto=_as_bool(defaults.get("PROTOCOL_AUTO"), default=False),
     )
