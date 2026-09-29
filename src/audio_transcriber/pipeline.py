@@ -1,15 +1,18 @@
-"""Сборка конвейера: распознавание -> диаризация -> объединение -> коррекция -> экспорт.
+"""Сборка конвейера: распознавание -> диаризация -> объединение -> очистка -> коррекция -> экспорт.
 
 Каждый этап конвейера обращается к своему компоненту только через протокол
 (``SpeechRecognizer``, ``SpeakerDiarizer``, ``SegmentMerger``,
-``TextCorrector``, ``ResultExporter``), поэтому конкретную реализацию можно
-передать снаружи — это используется в тестах для подстановки фиктивных движков.
+``ArtifactCleanerProtocol``, ``TextCorrector``, ``ResultExporter``), поэтому
+конкретную реализацию можно передать снаружи — это используется в тестах для
+подстановки фиктивных движков.
 """
 
 from __future__ import annotations
 
 import logging
 
+from audio_transcriber.cleaning.artifact_filter import ArtifactCleaner
+from audio_transcriber.cleaning.base import ArtifactCleanerProtocol
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.correction.base import TextCorrector
 from audio_transcriber.correction.morph_corrector import MorphTextCorrector
@@ -61,6 +64,7 @@ def run_pipeline(
     diarizer: SpeakerDiarizer | None = None,
     merger: SegmentMerger | None = None,
     sentence_merger: SentenceMerger | None = None,
+    artifact_cleaner: ArtifactCleanerProtocol | None = None,
     corrector: TextCorrector | None = None,
     llm_client: LlmClient | None = None,
     on_progress: ProgressCallback | None = None,
@@ -78,6 +82,8 @@ def run_pipeline(
 
     merger = merger or OverlapSegmentMerger()
     sentence_merger = sentence_merger or SentenceMerger()
+    if artifact_cleaner is None and config.clean_artifacts:
+        artifact_cleaner = ArtifactCleaner()
     if corrector is None and config.enable_correction:
         corrector = MorphTextCorrector(
             min_word_length=config.correction_min_word_length,
@@ -116,6 +122,14 @@ def run_pipeline(
 
     emit(ProgressEvent("merge", "Объединение сегментов", fraction=None))
     entries, speakers = merger.merge(transcription_segments, speaker_segments, config.speaker_names)
+
+    # Чистим неречевые пометки Whisper ([СМЕХ], [BLANK_AUDIO], ♪ и т.п.) до
+    # склейки предложений, чтобы корректор, LLM и экспорт работали с готовым
+    # текстом. Реплики, состоящие только из пометок, здесь же отбрасываются.
+    if artifact_cleaner is not None:
+        logger.info("Очистка неречевых артефактов...")
+        emit(ProgressEvent("clean", "Очистка артефактов", fraction=None))
+        entries = artifact_cleaner.clean(entries)
 
     # Склеиваем подряд идущие короткие сегменты одного говорящего в реплики-
     # предложения — корректор и LLM должны видеть уже цельный текст.

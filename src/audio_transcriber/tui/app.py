@@ -4,8 +4,9 @@
 
 Позволяет выбрать аудио/видеофайлы, выстроить очередь, запустить обработку
 и наблюдать живой прогресс по этапам (распознавание, диаризация, объединение,
-автоисправление, экспорт). Пока идёт транскрибация, в очередь можно добавлять
-новые файлы — они обработаются следом. Результаты показываются после запуска.
+очистка артефактов, автоисправление, экспорт). Пока идёт транскрибация, в
+очередь можно добавлять новые файлы — они обработаются следом. Результаты
+показываются после запуска.
 """
 
 from __future__ import annotations
@@ -61,6 +62,7 @@ STAGES: list[tuple[str, str]] = [
     ("asr", "Распознавание речи"),
     ("diarization", "Определение говорящих"),
     ("merge", "Объединение сегментов"),
+    ("clean", "Очистка артефактов"),
     ("correction", "Автоисправление опечаток"),
     ("llm", "LLM-постобработка"),
     ("export", "Экспорт"),
@@ -370,6 +372,7 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
     )
 
     enable_correction = app.query_one("#correction", Switch).value
+    clean_artifacts = app.query_one("#clean", Switch).value
     diarization_enabled = app.query_one("#diarization", Switch).value
 
     backend_raw = str(app.query_one("#backend", Select).value or "")
@@ -429,6 +432,7 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
         pyannote_local_model=pyannote_local_model,
         initial_prompt=defaults.get("INITIAL_PROMPT") or None,
         hotwords=hotwords,
+        clean_artifacts=clean_artifacts,
         enable_correction=enable_correction,
         correction_min_word_length=_to_int(
             defaults.get("CORRECTION_MIN_WORD_LENGTH"),
@@ -601,6 +605,12 @@ class TranscriberApp(App):
                     with Horizontal():
                         yield Label("Автоисправление", classes="field-label")
                         yield Switch(value=False, id="correction")
+                    with Horizontal():
+                        yield Label("Очистка артефактов", classes="field-label")
+                        yield Switch(
+                            value=_to_bool(self._defaults.get("CLEAN_ARTIFACTS"), default=True),
+                            id="clean",
+                        )
                     with Horizontal():
                         yield Label("LLM-обработка", classes="field-label")
                         yield Switch(

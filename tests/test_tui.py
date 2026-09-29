@@ -167,6 +167,36 @@ def test_build_config_diarization_can_be_disabled_via_env(
     assert asyncio.run(_run()).diarization_enabled is False
 
 
+def test_build_config_cleaning_enabled_by_default(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            return app._build_config(audio_file)
+
+    assert asyncio.run(_run()).clean_artifacts is True
+
+
+def test_build_config_cleaning_can_be_disabled_via_env(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    defaults = _defaults(tmp_path / "out")
+    defaults["CLEAN_ARTIFACTS"] = "false"
+    monkeypatch.setattr(tui_app, "_load_env_defaults", lambda: defaults)
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            return app._build_config(audio_file)
+
+    assert asyncio.run(_run()).clean_artifacts is False
+
+
 def test_queue_does_not_duplicate_row_after_completion(
     tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

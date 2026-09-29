@@ -14,9 +14,9 @@ from dataclasses import dataclass
 class ProgressEvent:
     """Одно событие прогресса конвейера.
 
-    ``stage`` — этап: ``asr``, ``diarization``, ``merge``, ``correction``,
-    ``llm``, ``export`` или ``done``. ``fraction`` — прогресс от 0 до 1,
-    либо ``None`` для неопределённого (анимированного) прогресса.
+    ``stage`` — этап: ``asr``, ``diarization``, ``merge``, ``clean``,
+    ``correction``, ``llm``, ``export`` или ``done``. ``fraction`` — прогресс
+    от 0 до 1, либо ``None`` для неопределённого (анимированного) прогресса.
     """
 
     stage: str

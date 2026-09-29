@@ -300,6 +300,35 @@ def test_transcribe_diarization_enabled_by_default(
     assert captured["config"].diarization_enabled is True
 
 
+def test_transcribe_cleaning_enabled_by_default(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 0
+    assert captured["config"].clean_artifacts is True
+
+
+def test_transcribe_no_clean_flag(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(
+        app,
+        ["transcribe", str(audio_file), "-o", str(tmp_path / "out"), "--no-clean"],
+    )
+
+    assert result.exit_code == 0
+    assert captured["config"].clean_artifacts is False
+
+
 def test_transcribe_hotwords_warns_when_over_limit(
     audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stub_pipeline
 ) -> None:

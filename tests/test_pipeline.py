@@ -72,6 +72,29 @@ class RecordingCorrector:
         return entries
 
 
+class ArtifactMerger:
+    """Возвращает реплику-артефакт и обычную реплику одного говорящего."""
+
+    def merge(self, transcription_segments, speaker_segments, known_speakers=None):
+        speaker = Speaker(id="SPEAKER_00", display_name="Иван")
+        entries = [
+            TranscriptEntry(start=0.0, end=1.0, text="[АПЛОДИСМЕНТЫ]", speaker=speaker),
+            TranscriptEntry(start=1.1, end=2.0, text="привет", speaker=speaker),
+        ]
+        return entries, [speaker]
+
+
+class RecordingCleaner:
+    """Очистка, запоминающая входные реплики, чтобы проверить порядок этапов."""
+
+    def __init__(self) -> None:
+        self.seen: list[TranscriptEntry] | None = None
+
+    def clean(self, entries):
+        self.seen = list(entries)
+        return entries
+
+
 def test_run_pipeline_merges_sentences_before_correction(audio_file: Path, tmp_path: Path) -> None:
     config = AppConfig(
         input_file=audio_file,
@@ -166,3 +189,91 @@ def test_run_pipeline_skips_correction_when_disabled(audio_file: Path, tmp_path:
     )
 
     assert result.entries[0].text == "привет"
+
+
+def test_run_pipeline_removes_artifact_entries_by_default(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+        diarization_enabled=False,
+    )
+
+    result = run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=FakeRecognizer(),
+        merger=ArtifactMerger(),
+    )
+
+    assert [entry.text for entry in result.entries] == ["привет"]
+
+
+def test_run_pipeline_keeps_artifacts_when_cleaning_disabled(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+        diarization_enabled=False,
+        clean_artifacts=False,
+    )
+
+    result = run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=FakeRecognizer(),
+        merger=ArtifactMerger(),
+    )
+
+    # Очистка выключена: пометка остаётся в тексте (склейка предложений
+    # объединяет обе реплики одного говорящего).
+    assert [entry.text for entry in result.entries] == ["[АПЛОДИСМЕНТЫ] привет"]
+
+
+def test_run_pipeline_cleans_before_sentence_merger(audio_file: Path, tmp_path: Path) -> None:
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+        diarization_enabled=False,
+    )
+    cleaner = RecordingCleaner()
+
+    result = run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=FakeRecognizer(),
+        merger=MultiSegmentMerger(),
+        artifact_cleaner=cleaner,
+    )
+
+    # Очистка получила отдельные реплики (до склейки предложений).
+    assert cleaner.seen is not None
+    assert [entry.text for entry in cleaner.seen] == ["привет", "мир"]
+    assert len(result.entries) == 1
+    assert result.entries[0].text == "привет мир"
+
+
+def test_run_pipeline_emits_clean_progress_event(audio_file: Path, tmp_path: Path) -> None:
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+        diarization_enabled=False,
+    )
+    events = []
+
+    run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=FakeRecognizer(),
+        merger=FakeMerger(),
+        on_progress=events.append,
+    )
+
+    assert any(event.stage == "clean" for event in events)
+

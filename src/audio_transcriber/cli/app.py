@@ -156,6 +156,15 @@ def transcribe(
             "(ограничен ~100 токенами)."
         ),
     ),
+    clean_artifacts: bool = typer.Option(
+        True,
+        "--clean/--no-clean",
+        help=(
+            "Удалять неречевые пометки Whisper ([СМЕХ], [АПЛОДИСМЕНТЫ], "
+            "[BLANK_AUDIO], (аплодисменты), музыкальные символы ♪ и т.п.). "
+            "По умолчанию включено."
+        ),
+    ),
     enable_correction: bool = typer.Option(
         False,
         "--enable-correction",
@@ -325,6 +334,7 @@ def transcribe(
             pyannote_local_model=pyannote_local_model,
             initial_prompt=initial_prompt,
             hotwords=hotwords,
+            clean_artifacts=clean_artifacts,
             enable_correction=enable_correction,
             correction_min_word_length=correction_min_word_length,
             correction_min_similarity=correction_min_similarity,
@@ -360,6 +370,10 @@ def transcribe(
             logger.info("Количество говорящих: %s", config.num_speakers or "автоопределение")
         if config.speaker_names:
             logger.info("Пользовательские имена говорящих: %s", config.speaker_names)
+        logger.info(
+            "Очистка неречевых артефактов: %s",
+            "включена" if config.clean_artifacts else "выключена",
+        )
         logger.info(
             "Автоисправление опечаток: %s",
             "включено" if config.enable_correction else "выключено",
