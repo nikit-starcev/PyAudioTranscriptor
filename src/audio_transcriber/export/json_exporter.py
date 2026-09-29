@@ -20,6 +20,7 @@ class JsonExporter:
             "language": result.language,
             "duration": result.duration,
             "participants": result.participants,
+            "summary": result.summary,
             "speakers": [
                 {"id": speaker.id, "display_name": speaker.display_name}
                 for speaker in result.speakers

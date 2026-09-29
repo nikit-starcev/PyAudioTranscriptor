@@ -250,3 +250,51 @@ def test_missing_glossary_path_raises(tmp_path: Path, audio_file: Path) -> None:
 
     with pytest.raises(ConfigurationError):
         AppConfig(input_file=audio_file, glossary_path=missing)
+
+
+# --- Пакет 2 «LLM»: резюме и доп. инструкции ------------------------------
+
+
+def test_llm_summary_defaults_to_true(audio_file: Path) -> None:
+    # резюме включено по умолчанию и применяется вместе с LLM
+    assert AppConfig(input_file=audio_file).llm_summary is True
+
+
+def test_llm_summary_accepts_explicit_false(audio_file: Path) -> None:
+    assert AppConfig(input_file=audio_file, llm_summary=False).llm_summary is False
+
+
+def test_llm_summary_must_be_boolean(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, llm_summary="yes")  # type: ignore[arg-type]
+
+
+def test_llm_prompt_extra_defaults_to_none(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file)
+
+    assert config.llm_prompt_extra is None
+    assert config.llm_prompt_file is None
+
+
+def test_llm_prompt_extra_empty_normalized_to_none(audio_file: Path) -> None:
+    assert AppConfig(input_file=audio_file, llm_prompt_extra="   ").llm_prompt_extra is None
+
+
+def test_llm_prompt_extra_kept_as_text(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file, llm_prompt_extra="Отвечай кратко")
+
+    assert config.llm_prompt_extra == "Отвечай кратко"
+
+
+def test_llm_prompt_file_missing_raises(tmp_path: Path, audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, llm_prompt_file=tmp_path / "missing.txt")
+
+
+def test_llm_prompt_file_existing_accepted(tmp_path: Path, audio_file: Path) -> None:
+    prompt_file = tmp_path / "extra.txt"
+    prompt_file.write_text("Инструкция", encoding="utf-8")
+
+    config = AppConfig(input_file=audio_file, llm_prompt_file=prompt_file)
+
+    assert config.llm_prompt_file == prompt_file

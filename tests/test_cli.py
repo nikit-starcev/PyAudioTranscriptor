@@ -456,3 +456,69 @@ def test_transcribe_hotwords_warns_when_over_limit(
     assert result.exit_code == 0
     log_files = list((output_dir / "logs").glob("*.log"))
     assert "Не поместилось в лимит hotwords ASR" in log_files[0].read_text(encoding="utf-8")
+
+
+# --- Пакет 2 «LLM»: резюме и доп. инструкции -------------------------------
+
+
+def test_transcribe_llm_summary_enabled_by_default(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 0
+    assert captured["config"].llm_summary is True
+
+
+def test_transcribe_llm_no_summary_flag(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(
+        app,
+        [
+            "transcribe",
+            str(audio_file),
+            "-o",
+            str(tmp_path / "out"),
+            "--no-llm-summary",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["config"].llm_summary is False
+
+
+def test_transcribe_llm_prompt_extra_and_file(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+    prompt_file = tmp_path / "extra.txt"
+    prompt_file.write_text("Инструкция", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "transcribe",
+            str(audio_file),
+            "-o",
+            str(tmp_path / "out"),
+            "--llm-prompt-extra",
+            "Пиши кратко",
+            "--llm-prompt-file",
+            str(prompt_file),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["config"].llm_prompt_extra == "Пиши кратко"
+    assert captured["config"].llm_prompt_file == prompt_file

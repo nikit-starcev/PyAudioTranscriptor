@@ -19,6 +19,12 @@ class DocxExporter:
         document = Document()
         document.add_heading(result.source_path.name, level=1)
 
+        if result.summary:
+            document.add_heading("Резюме встречи", level=2)
+            for line in result.summary.splitlines():
+                if line.strip():
+                    document.add_paragraph(line)
+
         if result.participants:
             document.add_heading("Участники", level=2)
             for participant in result.participants:

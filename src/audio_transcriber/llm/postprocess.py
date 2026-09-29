@@ -19,14 +19,36 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Iterator
 from dataclasses import replace
 
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.domain.models import Speaker, TranscriptEntry
 from audio_transcriber.llm.base import LlmClient
-from audio_transcriber.llm.client import DEFAULT_CONTEXT_SIZE, create_llm_client
+from audio_transcriber.llm.chunking import (
+    DEFAULT_CHUNK_CHARS,
+    chunk_chars_for_context,
+)
+from audio_transcriber.llm.chunking import (
+    iter_transcript_chunks as _iter_transcript_chunks,
+)
+from audio_transcriber.llm.chunking import (
+    speaker_labels as _speaker_labels,
+)
+from audio_transcriber.llm.chunking import (
+    transcript_lines as _transcript_lines,
+)
+from audio_transcriber.llm.chunking import (
+    unique_speakers as _unique_speakers,
+)
+from audio_transcriber.llm.client import create_llm_client
 from audio_transcriber.llm.glossary import Glossary, load_glossary, write_suggested_terms
+from audio_transcriber.llm.prompts import (
+    PromptRecorder,
+    PromptRecordingClient,
+    load_extra_instructions,
+    max_extra_chars_for_context,
+)
+from audio_transcriber.llm.summary import summarize_meeting
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.utils.text import WORD_PATTERN
 
@@ -56,33 +78,6 @@ _TERM_CHECK_SYSTEM_PROMPT = (
     "«ОИБ»), и верни ТОЛЬКО строгий JSON. Не меняй ничего, кроме таких "
     "опечаток терминов, и не переписывай смысл."
 )
-
-
-def _unique_speakers(entries: list[TranscriptEntry]) -> list[Speaker]:
-    """Возвращает уникальных говорящих в порядке первого появления."""
-    seen: dict[str, Speaker] = {}
-    for entry in entries:
-        if entry.speaker is not None and entry.speaker.id not in seen:
-            seen[entry.speaker.id] = entry.speaker
-    return list(seen.values())
-
-
-def _speaker_labels(speakers: list[Speaker]) -> dict[str, str]:
-    """Метки говорящих для LLM: ``speaker_id -> «Спикер N»`` (1-indexed)."""
-    return {
-        speaker.id: f"Спикер {index}" for index, speaker in enumerate(speakers, start=1)
-    }
-
-
-def _transcript_lines(
-    entries: list[TranscriptEntry], labels: dict[str, str]
-) -> Iterator[str]:
-    """Строки стенограммы с метками «Спикер N: реплика» (пустые пропускаются)."""
-    for entry in entries:
-        if not entry.text.strip():
-            continue
-        label = labels.get(entry.speaker.id, "?") if entry.speaker else "?"
-        yield f"{label}: {entry.text.strip()}"
 
 
 # Имена-заглушки, которые LLM иногда возвращает вместо реального имени.
@@ -249,49 +244,6 @@ def parse_participants_json(raw: str, labels_by_id: dict[str, str]) -> dict[str,
     return result
 
 
-def _iter_transcript_chunks(
-    entries: list[TranscriptEntry], labels: dict[str, str], *, max_chars: int
-) -> list[str]:
-    """Режет стенограмму на фрагменты по ~``max_chars`` символов.
-
-    Нужно, потому что длинная стенограмма превышает контекст LLM — тогда
-    имена извлекаются по фрагментам и объединяются.
-    """
-    chunks: list[str] = []
-    current: list[str] = []
-    size = 0
-    for line in _transcript_lines(entries, labels):
-        if current and size + len(line) > max_chars:
-            chunks.append("\n".join(current))
-            current, size = [], 0
-        current.append(line)
-        size += len(line) + 1
-    if current:
-        chunks.append("\n".join(current))
-    return chunks
-
-
-# Запас под контекст LLM: на 4096 токенов безопасно ~6000 символов русского
-# текста вместе с системным промптом, инструкцией и ответом модели. Коэффициент
-# привязывает размер чанка к фактическому ``llm_context_size``, а не к
-# магическому числу «под 4096».
-_CHUNK_CHARS_PER_CONTEXT_TOKEN = 6000 / 4096
-# Нижняя граница: крошечный контекст не должен давать неработоспособный чанк.
-_MIN_CHUNK_CHARS = 1000
-
-
-def chunk_chars_for_context(context_size: int) -> int:
-    """Размер фрагмента стенограммы под контекст LLM в токенах.
-
-    Пропорционален ``context_size`` с запасом на промпт и ответ модели.
-    """
-    return max(_MIN_CHUNK_CHARS, int(context_size * _CHUNK_CHARS_PER_CONTEXT_TOKEN))
-
-
-# Значение по умолчанию — под стандартный контекст 4096 токенов.
-_PARTICIPANT_CHUNK_CHARS = chunk_chars_for_context(DEFAULT_CONTEXT_SIZE)
-
-
 def extract_participants(
     entries: list[TranscriptEntry],
     *,
@@ -312,7 +264,7 @@ def extract_participants(
     if not speakers:
         return {}
 
-    max_chars = max_chunk_chars if max_chunk_chars is not None else _PARTICIPANT_CHUNK_CHARS
+    max_chars = max_chunk_chars if max_chunk_chars is not None else DEFAULT_CHUNK_CHARS
     labels = _speaker_labels(speakers)
     chunks = _iter_transcript_chunks(entries, labels, max_chars=max_chars)
 
@@ -446,7 +398,7 @@ def _verify_terms_with_llm(
     длинный текст иначе превышает контекст модели и запрос падает с HTTP 400.
     Ответы всех фрагментов объединяются, затем применяются разрешённые замены.
     """
-    max_chars = max_chunk_chars if max_chunk_chars is not None else _PARTICIPANT_CHUNK_CHARS
+    max_chars = max_chunk_chars if max_chunk_chars is not None else DEFAULT_CHUNK_CHARS
     speakers = _unique_speakers(entries)
     labels = _speaker_labels(speakers)
     chunks = _iter_transcript_chunks(entries, labels, max_chars=max_chars)
@@ -524,13 +476,19 @@ def run_llm_postprocess(
     *,
     client: LlmClient | None = None,
     on_progress: ProgressCallback | None = None,
-) -> tuple[list[TranscriptEntry], list[Speaker], list[str] | None]:
+) -> tuple[list[TranscriptEntry], list[Speaker], list[str] | None, str | None]:
     """Полный этап LLM-постобработки для конвейера.
 
     Создаёт LLM-клиент из конфигурации (если он не передан), извлекает имена,
-    правит термины по глоссарию и подставляет имена в вывод. Возвращает
-    ``(entries, speakers, participants)``, где ``participants`` — список
-    участников для шапки документа (``None``, если имена не определены).
+    правит термины по глоссарию, строит резюме встречи и подставляет имена в
+    вывод. Возвращает ``(entries, speakers, participants, summary)``, где
+    ``participants`` — список участников для шапки документа, а ``summary`` —
+    текст резюме (оба ``None``, если соответствующий этап не дал результата).
+
+    Фактические промпты (system + user) каждого этапа сохраняются рядом с
+    результатом в ``<output_stem>.llm_prompt.txt``. Пользовательские доп.
+    инструкции (``LLM_PROMPT_EXTRA``/``LLM_PROMPT_FILE``) подмешиваются в
+    системный промпт каждого этапа.
 
     Если модель/бинарник не заданы или недоступны — возвращает исходные
     данные и пишет предупреждение.
@@ -570,9 +528,29 @@ def run_llm_postprocess(
     if client is None:
         logger.warning("LLM-постобработка пропущена: не указана модель (LLM_MODEL/--llm-model)")
         _maybe_write_suggestions(entries)
-        return entries, speakers, None
+        return entries, speakers, None, None
 
+    active_client: LlmClient = client
     chunk_chars = chunk_chars_for_context(config.llm_context_size)
+    # Пользовательские доп. инструкции добавляются к системному промпту каждого
+    # этапа единообразно; длина ограничена под контекст конкретной модели.
+    extra_instructions = load_extra_instructions(
+        config.llm_prompt_extra, config.llm_prompt_file
+    )
+    max_extra_chars = max_extra_chars_for_context(config.llm_context_size)
+    recorder = PromptRecorder(config.output_dir / f"{config.input_file.stem}.llm_prompt.txt")
+
+    def _wrap(stage: str) -> LlmClient:
+        """Обёртка клиента для этапа: доп. инструкции + запись промптов."""
+        return PromptRecordingClient(
+            active_client,
+            stage=stage,
+            extra_instructions=extra_instructions,
+            max_extra_chars=max_extra_chars,
+            on_prompt=recorder.record,
+        )
+
+    summary: str | None = None
     try:
         emit(ProgressEvent("llm", "LLM-постобработка", fraction=None))
 
@@ -581,7 +559,7 @@ def run_llm_postprocess(
             try:
                 names = extract_participants(
                     entries,
-                    llm=client,
+                    llm=_wrap("имена участников"),
                     speakers=speakers,
                     max_chunk_chars=chunk_chars,
                 )
@@ -591,20 +569,40 @@ def run_llm_postprocess(
             logger.info("LLM: извлечение имён отключено (LLM_EXTRACT_NAMES=false)")
 
         try:
-            entries = correct_terms(entries, glossary, llm=client, max_chunk_chars=chunk_chars)
+            entries = correct_terms(
+                entries, glossary, llm=_wrap("термины"), max_chunk_chars=chunk_chars
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Правка терминов пропущена: %s", exc)
 
         if names:
             entries, speakers = apply_participant_names(entries, speakers, names)
 
+        if config.llm_summary:
+            try:
+                emit(ProgressEvent("llm", "Резюме встречи", fraction=None))
+                summary = summarize_meeting(
+                    entries,
+                    speakers,
+                    llm=_wrap("резюме"),
+                    max_chunk_chars=chunk_chars,
+                )
+            except Exception as exc:  # noqa: BLE001 — резюме не роняет конвейер
+                logger.warning("Резюме встречи пропущено: %s", exc)
+        else:
+            logger.info("LLM: резюме встречи отключено (LLM_SUMMARY=false)")
+
         _maybe_write_suggestions(entries)
 
         # В шапку попадают только реально переименованные говорящие: без имени
         # остаётся метка «Спикер N», ей в списке участников не место.
         participants = [speaker.display_name for speaker in speakers if speaker.id in names]
-        return entries, speakers, participants or None
+        return entries, speakers, participants or None, summary
     finally:
+        # Промпты сохраняем даже при частичном сбое — ради прозрачности.
+        prompt_path = recorder.write()
+        if prompt_path is not None:
+            emit(ProgressEvent("llm", f"Промпты LLM сохранены: {prompt_path}", fraction=None))
         if owns_client:
             # Гарантированно снимаем llama-server в том числе на ветках ошибок.
             client.close()

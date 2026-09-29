@@ -413,9 +413,13 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
 
     llm_enabled = app.query_one("#llm", Switch).value
     llm_extract_names = app.query_one("#llm_names", Switch).value
+    llm_summary = app.query_one("#llm_summary", Switch).value
     llm_model = app.query_one("#llm_model", Input).value.strip()
     llm_binary = app.query_one("#llm_binary", Input).value.strip() or "llama-server"
     llm_lib = app.query_one("#llm_lib", Input).value.strip()
+    llm_prompt_extra = app.query_one("#llm_prompt_extra", Input).value.strip() or None
+    llm_prompt_file_raw = app.query_one("#llm_prompt_file", Input).value.strip()
+    llm_prompt_file = Path(llm_prompt_file_raw) if llm_prompt_file_raw else None
     glossary_path = app.query_one("#glossary_path", Input).value.strip()
 
     language_value = app.query_one("#language", Select).value
@@ -480,6 +484,9 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
         llm_context_size=_to_int(defaults.get("LLM_CONTEXT"), DEFAULT_LLM_CONTEXT_SIZE),
         llm_suggest_terms=_to_bool(defaults.get("LLM_SUGGEST_TERMS")),
         llm_extract_names=llm_extract_names,
+        llm_summary=llm_summary,
+        llm_prompt_extra=llm_prompt_extra,
+        llm_prompt_file=llm_prompt_file,
         glossary_path=normalize_glossary_paths_tuple(glossary_path or None),
     )
 
@@ -674,6 +681,12 @@ class TranscriberApp(App):
                             id="llm_names",
                         )
                     with Horizontal():
+                        yield Label("Резюме встречи", classes="field-label")
+                        yield Switch(
+                            value=_to_bool(self._defaults.get("LLM_SUMMARY"), default=True),
+                            id="llm_summary",
+                        )
+                    with Horizontal():
                         yield Label("Модель LLM", classes="field-label")
                         yield Input(value=self._defaults.get("LLM_MODEL", ""), id="llm_model")
                     with Horizontal():
@@ -684,6 +697,16 @@ class TranscriberApp(App):
                     with Horizontal():
                         yield Label("Библиотеки LLM", classes="field-label")
                         yield Input(value=self._defaults.get("LLM_LIB_PATH", ""), id="llm_lib")
+                    with Horizontal():
+                        yield Label("Доп. промпт (текст)", classes="field-label")
+                        yield Input(
+                            value=self._defaults.get("LLM_PROMPT_EXTRA", ""), id="llm_prompt_extra"
+                        )
+                    with Horizontal():
+                        yield Label("Доп. промпт (файл)", classes="field-label")
+                        yield Input(
+                            value=self._defaults.get("LLM_PROMPT_FILE", ""), id="llm_prompt_file"
+                        )
                     with Horizontal():
                         yield Label("Глоссарий", classes="field-label")
                         yield Input(

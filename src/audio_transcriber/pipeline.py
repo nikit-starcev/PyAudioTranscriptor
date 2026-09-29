@@ -199,11 +199,12 @@ def run_pipeline(
         entries = corrector.correct(entries)
 
     participants = None
+    summary = None
     if config.llm_enabled:
         from audio_transcriber.llm.postprocess import run_llm_postprocess
 
-        logger.info("LLM-постобработка (имена участников, правка терминов)...")
-        entries, speakers, participants = run_llm_postprocess(
+        logger.info("LLM-постобработка (имена участников, правка терминов, резюме)...")
+        entries, speakers, participants, summary = run_llm_postprocess(
             config, entries, speakers, client=llm_client, on_progress=emit
         )
 
@@ -219,6 +220,7 @@ def run_pipeline(
         entries=entries,
         speakers=speakers,
         participants=participants,
+        summary=summary,
         low_confidence_threshold=config.low_confidence_threshold,
     )
 

@@ -405,3 +405,57 @@ def test_tui_reuses_and_closes_one_llm_client_per_queue(
     assert created[0].closed == 1  # type: ignore[attr-defined]
     assert len(passed_clients) == 2
     assert all(client is created[0] for client in passed_clients)
+
+
+# --- Пакет 2 «LLM»: резюме и доп. инструкции -------------------------------
+
+
+def test_build_config_llm_summary_defaults_to_true(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            return app._build_config(audio_file)
+
+    assert asyncio.run(_run()).llm_summary is True
+
+
+def test_build_config_llm_summary_from_env(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    defaults = _defaults(tmp_path / "out")
+    defaults["LLM_SUMMARY"] = "false"
+    monkeypatch.setattr(tui_app, "_load_env_defaults", lambda: defaults)
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            return app._build_config(audio_file)
+
+    assert asyncio.run(_run()).llm_summary is False
+
+
+def test_build_config_llm_prompt_extra_and_file(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prompt_file = tmp_path / "extra.txt"
+    prompt_file.write_text("Инструкция", encoding="utf-8")
+    defaults = _defaults(tmp_path / "out")
+    defaults["LLM_PROMPT_EXTRA"] = "Пиши кратко"
+    defaults["LLM_PROMPT_FILE"] = str(prompt_file)
+    monkeypatch.setattr(tui_app, "_load_env_defaults", lambda: defaults)
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            return app._build_config(audio_file)
+
+    config = asyncio.run(_run())
+
+    assert config.llm_prompt_extra == "Пиши кратко"
+    assert config.llm_prompt_file == prompt_file

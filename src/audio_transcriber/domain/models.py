@@ -75,6 +75,9 @@ class TranscriptionResult:
     entries: list[TranscriptEntry] = field(default_factory=list)
     speakers: list[Speaker] = field(default_factory=list)
     participants: list[str] | None = None
+    # Резюме встречи (локальная LLM): участники, тема, решения, открытые
+    # вопросы, action items. ``None`` — резюме не запрашивалось/не получено.
+    summary: str | None = None
     # Порог «низкой уверенности» для экспортёров: реплики со средним
     # avg_logprob ниже порога помечаются. ``None`` — не помечать.
     low_confidence_threshold: float | None = None

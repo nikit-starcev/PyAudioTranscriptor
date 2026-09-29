@@ -92,6 +92,13 @@ class AppConfig:
     llm_suggest_terms: bool = False
     # Определять имена участников через LLM (независимо от правки терминов).
     llm_extract_names: bool = False
+    # Резюме встречи локальной LLM. По умолчанию включено и применяется,
+    # только когда включена LLM-постобработка (llm_enabled).
+    llm_summary: bool = True
+    # Доп. инструкции пользователя к промптам LLM: инлайн-текст и/или путь к
+    # файлу с инструкциями. Подмешиваются в системный промпт каждого этапа.
+    llm_prompt_extra: str | None = None
+    llm_prompt_file: Path | None = None
     # Инвариант: после нормализации — всегда кортеж Path. Конструктор
     # принимает одиночный путь, строку со списком (через запятую/os.pathsep)
     # или последовательность (см. ``normalize_glossary_paths_tuple``).
@@ -167,6 +174,21 @@ class AppConfig:
 
         if not isinstance(self.llm_extract_names, bool):
             raise ConfigurationError("LLM_EXTRACT_NAMES должно быть true или false")
+
+        if not isinstance(self.llm_summary, bool):
+            raise ConfigurationError("LLM_SUMMARY должно быть true или false")
+
+        if self.llm_prompt_extra is not None:
+            if not isinstance(self.llm_prompt_extra, str):
+                raise ConfigurationError("LLM_PROMPT_EXTRA должно быть текстом")
+            # Пустой/пробельный текст ничего не меняет — нормализуем в None.
+            if not self.llm_prompt_extra.strip():
+                self.llm_prompt_extra = None
+
+        if self.llm_prompt_file is not None and not self.llm_prompt_file.is_file():
+            raise ConfigurationError(
+                f"Файл доп. инструкций LLM не найден: {self.llm_prompt_file}"
+            )
 
         if self.asr_backend is AsrBackend.WHISPER_CPP and self.whisper_cpp_model is None:
             raise ConfigurationError(

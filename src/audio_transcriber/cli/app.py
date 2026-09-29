@@ -357,6 +357,31 @@ def transcribe(
             "Правка терминов по глоссарию работает независимо."
         ),
     ),
+    llm_summary: bool = typer.Option(
+        True,
+        "--llm-summary/--no-llm-summary",
+        help=(
+            "Строить резюме встречи локальной LLM (тема, участники, решения, "
+            "открытые вопросы, задачи). По умолчанию включено; применяется, "
+            "только когда включена LLM-постобработка (--llm)."
+        ),
+    ),
+    llm_prompt_extra: str | None = typer.Option(
+        None,
+        "--llm-prompt-extra",
+        help=(
+            "Доп. инструкции к промптам LLM (текстом). Подмешиваются в "
+            "системный промпт каждого этапа (резюме/термины/имена)."
+        ),
+    ),
+    llm_prompt_file: Path | None = typer.Option(
+        None,
+        "--llm-prompt-file",
+        help=(
+            "Путь к файлу с доп. инструкциями к промптам LLM. Содержимое "
+            "добавляется к системному промпту каждого этапа."
+        ),
+    ),
     glossary: list[str] = typer.Option(
         [],
         "--glossary",
@@ -427,6 +452,9 @@ def transcribe(
             llm_context_size=llm_context,
             llm_suggest_terms=llm_suggest_terms,
             llm_extract_names=llm_extract_names,
+            llm_summary=llm_summary,
+            llm_prompt_extra=llm_prompt_extra,
+            llm_prompt_file=llm_prompt_file,
             glossary_path=normalize_glossary_paths_tuple(glossary),
         )
         config.ensure_output_dir()
@@ -487,12 +515,18 @@ def transcribe(
         if config.llm_enabled:
             logger.info(
                 "Параметры LLM: контекст=%d токенов, GPU=%s, "
-                "определение имён=%s, предложения терминов=%s",
+                "резюме=%s, определение имён=%s, предложения терминов=%s",
                 config.llm_context_size,
                 "да" if config.llm_gpu else "нет",
+                "включено" if config.llm_summary else "выключено",
                 "включено" if config.llm_extract_names else "выключено",
                 "включены" if config.llm_suggest_terms else "выключены",
             )
+            if config.llm_prompt_extra or config.llm_prompt_file:
+                logger.info(
+                    "Доп. инструкции к промптам LLM: %s",
+                    config.llm_prompt_file or "заданы текстом",
+                )
 
         result = run_pipeline(config, device=resolved_device)
     except KeyboardInterrupt:

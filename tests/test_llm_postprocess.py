@@ -228,7 +228,7 @@ def test_run_llm_postprocess_extracts_names_when_enabled(
     )
     entries = _entries()
 
-    new_entries, speakers, participants = run_llm_postprocess(
+    new_entries, speakers, participants, _summary = run_llm_postprocess(
         config, entries, _speakers(), client=_NamesAndTermsClient()
     )
 
@@ -248,7 +248,7 @@ def test_run_llm_postprocess_participants_only_renamed(tmp_path: Path, audio_fil
         llm_extract_names=True,
     )
 
-    _, speakers, participants = run_llm_postprocess(
+    _, speakers, participants, _summary = run_llm_postprocess(
         config, _entries(), _speakers(), client=_NamesAndTermsClient()
     )
 
@@ -275,7 +275,7 @@ def test_run_llm_postprocess_skips_names_when_disabled(tmp_path: Path, audio_fil
         )
     ]
 
-    new_entries, speakers, participants = run_llm_postprocess(
+    new_entries, speakers, participants, _summary = run_llm_postprocess(
         config, entries, _speakers(), client=_NamesAndTermsClient()
     )
 
@@ -534,3 +534,142 @@ def test_run_llm_postprocess_passes_context_chunk_limit(
     expected = chunk_chars_for_context(8192)
     assert recorded["extract"] == expected
     assert recorded["correct"] == expected
+
+
+# --- Задача 1: резюме встречи и прозрачность промптов ---------------------
+
+
+class _CapturingClient:
+    """Клиент, возвращающий резюме-текст и запоминающий отправленные промпты."""
+
+    def __init__(self, reply: str = "Тема: тест") -> None:
+        self.reply = reply
+        self.messages: list[list[dict[str, str]]] = []
+
+    def chat(self, messages: list[dict[str, str]]) -> str:
+        self.messages.append(messages)
+        return self.reply
+
+    def close(self) -> None:
+        pass
+
+
+def test_run_llm_postprocess_returns_summary(tmp_path: Path, audio_file: Path) -> None:
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        llm_enabled=True,
+    )
+    config.ensure_output_dir()
+
+    entries, _speakers_out, participants, summary = run_llm_postprocess(
+        config, _entries(), _speakers(), client=_CapturingClient("Тема: релиз")
+    )
+
+    assert summary is not None
+    assert "Тема: релиз" in summary
+    assert participants is None
+    assert entries
+
+
+def test_run_llm_postprocess_summary_disabled_makes_no_calls(
+    tmp_path: Path, audio_file: Path
+) -> None:
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        llm_enabled=True,
+        llm_summary=False,
+    )
+    client = _EmptyChatClient()
+
+    _entries_out, _speakers_out, _participants, summary = run_llm_postprocess(
+        config, _entries(), _speakers(), client=client
+    )
+
+    assert summary is None
+    assert client.calls == 0
+
+
+def test_run_llm_postprocess_summary_failure_is_soft(
+    tmp_path: Path, audio_file: Path
+) -> None:
+    class _BrokenClient:
+        def chat(self, messages: list[dict[str, str]]) -> str:
+            raise RuntimeError("модель недоступна")
+
+        def close(self) -> None:
+            pass
+
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        llm_enabled=True,
+    )
+    config.ensure_output_dir()
+
+    entries, _speakers_out, _participants, summary = run_llm_postprocess(
+        config, _entries(), _speakers(), client=_BrokenClient()
+    )
+
+    # Сбой LLM не роняет конвейер — просто нет резюме.
+    assert summary is None
+    assert entries
+
+
+def test_run_llm_postprocess_saves_prompt_file(tmp_path: Path, audio_file: Path) -> None:
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        llm_enabled=True,
+    )
+    config.ensure_output_dir()
+
+    run_llm_postprocess(config, _entries(), _speakers(), client=_CapturingClient())
+
+    prompt_file = config.output_dir / f"{audio_file.stem}.llm_prompt.txt"
+    assert prompt_file.is_file()
+    content = prompt_file.read_text(encoding="utf-8")
+    assert "=== резюме ===" in content
+    assert "--- system ---" in content
+    assert "--- user ---" in content
+
+
+def test_run_llm_postprocess_applies_extra_instructions(
+    tmp_path: Path, audio_file: Path
+) -> None:
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        llm_enabled=True,
+        llm_prompt_extra="ПИШИ МАКСИМАЛЬНО КРАТКО",
+    )
+    config.ensure_output_dir()
+    client = _CapturingClient()
+
+    run_llm_postprocess(config, _entries(), _speakers(), client=client)
+
+    system_contents = [
+        message["content"]
+        for messages in client.messages
+        for message in messages
+        if message["role"] == "system"
+    ]
+    assert any("ПИШИ МАКСИМАЛЬНО КРАТКО" in content for content in system_contents)
+
+
+def test_run_llm_postprocess_without_prompts_writes_no_file(
+    tmp_path: Path, audio_file: Path
+) -> None:
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        llm_enabled=True,
+        llm_summary=False,
+        llm_extract_names=False,
+    )
+    config.ensure_output_dir()
+
+    run_llm_postprocess(config, _entries(), _speakers(), client=_EmptyChatClient())
+
+    assert not (config.output_dir / f"{audio_file.stem}.llm_prompt.txt").exists()

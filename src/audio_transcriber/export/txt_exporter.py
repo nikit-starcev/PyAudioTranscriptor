@@ -16,6 +16,12 @@ class TxtExporter:
     def export(self, result: TranscriptionResult, output_path: Path) -> None:
         lines: list[str] = []
 
+        if result.summary:
+            lines.append("Резюме встречи")
+            lines.append("")
+            lines.append(result.summary)
+            lines.append("")
+
         if result.participants:
             lines.append("Участники:")
             lines.extend(f"  {participant}" for participant in result.participants)

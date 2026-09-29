@@ -95,7 +95,10 @@ fi
 [ "${LLM_GPU:-true}" = "false" ] && ARGS+=(--llm-cpu)
 [ -n "${LLM_CONTEXT:-}" ] && ARGS+=(--llm-context "$LLM_CONTEXT")
 [ "${LLM_EXTRACT_NAMES:-true}" = "false" ] && ARGS+=(--llm-no-names)
+[ "${LLM_SUMMARY:-true}" = "false" ] && ARGS+=(--no-llm-summary)
 [ "${LLM_SUGGEST_TERMS:-false}" = "true" ] && ARGS+=(--llm-suggest-terms)
+[ -n "${LLM_PROMPT_EXTRA:-}" ] && ARGS+=(--llm-prompt-extra "$LLM_PROMPT_EXTRA")
+[ -n "${LLM_PROMPT_FILE:-}" ] && ARGS+=(--llm-prompt-file "$LLM_PROMPT_FILE")
 [ -n "${GLOSSARY_PATH:-}" ] && ARGS+=(--glossary "$GLOSSARY_PATH")
 
 # Для бэкенда whisper-cpp (гибрид на AMD) используется CPU-сборка torch,
