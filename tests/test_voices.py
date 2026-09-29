@@ -6,6 +6,7 @@ from pathlib import Path
 
 from audio_transcriber.diarization.voices import (
     collect_voice_library,
+    delete_voice_sample,
     merge_references,
     save_speaker_sample,
 )
@@ -79,3 +80,51 @@ def test_save_speaker_sample_copies_and_sanitizes(tmp_path: Path) -> None:
 
     assert target == voices / "Иван_Тест_ 1.wav"
     assert target.read_bytes() == b"audio"
+
+
+# --- Удаление образцов из библиотеки ---------------------------------------
+
+
+def test_delete_voice_sample_inside_library(tmp_path: Path) -> None:
+    voices = tmp_path / "voices"
+    voices.mkdir()
+    sample = voices / "Иван.wav"
+    sample.write_bytes(b"audio")
+
+    assert delete_voice_sample(sample, voices) is True
+    assert not sample.exists()
+
+
+def test_delete_voice_sample_outside_library_refused(tmp_path: Path) -> None:
+    voices = tmp_path / "voices"
+    voices.mkdir()
+    outside = tmp_path / "outside.wav"
+    outside.write_bytes(b"audio")
+
+    assert delete_voice_sample(outside, voices) is False
+    assert outside.exists()
+
+
+def test_delete_voice_sample_rejects_non_wav(tmp_path: Path) -> None:
+    voices = tmp_path / "voices"
+    voices.mkdir()
+    other = voices / "notes.txt"
+    other.write_text("не образец", encoding="utf-8")
+
+    assert delete_voice_sample(other, voices) is False
+    assert other.exists()
+
+
+def test_delete_voice_sample_missing_file_refused(tmp_path: Path) -> None:
+    voices = tmp_path / "voices"
+    voices.mkdir()
+
+    assert delete_voice_sample(voices / "absent.wav", voices) is False
+
+
+def test_delete_voice_sample_defaults_to_parent_dir(tmp_path: Path) -> None:
+    sample = tmp_path / "Иван.wav"
+    sample.write_bytes(b"audio")
+
+    assert delete_voice_sample(sample) is True
+    assert not sample.exists()

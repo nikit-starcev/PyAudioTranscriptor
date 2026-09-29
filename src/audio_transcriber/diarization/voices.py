@@ -90,3 +90,39 @@ def save_speaker_sample(source: Path, directory: Path, name: str) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, target)
     return target
+
+
+def delete_voice_sample(path: Path, directory: Path | None = None) -> bool:
+    """Безопасно удаляет образец ``.wav`` из библиотеки голосов.
+
+    Удаление разрешено, только если ``path`` — это ``.wav`` **внутри** каталога
+    библиотеки ``directory`` (символические ссылки разрешаются перед проверкой).
+    Иначе — отказ (``False``): нельзя случайно стереть файл вне библиотеки.
+    Если ``directory`` не задан, библиотекой считается родительский каталог
+    ``path`` (тогда проверка вырождается в «это файл ``.wav``»).
+
+    Возвращает ``True`` при успешном удалении и ``False`` при отказе/ошибке.
+    """
+    candidate = Path(path)
+    root = Path(directory) if directory is not None else candidate.parent
+    if candidate.suffix.lower() != ".wav":
+        return False
+    try:
+        target = candidate.resolve()
+        root_resolved = root.resolve()
+    except OSError as exc:
+        logger.warning("Библиотека голосов: не удалось разрешить путь %s: %s", candidate, exc)
+        return False
+
+    if target != root_resolved and root_resolved not in target.parents:
+        logger.warning("Отказ удаления: %s вне библиотеки %s", candidate, root)
+        return False
+    try:
+        if not target.is_file():
+            return False
+        target.unlink()
+    except OSError as exc:
+        logger.warning("Библиотека голосов: не удалось удалить %s: %s", target, exc)
+        return False
+    logger.info("Библиотека голосов: удалён образец %s", target)
+    return True

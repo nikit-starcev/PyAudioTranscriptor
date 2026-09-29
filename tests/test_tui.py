@@ -1019,3 +1019,357 @@ def test_edit_speakers_without_result_does_not_open_editor(
             return isinstance(app.screen, tui_app.SpeakerEditorScreen)
 
     assert asyncio.run(_run()) is False
+
+
+# --- Блок 1 «проигрывание»: панель, колонки образцов ------------------------
+
+
+def test_speaker_editor_has_player_panel_and_sample_columns(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            app._last_result = _search_result(audio_file)
+            app.action_edit_speakers()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, tui_app.SpeakerEditorScreen)
+            table = screen.query_one("#speakers_table", tui_app.DataTable)
+            labels = [str(table.columns[key].label) for key in table.columns]
+            panel = screen.query_one("#player", tui_app.PlayerPanel)
+            return labels, table.get_row_at(0), panel
+
+    labels, first_row, panel = asyncio.run(_run())
+
+    assert "Образец" in labels
+    assert "Длит." in labels
+    assert len(labels) == 5
+    assert first_row[3] == "—"  # образца нет — явно видно
+    assert isinstance(panel, tui_app.PlayerPanel)
+
+
+def test_player_panel_render_helpers() -> None:
+    bar = tui_app._progress_bar(0.5, 11)
+    assert bar == "─────●─────"
+    assert tui_app._amplitude_line([0.0, 1.0]) == "▁█"
+    line = tui_app._amplitude_line([0.5] * 50, 50)
+    assert len(line) == 50
+
+
+# --- Блок 2 «библиотека голосов»: открытие, удаление ------------------------
+
+
+def _make_voices(tmp_path: Path) -> Path:
+    voices = tmp_path / "voices"
+    voices.mkdir()
+    (voices / "Иван.wav").write_bytes(b"audio")
+    (voices / "Мария.wav").write_bytes(b"audio")
+    return voices
+
+
+def test_v_opens_voices_library_from_editor(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run() -> bool:
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            app._last_result = _search_result(audio_file)
+            app.action_edit_speakers()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, tui_app.SpeakerEditorScreen)
+            screen.query_one("#speakers_table", tui_app.DataTable).focus()
+            await pilot.pause()
+            await pilot.press("v")
+            await pilot.pause()
+            return isinstance(app.screen, tui_app.VoicesLibraryScreen)
+
+    assert asyncio.run(_run()) is True
+
+
+def test_v_opens_voices_library_from_main(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run() -> bool:
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            app.query_one("#tree", tui_app.MediaDirectoryTree).focus()
+            await pilot.pause()
+            await pilot.press("v")
+            await pilot.pause()
+            return isinstance(app.screen, tui_app.VoicesLibraryScreen)
+
+    assert asyncio.run(_run()) is True
+
+
+def test_voices_library_lists_files_and_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+    voices = _make_voices(tmp_path)
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            app.push_screen(tui_app.VoicesLibraryScreen(voices_dir=voices))
+            await pilot.pause()
+            library = app.screen
+            table = library.query_one("#voices_table", tui_app.DataTable)
+            path_label = str(library.query_one("#voices_path", tui_app.Static).render())
+            return table.row_count, path_label
+
+    rows, path_label = asyncio.run(_run())
+
+    assert rows == 2
+    assert str(voices) in path_label
+
+
+def test_voices_library_missing_dir_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            app.push_screen(
+                tui_app.VoicesLibraryScreen(voices_dir=tmp_path / "absent")
+            )
+            await pilot.pause()
+            library = app.screen
+            status = str(library.query_one("#voices_status", tui_app.Static).render())
+            return library.query_one("#voices_table", tui_app.DataTable).row_count, status
+
+    rows, status = asyncio.run(_run())
+
+    assert rows == 0
+    assert "не найден" in status
+
+
+def test_voices_library_delete_with_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+    voices = _make_voices(tmp_path)
+    target = voices / "Иван.wav"
+
+    async def _run() -> tuple[bool, bool]:
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            app.push_screen(tui_app.VoicesLibraryScreen(voices_dir=voices))
+            await pilot.pause()
+            library = app.screen
+            library.query_one("#voices_table", tui_app.DataTable).move_cursor(row=0)
+            await pilot.pause()
+            await pilot.press("d")
+            await pilot.pause()
+            confirm_shown = isinstance(app.screen, tui_app.ConfirmDeleteScreen)
+            app.screen.action_confirm()
+            await pilot.pause()
+            return confirm_shown, target.exists()
+
+    confirm_shown, exists = asyncio.run(_run())
+
+    assert confirm_shown is True
+    assert exists is False
+
+
+def test_voices_library_delete_can_be_cancelled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+    voices = _make_voices(tmp_path)
+    target = voices / "Иван.wav"
+
+    async def _run() -> bool:
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            app.push_screen(tui_app.VoicesLibraryScreen(voices_dir=voices))
+            await pilot.pause()
+            library = app.screen
+            library.query_one("#voices_table", tui_app.DataTable).move_cursor(row=0)
+            await pilot.pause()
+            library.action_delete_voice()
+            await pilot.pause()
+            app.screen.action_cancel()
+            await pilot.pause()
+            return target.exists()
+
+    assert asyncio.run(_run()) is True
+
+
+# --- Блок 3 «применение имён без перезапуска» -------------------------------
+
+
+def test_apply_names_renames_speakers_with_enrollment(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+    reference = tmp_path / "ref.wav"
+    reference.write_bytes(b"audio")
+    captured: dict[str, object] = {}
+
+    def fake_assign(**kwargs):
+        captured.update(kwargs)
+        return {"SPEAKER_00": "Пётр"}
+
+    monkeypatch.setattr(tui_app, "assign_speaker_names", fake_assign)
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        voices_dir=tmp_path / "no_voices",
+        speaker_references={"Пётр": (reference,)},
+        timeline=False,
+    )
+
+    async def _run() -> TranscriptionResult:
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            app._last_result = _search_result(audio_file)
+            app._last_config = config
+            app.action_edit_speakers()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, tui_app.SpeakerEditorScreen)
+            screen.action_apply_names()
+            for _ in range(50):
+                await asyncio.sleep(0.02)
+                await pilot.pause()
+                if any(
+                    speaker.display_name == "Пётр"
+                    for speaker in screen.edited_result.speakers
+                ):
+                    break
+            return screen.edited_result
+
+    result = asyncio.run(_run())
+
+    assert any(speaker.display_name == "Пётр" for speaker in result.speakers)
+    assert all(
+        entry.speaker is not None and entry.speaker.display_name == "Пётр"
+        for entry in result.entries
+        if entry.speaker is not None and entry.speaker.id == "SPEAKER_00"
+    )
+    assert "Пётр" in captured.get("references", {})
+
+
+def test_apply_names_without_samples_reports_status(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run() -> str:
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            app._last_result = _search_result(audio_file)
+            app._last_config = AppConfig(
+                input_file=audio_file,
+                output_dir=tmp_path / "out",
+                voices_dir=tmp_path / "no_voices",
+                timeline=False,
+            )
+            app.action_edit_speakers()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, tui_app.SpeakerEditorScreen)
+            screen.action_apply_names()
+            await pilot.pause()
+            return str(screen.query_one("#editor_status", tui_app.Static).render())
+
+    assert "Нет образцов" in asyncio.run(_run())
+
+
+def test_speaker_editor_save_renames_sample_files(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    class _FakeExporter:
+        def export(self, result: TranscriptionResult, output_path: Path) -> None:
+            return None
+
+    monkeypatch.setattr(tui_app, "create_exporter", lambda _fmt: _FakeExporter())
+
+    output_dir = tmp_path / "out"
+    speakers_dir = output_dir / f"{audio_file.stem}.speakers"
+    speakers_dir.mkdir(parents=True)
+    ivan = speakers_dir / "Иван.wav"
+    maria = speakers_dir / "Мария.wav"
+    ivan.write_bytes(b"audio")
+    maria.write_bytes(b"audio")
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=output_dir,
+        export_formats=(ExportFormat.TXT,),
+        timeline=False,
+    )
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            app._last_result = _search_result(audio_file)
+            app._last_config = config
+            app._last_samples = {"SPEAKER_00": ivan, "SPEAKER_01": maria}
+            app.action_edit_speakers()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, tui_app.SpeakerEditorScreen)
+            screen.rename_selected("Пётр")
+            screen.action_save()
+            await pilot.pause()
+            return app._last_samples.get("SPEAKER_00")
+
+    sample = asyncio.run(_run())
+
+    assert (speakers_dir / "Пётр.wav").is_file()
+    assert sample is not None and sample.name == "Пётр.wav"
+
+
+def test_new_bindings_present() -> None:
+    editor_keys = {
+        binding[0]
+        for binding in tui_app.SpeakerEditorScreen.BINDINGS
+        if isinstance(binding, tuple)
+    }
+    assert {"p", "v", "a"} <= editor_keys
+
+    library_keys = {
+        binding[0]
+        for binding in tui_app.VoicesLibraryScreen.BINDINGS
+        if isinstance(binding, tuple)
+    }
+    assert {"p", "d", "delete", "r", "escape"} <= library_keys
+
+    app_keys = {
+        binding[0]
+        for binding in tui_app.TranscriberApp.BINDINGS
+        if isinstance(binding, tuple)
+    }
+    assert {"e", "v"} <= app_keys

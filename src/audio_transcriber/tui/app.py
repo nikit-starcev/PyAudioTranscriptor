@@ -27,6 +27,7 @@ from textual.binding import BindingType
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen
+from textual.timer import Timer
 from textual.widgets import (
     Button,
     DataTable,
@@ -48,6 +49,7 @@ from audio_transcriber.cleaning.repetition_filter import (
 from audio_transcriber.config.defaults import (
     DEFAULT_ENROLLMENT_MIN_SIMILARITY,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
+    DEFAULT_VOICES_DIR,
 )
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.correction.defaults import (
@@ -55,10 +57,16 @@ from audio_transcriber.correction.defaults import (
     DEFAULT_CORRECTION_MIN_SIMILARITY,
     DEFAULT_CORRECTION_MIN_WORD_LENGTH,
 )
+from audio_transcriber.diarization.enrollment import assign_speaker_names
 from audio_transcriber.diarization.samples import find_speaker_samples, samples_directory
-from audio_transcriber.diarization.voices import save_speaker_sample
+from audio_transcriber.diarization.voices import (
+    collect_voice_library,
+    delete_voice_sample,
+    merge_references,
+    save_speaker_sample,
+)
 from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
-from audio_transcriber.domain.models import TranscriptionResult
+from audio_transcriber.domain.models import SpeakerSegment, TranscriptionResult
 from audio_transcriber.export.factory import create_exporter
 from audio_transcriber.export.timeline import build_speaker_tracks, write_timeline
 from audio_transcriber.llm.base import LlmClient
@@ -71,7 +79,14 @@ from audio_transcriber.progress import ProgressEvent
 from audio_transcriber.utils.config_env import load_config_env
 from audio_transcriber.utils.glossary_paths import normalize_glossary_paths_tuple
 from audio_transcriber.utils.notifications import notify
-from audio_transcriber.utils.playback import play_audio_file
+from audio_transcriber.utils.playback import (
+    SILENCE_RMS_THRESHOLD,
+    PlaybackHandle,
+    amplitude_envelope,
+    read_duration,
+    start_playback,
+)
+from audio_transcriber.utils.text import sanitize_filename
 
 logger = logging.getLogger(__name__)
 
@@ -602,6 +617,410 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
     )
 
 
+#: Символы для строки амплитуды (от тишины к пику).
+_AMP_CHARS = "▁▂▃▄▅▆▇█"
+
+
+def _amplitude_line(envelope: Sequence[float], width: int | None = None) -> str:
+    """Строка амплитуды из блочных символов (по одному на окно)."""
+    values = list(envelope)
+    if width is not None:
+        values = values[:width]
+    last = len(_AMP_CHARS) - 1
+    chars = []
+    for value in values:
+        clamped = min(1.0, max(0.0, value))
+        chars.append(_AMP_CHARS[round(clamped * last)])
+    return "".join(chars)
+
+
+def _progress_bar(fraction: float, width: int) -> str:
+    """Полоса прогресса с курсором ``●`` на позиции ``fraction`` (0..1)."""
+    if width <= 0:
+        return ""
+    position = min(width - 1, max(0, round(fraction * (width - 1))))
+    return "─" * position + "●" + "─" * (width - 1 - position)
+
+
+def _format_size(size: int) -> str:
+    """Человекочитаемый размер файла (Б/КБ/МБ/ГБ)."""
+    value = float(size)
+    for unit in ("Б", "КБ", "МБ"):
+        if value < 1024:
+            return f"{value:.0f} {unit}" if unit == "Б" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} ГБ"
+
+
+class PlayerPanel(Vertical):
+    """Панель проигрывания образца: время, амплитуда и полоса прогресса.
+
+    Самодостаточна: владеет процессом плеера, таймером обновления и кэшем
+    амплитуд. Экраны лишь вызывают :meth:`play`/:meth:`stop`/:meth:`toggle`.
+    Амплитуда считается в фоновом потоке (``@work(thread=True)``), поэтому
+    чтение аудио не блокирует интерфейс.
+    """
+
+    DEFAULT_CSS = """
+    PlayerPanel { height: auto; }
+    PlayerPanel .player-time { height: 1; color: $text-muted; }
+    PlayerPanel .player-amp { height: 1; color: $accent; }
+    PlayerPanel .player-bar { height: 1; color: $accent; }
+    PlayerPanel .player-note { height: 1; color: $warning; }
+    """
+
+    def __init__(self, *, columns: int = 50, id: str | None = None) -> None:
+        super().__init__(id=id)
+        self._columns = columns
+        self._handle: PlaybackHandle | None = None
+        self._path: Path | None = None
+        self._timer: Timer | None = None
+        self._amp_cache: dict[Path, list[float]] = {}
+        self._duration_cache: dict[Path, float] = {}
+
+    def compose(self) -> ComposeResult:
+        yield Static("⏱ 0.0 / 0.0 с", classes="player-time")
+        yield Static("", classes="player-amp")
+        yield Static("", classes="player-bar")
+        yield Static("", classes="player-note")
+
+    # --- публичный API ---
+
+    @property
+    def playing_path(self) -> Path | None:
+        """Путь образца, который проигрывается сейчас (или ``None``)."""
+        return self._path
+
+    @property
+    def is_playing(self) -> bool:
+        """``True``, пока процесс плеера жив."""
+        return self._handle is not None and self._handle.is_running()
+
+    def duration(self, path: Path) -> float:
+        """Длительность образца в секундах (кэшируется; ``0.0`` для не-WAV)."""
+        cached = self._duration_cache.get(path)
+        if cached is None:
+            cached = read_duration(path)
+            self._duration_cache[path] = cached
+        return cached
+
+    def play(self, path: Path) -> bool:
+        """Начинает проигрывание; ``False`` — плеер недоступен или ошибка запуска."""
+        self.stop()
+        handle = start_playback(path)
+        if handle is None:
+            return False
+        self._handle = handle
+        self._path = path
+        self._render_player(0.0)
+        self._load_amplitude(path)
+        self._start_timer()
+        return True
+
+    def toggle(self, path: Path) -> bool:
+        """Повторный вызов для того же файла останавливает проигрывание."""
+        if self.is_playing and self._path == path:
+            self.stop()
+            return True
+        return self.play(path)
+
+    def stop(self) -> None:
+        """Останавливает плеер и возвращает панель в исходный вид."""
+        self._stop_timer()
+        if self._handle is not None:
+            self._handle.stop()
+        self._handle = None
+        self._path = None
+        self._write(".player-time", "⏱ 0.0 / 0.0 с")
+        self._write(".player-amp", "")
+        self._write(".player-bar", "")
+        self._write(".player-note", "")
+
+    # --- внутреннее ---
+
+    def _write(self, selector: str, text: str) -> None:
+        self.query_one(selector, Static).update(text)
+
+    def _start_timer(self) -> None:
+        self._stop_timer()
+        self._timer = self.set_interval(0.1, self._tick)
+
+    def _stop_timer(self) -> None:
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+
+    def _tick(self) -> None:
+        handle = self._handle
+        if handle is None:
+            self._stop_timer()
+            return
+        if not handle.is_running():
+            self.stop()
+            return
+        elapsed = handle.elapsed
+        if handle.duration > 0 and elapsed >= handle.duration:
+            self.stop()
+            return
+        self._render_player(elapsed)
+
+    def _render_player(self, elapsed: float) -> None:
+        duration = self._handle.duration if self._handle is not None else 0.0
+        if duration <= 0 and self._path is not None:
+            duration = self.duration(self._path)
+        self._write(".player-time", f"⏱ {elapsed:.1f} / {duration:.1f} с")
+        fraction = elapsed / duration if duration > 0 else 0.0
+        self._write(".player-bar", _progress_bar(fraction, self._columns))
+
+    def _load_amplitude(self, path: Path) -> None:
+        cached = self._amp_cache.get(path)
+        if cached is not None:
+            self._show_amplitude(path, cached)
+            return
+        self._compute_amplitude(path)
+
+    @work(thread=True, group="amplitude", exclusive=True)
+    def _compute_amplitude(self, path: Path) -> None:
+        envelope = amplitude_envelope(path, columns=self._columns)
+        self.app.call_from_thread(self._on_amplitude, path, envelope)
+
+    def _on_amplitude(self, path: Path, envelope: list[float]) -> None:
+        self._amp_cache[path] = envelope
+        if self.is_mounted:
+            self._show_amplitude(path, envelope)
+
+    def _show_amplitude(self, path: Path, envelope: list[float]) -> None:
+        if self._path != path:
+            return
+        if not envelope or max(envelope) < SILENCE_RMS_THRESHOLD:
+            self._write(".player-amp", "")
+            self._write(".player-note", "тишина / нет голоса")
+            return
+        self._write(".player-amp", _amplitude_line(envelope, self._columns))
+        self._write(".player-note", "")
+
+
+class ConfirmDeleteScreen(ModalScreen[bool]):
+    """Мини-подтверждение удаления образца голоса («Да»/«Нет»)."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        ("escape", "cancel", "Нет"),
+        ("n", "cancel", "Нет"),
+        ("y", "confirm", "Да"),
+    ]
+
+    CSS = """
+    ConfirmDeleteScreen { align: center middle; }
+    #confirm_dialog {
+        width: 52; height: auto;
+        border: thick $error; background: $surface; padding: 1 2;
+    }
+    #confirm_text { height: auto; margin-bottom: 1; }
+    #confirm_actions { height: auto; }
+    #confirm_actions Button { margin-right: 1; }
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__()
+        self._name = name
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="confirm_dialog"):
+            yield Static(f"Удалить образец «{self._name}»?", id="confirm_text")
+            with Horizontal(id="confirm_actions"):
+                yield Button("Да [y]", id="confirm_yes", variant="error")
+                yield Button("Нет [Esc]", id="confirm_no")
+        yield Footer()
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "confirm_yes":
+            self.action_confirm()
+        elif event.button.id == "confirm_no":
+            self.action_cancel()
+
+
+class VoicesLibraryScreen(ModalScreen[None]):
+    """Просмотр и удаление библиотеки образцов голоса (``voices_dir``).
+
+    Таблица показывает имя (stem), длительность, размер и имя файла. Выбранный
+    образец можно проиграть (``p``) с той же визуализацией, что и в редакторе
+    говорящих, или удалить (``d``/``Delete``) с подтверждением.
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        ("escape", "close", "Закрыть"),
+        ("r", "refresh", "Обновить"),
+        ("p", "play_voice", "Проиграть"),
+        ("d", "delete_voice", "Удалить"),
+        ("delete", "delete_voice", "Удалить"),
+    ]
+
+    CSS = """
+    VoicesLibraryScreen { align: center middle; }
+    #voices_library {
+        width: 84; height: auto;
+        border: thick $primary; background: $surface; padding: 1 2;
+    }
+    #voices_title { text-style: bold; height: 1; }
+    #voices_path { height: 1; color: $text-muted; }
+    #voices_table { height: 12; }
+    #voices_player { margin-top: 1; }
+    #voices_actions { height: auto; margin-top: 1; }
+    #voices_actions Button { margin-right: 1; }
+    #voices_status { height: auto; margin-top: 1; color: $text-muted; }
+    """
+
+    def __init__(self, *, voices_dir: Path | None = None) -> None:
+        super().__init__()
+        self._voices_dir = (
+            Path(voices_dir) if voices_dir is not None else Path(DEFAULT_VOICES_DIR)
+        )
+        self._files: list[Path] = []
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="voices_library"):
+            yield Static("Библиотека голосов", id="voices_title")
+            yield Static(str(self._voices_dir), id="voices_path")
+            yield DataTable(id="voices_table", zebra_stripes=True, cursor_type="row")
+            yield PlayerPanel(id="voices_player")
+            with Horizontal(id="voices_actions"):
+                yield Button("Проиграть [p]", id="voices_play")
+                yield Button("Удалить [d]", id="voices_delete")
+                yield Button("Обновить [r]", id="voices_refresh")
+                yield Button("Закрыть [Esc]", id="voices_close")
+            yield Static("", id="voices_status")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        table = self.query_one("#voices_table", DataTable)
+        table.add_column("Имя", key="name")
+        table.add_column("Длительность", key="duration", width=14)
+        table.add_column("Размер", key="size", width=12)
+        table.add_column("Файл", key="file")
+        self.reload()
+
+    def reload(self) -> None:
+        """Перечитывает каталог библиотеки и перерисовывает таблицу."""
+        table = self.query_one("#voices_table", DataTable)
+        table.clear()
+        self._files = []
+        directory = self._voices_dir
+        try:
+            is_dir = directory.is_dir()
+        except OSError:
+            is_dir = False
+        if not is_dir:
+            self._set_status(
+                f"Каталог библиотеки не найден: {directory}. "
+                "Сохраните образец из редактора говорящих ([l])."
+            )
+            return
+
+        try:
+            entries = sorted(
+                (
+                    path
+                    for path in directory.iterdir()
+                    if path.is_file() and path.suffix.lower() == ".wav"
+                ),
+                key=lambda path: path.name.casefold(),
+            )
+        except OSError as exc:
+            self._set_status(f"Не удалось прочитать каталог: {exc}")
+            return
+
+        panel = self.query_one("#voices_player", PlayerPanel)
+        for path in entries:
+            try:
+                size = path.stat().st_size
+            except OSError:
+                size = 0
+            table.add_row(
+                path.stem,
+                f"{panel.duration(path):.1f} с",
+                _format_size(size),
+                path.name,
+            )
+            self._files.append(path)
+        self._set_status(f"Образцов: {len(self._files)}")
+
+    def selected_voice(self) -> Path | None:
+        """Выбранный в таблице образец (или ``None``)."""
+        table = self.query_one("#voices_table", DataTable)
+        row = table.cursor_row
+        if not self._files or row < 0 or row >= len(self._files):
+            return None
+        return self._files[row]
+
+    def action_refresh(self) -> None:
+        self.reload()
+
+    def action_play_voice(self) -> None:
+        path = self.selected_voice()
+        if path is None:
+            self._set_status("Не выбран образец")
+            return
+        panel = self.query_one("#voices_player", PlayerPanel)
+        playing_before = panel.is_playing
+        if not panel.toggle(path):
+            self.app.notify(
+                "Аудио-плеер не найден (ffplay/paplay/aplay/mpv/afplay) — "
+                "установите один из них, чтобы прослушивать образцы",
+                severity="warning",
+                timeout=8,
+            )
+            return
+        if panel.is_playing:
+            self._set_status(f"Проигрываю: {path.name}")
+        elif playing_before:
+            self._set_status(f"Остановлено: {path.name}")
+
+    def action_delete_voice(self) -> None:
+        path = self.selected_voice()
+        if path is None:
+            self._set_status("Не выбран образец")
+            return
+        self.app.push_screen(
+            ConfirmDeleteScreen(path.name),
+            lambda confirmed: self._delete_confirmed(path, confirmed),
+        )
+
+    def _delete_confirmed(self, path: Path, confirmed: bool | None) -> None:
+        if not confirmed:
+            self._set_status("Удаление отменено")
+            return
+        panel = self.query_one("#voices_player", PlayerPanel)
+        if panel.playing_path == path:
+            panel.stop()
+        if delete_voice_sample(path, self._voices_dir):
+            self._set_status(f"Удалено: {path.name}")
+            self.reload()
+        else:
+            self._set_status("Не удалось удалить образец (вне библиотеки или ошибка)")
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "voices_play":
+            self.action_play_voice()
+        elif event.button.id == "voices_delete":
+            self.action_delete_voice()
+        elif event.button.id == "voices_refresh":
+            self.action_refresh()
+        elif event.button.id == "voices_close":
+            self.action_close()
+
+    def _set_status(self, message: str) -> None:
+        self.query_one("#voices_status", Static).update(message)
+
+
 class SpeakerEditorScreen(ModalScreen[TranscriptionResult | None]):
     """Модальный экран правки говорящих: переименование и объединение.
 
@@ -616,22 +1035,27 @@ class SpeakerEditorScreen(ModalScreen[TranscriptionResult | None]):
         ("m", "merge", "Объединить"),
         ("p", "play_sample", "Проиграть"),
         ("l", "save_to_library", "В библиотеку"),
+        ("v", "open_voices", "Голоса"),
+        ("a", "apply_names", "Применить имена"),
         ("s", "save", "Сохранить"),
     ]
 
     CSS = """
     SpeakerEditorScreen { align: center middle; }
     #speaker_editor {
-        width: 74; height: auto;
+        width: 78; height: auto;
         border: thick $primary; background: $surface; padding: 1 2;
     }
     #editor_title { text-style: bold; height: 1; margin-bottom: 1; }
     #speakers_table { height: 10; }
-    #rename_row, #merge_row, #editor_actions { height: auto; margin-top: 1; }
+    #rename_row, #merge_row, #editor_actions, #editor_actions2 {
+        height: auto; margin-top: 1;
+    }
     #new_name, #merge_target { width: 1fr; }
     #rename, #merge { margin-left: 1; }
-    #editor_actions Button { margin-right: 1; }
-    #editor_status { height: 1; margin-top: 1; color: $text-muted; }
+    #editor_actions Button, #editor_actions2 Button { margin-right: 1; }
+    #player { margin-top: 1; }
+    #editor_status { height: auto; margin-top: 1; color: $text-muted; }
     """
 
     def __init__(
@@ -640,6 +1064,9 @@ class SpeakerEditorScreen(ModalScreen[TranscriptionResult | None]):
         *,
         samples: Mapping[str, Path] | None = None,
         voices_dir: Path | None = None,
+        audio_path: Path | None = None,
+        references: Mapping[str, Sequence[Path]] | None = None,
+        min_similarity: float = DEFAULT_ENROLLMENT_MIN_SIMILARITY,
     ) -> None:
         super().__init__()
         # Копия: Esc не должен менять исходный результат приложения.
@@ -650,6 +1077,12 @@ class SpeakerEditorScreen(ModalScreen[TranscriptionResult | None]):
         self._samples: dict[str, Path] = dict(samples or {})
         self._voices_dir = voices_dir
         self._speaker_ids: list[str] = []
+        # Контекст для «Применить имена» (enrollment без повторной расшифровки).
+        self._audio_path = audio_path
+        self._explicit_references: dict[str, tuple[Path, ...]] = {
+            name: tuple(paths) for name, paths in (references or {}).items()
+        }
+        self._min_similarity = min_similarity
 
     @property
     def edited_result(self) -> TranscriptionResult:
@@ -668,9 +1101,13 @@ class SpeakerEditorScreen(ModalScreen[TranscriptionResult | None]):
                 yield Button("Объединить [m]", id="merge")
             with Horizontal(id="editor_actions"):
                 yield Button("Проиграть [p]", id="play_sample")
+                yield Button("Голоса [v]", id="open_voices")
                 yield Button("В библиотеку [l]", id="save_to_library")
+            with Horizontal(id="editor_actions2"):
+                yield Button("Применить имена [a]", id="apply_names")
                 yield Button("Сохранить [s]", id="save", variant="primary")
                 yield Button("Отмена [Esc]", id="cancel")
+            yield PlayerPanel(id="player")
             yield Static("", id="editor_status")
         yield Footer()
 
@@ -679,6 +1116,8 @@ class SpeakerEditorScreen(ModalScreen[TranscriptionResult | None]):
         table.add_column("ID", key="id", width=14)
         table.add_column("Имя", key="name")
         table.add_column("Реплик", key="count", width=8)
+        table.add_column("Образец", key="sample", width=9)
+        table.add_column("Длит.", key="duration", width=8)
         self.reload()
 
     def reload(self) -> None:
@@ -690,8 +1129,15 @@ class SpeakerEditorScreen(ModalScreen[TranscriptionResult | None]):
         table.clear()
         self._speaker_ids = [speaker.id for speaker in self._result.speakers]
         for speaker in self._result.speakers:
+            sample = self._samples.get(speaker.id)
+            exists = self._sample_exists(sample)
+            duration_text = f"{self._sample_duration(sample):.1f}" if exists else "—"
             table.add_row(
-                speaker.id, speaker.display_name, str(counts.get(speaker.id, 0))
+                speaker.id,
+                speaker.display_name,
+                str(counts.get(speaker.id, 0)),
+                "✓" if exists else "—",
+                duration_text,
             )
         self.query_one("#merge_target", Select).set_options(
             [
@@ -700,6 +1146,19 @@ class SpeakerEditorScreen(ModalScreen[TranscriptionResult | None]):
             ]
         )
         self._set_status("")
+
+    def _sample_exists(self, sample: Path | None) -> bool:
+        if sample is None:
+            return False
+        try:
+            return sample.is_file()
+        except OSError:
+            return False
+
+    def _sample_duration(self, sample: Path | None) -> float:
+        if sample is None:
+            return 0.0
+        return self.query_one("#player", PlayerPanel).duration(sample)
 
     def selected_speaker_id(self) -> str | None:
         """Идентификатор говорящего в текущей строке таблицы (или ``None``)."""
@@ -773,7 +1232,11 @@ class SpeakerEditorScreen(ModalScreen[TranscriptionResult | None]):
         )
 
     def action_play_sample(self) -> None:
-        """Неблокирующе проигрывает образец голоса выбранного говорящего (``p``)."""
+        """Неблокирующе проигрывает образец выбранного говорящего (``p``).
+
+        Повторное нажатие останавливает проигрывание; выбор другого говорящего
+        переключает панель на его образец.
+        """
         if self.selected_speaker_id() is None:
             self._set_status("Не выбран говорящий")
             return
@@ -785,15 +1248,89 @@ class SpeakerEditorScreen(ModalScreen[TranscriptionResult | None]):
                 timeout=6,
             )
             return
-        if play_audio_file(sample):
-            self._set_status(f"Проигрываю образец: {sample.name}")
-        else:
+        panel = self.query_one("#player", PlayerPanel)
+        was_playing = panel.is_playing
+        if not panel.toggle(sample):
             self.app.notify(
                 "Аудио-плеер не найден (ffplay/paplay/aplay/mpv/afplay) — "
                 "установите один из них, чтобы прослушивать образцы",
                 severity="warning",
                 timeout=8,
             )
+            return
+        if panel.is_playing:
+            self._set_status(f"Проигрываю образец: {sample.name}")
+        elif was_playing:
+            self._set_status(f"Остановлено: {sample.name}")
+
+    def action_open_voices(self) -> None:
+        """Открывает библиотеку голосов из редактора говорящих (``v``)."""
+        voices_dir = (
+            self._voices_dir if self._voices_dir is not None else Path(DEFAULT_VOICES_DIR)
+        )
+        self.app.push_screen(VoicesLibraryScreen(voices_dir=voices_dir))
+
+    def _resolved_references(self) -> dict[str, tuple[Path, ...]]:
+        """Явные образцы + актуальное содержимое библиотеки голосов."""
+        library = collect_voice_library(self._voices_dir)
+        return merge_references(self._explicit_references, library)
+
+    def _speaker_segments(self) -> list[SpeakerSegment]:
+        """Восстанавливает сегменты говорящих из текущих реплик результата.
+
+        Нужны для повторного enrollment без диаризации: у каждой реплики уже
+        есть интервал и говорящий.
+        """
+        return [
+            SpeakerSegment(start=entry.start, end=entry.end, speaker_id=entry.speaker.id)
+            for entry in self._result.entries
+            if entry.speaker is not None and entry.end > entry.start
+        ]
+
+    def action_apply_names(self) -> None:
+        """Заново сопоставляет голоса на текущем аудио и применяет имена (``a``).
+
+        Повторной расшифровки нет: enrollment сравнивает голос говорящего с
+        образцами (библиотека + явные) и переименовывает реплики на месте.
+        """
+        if self._audio_path is None:
+            self._set_status("Нет аудио для сопоставления голосов")
+            return
+        references = self._resolved_references()
+        if not references:
+            self._set_status("Нет образцов голоса (библиотека пуста, явные не заданы)")
+            return
+        speaker_segments = self._speaker_segments()
+        if not speaker_segments:
+            self._set_status("Нет сегментов говорящих для сопоставления")
+            return
+        self._set_status("Сопоставляю голоса по образцам…")
+        self._apply_names_worker(self._audio_path, dict(references), speaker_segments)
+
+    @work(thread=True, group="apply-names")
+    def _apply_names_worker(
+        self,
+        audio_path: Path,
+        references: Mapping[str, Sequence[Path]],
+        speaker_segments: Sequence[SpeakerSegment],
+    ) -> None:
+        mapping = assign_speaker_names(
+            speaker_segments=speaker_segments,
+            references=references,
+            audio_path=audio_path,
+            min_similarity=self._min_similarity,
+        )
+        self.app.call_from_thread(self._on_names_applied, mapping)
+
+    def _on_names_applied(self, mapping: dict[str, str]) -> None:
+        if not mapping:
+            self._set_status("Имена по голосу не сопоставлены (ниже порога)")
+            return
+        for speaker_id, name in mapping.items():
+            self._result = rename_speaker(self._result, speaker_id, name)
+        self.reload()
+        applied = ", ".join(f"{speaker_id} → {name}" for speaker_id, name in mapping.items())
+        self._set_status(f"Применены имена: {applied}")
 
     def action_save_to_library(self) -> None:
         """Копирует образец выбранного говорящего в библиотеку ``voices_dir`` (``l``)."""
@@ -838,6 +1375,10 @@ class SpeakerEditorScreen(ModalScreen[TranscriptionResult | None]):
             self.action_merge()
         elif event.button.id == "play_sample":
             self.action_play_sample()
+        elif event.button.id == "open_voices":
+            self.action_open_voices()
+        elif event.button.id == "apply_names":
+            self.action_apply_names()
         elif event.button.id == "save_to_library":
             self.action_save_to_library()
         elif event.button.id == "save":
@@ -905,6 +1446,7 @@ class TranscriberApp(App):
         ("slash", "focus_search", "Поиск (/)"),
         ("ctrl+f", "focus_search", "Поиск"),
         ("e", "edit_speakers", "Спикеры (e)"),
+        ("v", "open_voices_library", "Голоса (v)"),
         ("escape", "clear_search", "Сброс поиска"),
     ]
 
@@ -1202,7 +1744,7 @@ class TranscriberApp(App):
                     yield Input(placeholder="Поиск по стенограмме (/)…", id="search")
                     yield Static("", id="search_status")
                     yield Static(
-                        "Метки:  ⚠ низкая уверенность  ·  ⇄ наложение речи",
+                        "e — спикеры, v — голоса  ·  ⚠ низкая уверенность  ·  ⇄ наложение",
                         id="legend",
                     )
                 yield DataTable(id="results", zebra_stripes=True)
@@ -1265,19 +1807,37 @@ class TranscriberApp(App):
                 timeout=5,
             )
             return
-        voices_dir = (
-            self._last_config.resolved_voices_dir()
-            if self._last_config is not None
-            else None
-        )
+        config = self._last_config
+        if config is not None:
+            voices_dir: Path | None = config.resolved_voices_dir()
+            audio_path: Path | None = config.input_file
+            references: Mapping[str, Sequence[Path]] = config.speaker_references
+            min_similarity = config.enrollment_min_similarity
+        else:
+            voices_dir = None
+            audio_path = None
+            references = {}
+            min_similarity = DEFAULT_ENROLLMENT_MIN_SIMILARITY
         self.push_screen(
             SpeakerEditorScreen(
                 self._last_result,
                 samples=self._last_samples,
                 voices_dir=voices_dir,
+                audio_path=audio_path,
+                references=references,
+                min_similarity=min_similarity,
             ),
             self._on_speaker_editor_closed,
         )
+
+    def action_open_voices_library(self) -> None:
+        """Открывает библиотеку голосов напрямую из главного экрана (``v``)."""
+        voices_dir = (
+            self._last_config.resolved_voices_dir()
+            if self._last_config is not None
+            else Path(DEFAULT_VOICES_DIR)
+        )
+        self.push_screen(VoicesLibraryScreen(voices_dir=voices_dir))
 
     # --- сообщения ---
 
@@ -1461,6 +2021,7 @@ class TranscriberApp(App):
         if result is None:  # Esc/«Отмена» — оставляем всё как было
             return
         self._last_result = result
+        self._refresh_samples_after_rename(result)
         self._populate_results(result)
         self.query_one("#results", DataTable).remove_class("hidden")
         try:
@@ -1470,6 +2031,31 @@ class TranscriberApp(App):
             return
         names = ", ".join(path.name for path in exported)
         self.notify(f"Спикеры сохранены. Экспортировано: {names or 'нет форматов'}")
+
+    def _refresh_samples_after_rename(self, result: TranscriptionResult) -> None:
+        """Приводит образцы говорящих в соответствие новым именам.
+
+        Файлы образцов называются по ``display_name``; после переименования
+        говорящего (например, «Применить имена») старые имена перестают
+        находиться. Переименовываем файлы и заново собираем карту.
+        """
+        previous = dict(self._last_samples)
+        for speaker in result.speakers:
+            sample = previous.get(speaker.id)
+            if sample is None or not sample.is_file():
+                continue
+            target = sample.parent / f"{sanitize_filename(speaker.display_name)}.wav"
+            if target == sample or target.exists():
+                continue
+            try:
+                sample.rename(target)
+            except OSError as exc:
+                logger.warning("Не удалось переименовать образец %s: %s", sample, exc)
+        collected = self._collect_samples(result)
+        for speaker_id, sample in previous.items():
+            if speaker_id not in collected and sample.is_file():
+                collected[speaker_id] = sample
+        self._last_samples = collected
 
     def _reexport_result(self, result: TranscriptionResult) -> list[Path]:
         """Повторно выгружает результат в форматы (и таймлайн) последнего конфига."""
