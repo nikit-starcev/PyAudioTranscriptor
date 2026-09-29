@@ -20,9 +20,12 @@ Rust), см. README.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import tempfile
 import types
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +42,33 @@ logger = logging.getLogger(__name__)
 
 #: Частота дискретизации, с которой работает DeepFilterNet.
 DF_SAMPLE_RATE = 48000
+
+# DeepFilterNet читает свои опции конфигурации из переменных окружения
+# (``df.config`` использует ``os.environ[option.upper()]``). Переменные из
+# ``config.env`` (например ``MODEL`` — это модель whisper) при экспорте через
+# run.sh попадают в окружение и ломают загрузку DeepFilterNet ("No module named
+# 'df.large-v3-turbo'"). На время инициализации убираем такие имена.
+_COLLIDING_ENV_VARS = (
+    "MODEL",
+    "DEVICE",
+    "LANGUAGE",
+    "EPOCH",
+    "SR",
+    "LOG_LEVEL",
+    "POST_FILTER",
+    "MASK_ONLY",
+)
+
+
+@contextmanager
+def _sanitized_env() -> Iterator[None]:
+    """Временно убирает из окружения переменные, конфликтующие с настройками DeepFilterNet."""
+
+    saved = {name: os.environ.pop(name) for name in _COLLIDING_ENV_VARS if name in os.environ}
+    try:
+        yield
+    finally:
+        os.environ.update(saved)
 
 # Загруженная модель кэшируется на уровне модуля: при обработке очереди файлов
 # (TUI) она переиспользуется, а не грузится заново на каждый файл.
@@ -73,7 +103,8 @@ def _load_deepfilter() -> tuple[Any, Any] | None:
         _install_torchaudio_backend_shim()
         from df import init_df
 
-        model, df_state, _ = init_df(log_level="WARNING")
+        with _sanitized_env():
+            model, df_state, _ = init_df(log_level="WARNING")
     except Exception as exc:  # noqa: BLE001 — любая ошибка ведёт к мягкому пропуску
         logger.warning(
             "DeepFilterNet недоступен — шумоподавление будет пропущено "
@@ -163,7 +194,7 @@ class DeepFilterDenoiser:
 
         contiguous = np.ascontiguousarray(waveform, dtype=np.float32)
         tensor = torch.from_numpy(contiguous).unsqueeze(0)
-        with torch.no_grad():
+        with torch.no_grad(), _sanitized_env():
             enhanced = enhance(model, df_state, tensor)
         return enhanced.squeeze(0).detach().cpu().numpy()
 
