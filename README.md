@@ -69,6 +69,9 @@
   правка терминов по глоссарию (и экспериментальное, по умолчанию выключенное
   определение имён участников); при нехватке видеопамяти клиент сам деградирует
   до CPU.
+- **Шумоподавление (денойз)** перед распознаванием и диаризацией на
+  [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) — включено по
+  умолчанию; если движок не установлен, этап мягко пропускается.
 - **Глоссарий терминов**: несколько файлов сразу, явные пары
   «как слышит ASR = канон», односложные и фразовые термины, а также
   авто-сбор предложений о новых терминах.
@@ -96,6 +99,11 @@
   - диаризация — модель pyannote;
   - распознавание для `whisper.cpp` — ggml-модель (`whisper-models/`);
   - LLM — GGUF-модель (`llama-models/`).
+- **Шумоподавление (опционально)** — пакет
+  [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet); собирается из
+  исходников (нужен Rust), см. раздел
+  [«Шумоподавление (денойз)»](#шумоподавление-денойз). Без него конвейер
+  работает как раньше.
 - Аккаунт на [huggingface.co](https://huggingface.co) и токен доступа **нужны
   только** для первой загрузки модели диаризации. Если указана локальная
   копия модели (`PYANNOTE_LOCAL_MODEL`), токен и сеть не требуются — см.
@@ -192,7 +200,9 @@ llama-models/     # GGUF-модели для LLM (напр. Qwen2.5-7B-Instruct 
   ```
 
 Настройки TUI берёт из того же `config.env`; LLM-клиент создаётся один раз на
-всю очередь и гарантированно закрывается после её обработки.
+всю очередь и гарантированно закрывается после её обработки. Шумоподавление
+включается/выключается переключателем **«Шумоподавление (денойз)»** в простом
+режиме настроек.
 
 ## Использование (вручную, через uv)
 
@@ -229,6 +239,7 @@ uv run audio-transcriber transcribe --help
 | `--hf-token` | — | Токен доступа Hugging Face для модели диаризации (см. ниже) | из `HF_TOKEN` |
 | `--initial-prompt` | — | Короткая подсказка стиля/контекста для самого начала записи | не задана |
 | `--hotwords` | — | Короткий список слов-подсказок для ASR (лимит ~100 токенов) | не заданы |
+| `--denoise` / `--no-denoise` | — | Шумоподавление (DeepFilterNet) перед распознаванием и диаризацией | включено |
 | `--asr-backend` | — | Движок распознавания: `faster-whisper` или `whisper-cpp` | `faster-whisper` |
 | `--whisper-cpp-model` | — | Путь к ggml-модели (обязателен при `--asr-backend whisper-cpp`) | — |
 | `--whisper-cpp-binary` | — | Путь/имя бинарника `whisper-cli` | `whisper-cli` |
@@ -353,6 +364,65 @@ uv run audio-transcriber transcribe call.mp3 \
 `LLM_LIB_PATH`, `LLM_GPU`, `LLM_CONTEXT`, `LLM_EXTRACT_NAMES`,
 `LLM_SUGGEST_TERMS` и `GLOSSARY_PATH`. При нехватке видеопамяти клиент
 деградирует сам: частичная выгрузка слоёв на GPU, затем чистый CPU.
+
+### Шумоподавление (денойз)
+
+Перед распознаванием и диаризацией запись можно очистить от фонового шума
+нейросетевой моделью [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet)
+(DeepFilterNet3). Этап включён по умолчанию и стоит первым в конвейере:
+**один и тот же очищенный файл** получают и ASR, и диаризация, поэтому их
+временные метки согласованы, а объединение (`merge`) остаётся корректным.
+
+Как выключить:
+
+- CLI: `--no-denoise`;
+- `config.env`: `DENOISE=false` (тогда `run.sh` передаст `--no-denoise`);
+- TUI: переключатель **«Шумоподавление (денойз)»**.
+
+#### Установка
+
+DeepFilterNet объявляет зависимость `numpy<2`, а проект использует `numpy 2.x`
+(для Python 3.14 колёс под `numpy 1.26` нет). Поэтому пакет ставится **вручную
+без зависимостей** — так основной `numpy`/`torch` не откатываются. Сборка
+`libDF` идёт на Rust, нужен установленный `cargo`/`rustc`:
+
+```bash
+# установить Rust, если его нет: https://rustup.rs
+uv pip install --python .venv/bin/python --no-deps \
+    deepfilternet deepfilterlib appdirs loguru
+```
+
+Проверка:
+
+```bash
+.venv/bin/python -c "from df import enhance, init_df; print('DeepFilterNet OK')"
+```
+
+При первом запуске модель (~9 МБ) скачивается в кэш
+`~/.cache/DeepFilterNet/DeepFilterNet3`; дальше инференс полностью локальный и
+офлайн. Если пакет не установлен или модель недоступна, этап **мягко
+пропускается** с предупреждением в лог — конвейер продолжает работать на
+исходном аудио (то же и при сбое декодирования файла).
+
+> В `pyproject.toml` DeepFilterNet объявлен как необязательный extras
+> `denoise` (с маркером `python_version < '3.14'`), чтобы он не ломал общий
+> резолв зависимостей. На Python 3.14 используйте команду выше. Учтите, что
+> `uv sync` синхронизирует окружение строго по `uv.lock` и может удалить
+> вручную поставленные пакеты — при необходимости просто повторите установку.
+
+#### Производительность
+
+DeepFilterNet работает на 48 кГц моно; конвейер — на 16 кГц. Полный цикл:
+декодирование (PyAV) → 48 кГц → модель → ресемплинг в 16 кГц → временный WAV.
+Замер на CPU (без GPU), 90-секундный фрагмент телефонного разговора:
+чистый инференс **≈ 3.2 с** (RTF ≈ `0.035`, то есть ~28× быстрее реального
+времени); с учётом декодирования/ресемплинга/записи и однократной загрузки
+модели — **≈ 4.3 с** (RTF ≈ `0.048`).
+
+Технические детали: аудио читается через PyAV (а не `torchaudio.load`,
+который зависит от `torchcodec`), а совместимость `df.io` с torchaudio ≥ 2.9
+(удалённый `torchaudio.backend.common`) обеспечивается небольшой заглушкой в
+`denoising/deepfilter.py` — `site-packages` не изменяется.
 
 ### Токен доступа для диаризации
 
@@ -483,6 +553,7 @@ uv run audio-transcriber transcribe records/call.mp3 \
 | `FORMATS` | Форматы экспорта через запятую: `txt,docx,json,srt` |
 | `NUM_SPEAKERS`, `SPEAKER_NAMES` | Число говорящих и имена `ИНДЕКС=Имя` |
 | `HOTWORDS` | Короткие подсказки ASR через запятую |
+| `DENOISE` | Шумоподавление DeepFilterNet перед ASR/диаризацией (`true`/`false`) |
 | `ENABLE_CORRECTION`, `CORRECTION_*` | Автоисправление опечаток и его параметры |
 | `LLM_ENABLED` | Включить LLM-постобработку (`true`/`false`) |
 | `LLM_MODEL` | Путь к GGUF-модели LLM |
@@ -515,6 +586,7 @@ sequenceDiagram
     participant UI as CLI / TUI
     participant Config
     participant Pipeline
+    participant Denoise as Denoise<br/>(DeepFilterNet, опц.)
     participant ASR as Transcription<br/>(faster-whisper / whisper.cpp)
     participant Diar as Diarization<br/>(pyannote.audio)
     participant Merge as Merging
@@ -527,6 +599,12 @@ sequenceDiagram
     UI->>Config: собрать и провалидировать AppConfig
     Config-->>UI: AppConfig
     UI->>Pipeline: run_pipeline(config)
+
+    opt включён --denoise
+        Pipeline->>Denoise: denoise(audio)
+        Note right of Denoise: 48 кГц → модель →<br/>ресемплинг 16 кГц во временный WAV
+        Denoise-->>Pipeline: очищенный аудиофайл
+    end
 
     Pipeline->>ASR: transcribe(audio)
     Note right of ASR: реализует Protocol SpeechRecognizer
@@ -565,6 +643,9 @@ sequenceDiagram
 
 - **CLI / TUI / Config** — принимают команду или данные формы, валидируют
   параметры запуска (`AppConfig`).
+- **Denoise (опционально)** — подавляет фоновый шум (DeepFilterNet) и отдаёт
+  один очищенный аудиофайл и распознаванию, и диаризации, чтобы их временные
+  метки совпадали. Если движок недоступен — этап пропускается.
 - **Transcription / Diarization** — вызываются последовательно, каждый за
   интерфейсом `typing.Protocol`: движок можно заменить (faster-whisper ⇄
   whisper.cpp, другая диаризация) без изменения остального кода. Merging
@@ -632,6 +713,10 @@ src/audio_transcriber/
 │   ├── base.py     #   протокол SpeakerDiarizer
 │   └── pyannote_engine.py # pyannote.audio (в т.ч. локальная модель офлайн)
 │
+├── denoising/      # Шумоподавление (денойз) перед ASR/диаризацией
+│   ├── base.py     #   протокол DenoiserProtocol
+│   └── deepfilter.py # DeepFilterNet: 48 кГц → 16 кГц, мягкая деградация
+│
 ├── merging/        # Объединение сегментов ASR + диаризации
 │   ├── base.py     #   протокол SegmentMerger
 │   ├── aligner.py  #   сопоставление по максимальному перекрытию во времени
@@ -660,7 +745,7 @@ src/audio_transcriber/
 │   ├── exceptions.py #  иерархия исключений приложения
 │   ├── logging.py    #  настройка логирования (rich)
 │   ├── device.py     #  выбор CUDA/CPU, ленивый импорт torch
-│   ├── audio.py      #  декодирование аудио через PyAV
+│   ├── audio.py      #  декодирование и ресемплинг аудио через PyAV
 │   └── hotwords.py   #  ограничение длины --hotwords для ASR
 │
 └── pipeline.py     # сборка конвейера, используется CLI и TUI
@@ -677,6 +762,7 @@ tests/
 ├── test_config_settings.py
 ├── test_device.py
 ├── test_audio.py
+├── test_denoising.py
 ├── test_cli.py
 ├── test_tui.py
 ├── test_hotwords.py
@@ -718,6 +804,10 @@ tests/
 - **`diarization`** — определяет говорящих через `PyannoteSpeakerDiarizer`
   (pyannote.audio, в т.ч. локальная модель), реализующий протокол
   `SpeakerDiarizer`.
+- **`denoising`** — шумоподавление через `DeepFilterDenoiser` (DeepFilterNet),
+  реализующий протокол `DenoiserProtocol`. Работает на 48 кГц, отдаёт готовый
+  WAV 16 кГц моно (декодирование/ресемплинг — через `utils.audio`). Мягко
+  деградирует: при отсутствии движка или сбое возвращает исходный путь.
 - **`merging`** — сопоставляет по времени сегменты речи (`transcription`) и
   сегменты говорящих (`diarization`), формируя реплики `TranscriptEntry`; затем
   `SentenceMerger` склеивает подряд идущие короткие реплики одного говорящего.
@@ -738,9 +828,9 @@ tests/
   определение/резолвинг вычислительного устройства CPU/CUDA (`device.py`),
   декодирование аудио через PyAV (`audio.py`) и ограничение длины `--hotwords`
   (`hotwords.py`).
-- **`pipeline.py`** — точка сборки конвейера: распознавание → диаризация →
-  объединение → склейка реплик → (коррекция) → (LLM) → экспорт. Используется
-  CLI и TUI.
+- **`pipeline.py`** — точка сборки конвейера: (денойз) → распознавание →
+  диаризация → объединение → склейка реплик → (коррекция) → (LLM) → экспорт.
+  Используется CLI и TUI.
 
 ## Тестирование
 

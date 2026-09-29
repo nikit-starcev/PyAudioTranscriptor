@@ -49,6 +49,47 @@ def load_waveform(path: Path, *, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
     return np.concatenate(chunks, axis=1)[0]
 
 
+def resample_waveform(
+    waveform: np.ndarray, *, source_rate: int, target_rate: int
+) -> np.ndarray:
+    """Меняет частоту дискретизации моно waveform float32 (без обращения к диску).
+
+    Используется шумоподавлением: DeepFilterNet работает на 48 кГц, а конвейер
+    распознавания и диаризации — на 16 кГц.
+    """
+
+    if source_rate == target_rate:
+        return waveform
+
+    if source_rate <= 0 or target_rate <= 0:
+        raise AudioFileError("Частоты дискретизации должны быть положительными")
+
+    try:
+        frame = av.AudioFrame.from_ndarray(
+            np.ascontiguousarray(waveform, dtype=np.float32).reshape(1, -1),
+            format="fltp",
+            layout="mono",
+        )
+        frame.sample_rate = source_rate
+        resampler = av.audio.resampler.AudioResampler(
+            format="fltp", layout="mono", rate=target_rate
+        )
+        chunks: list[np.ndarray] = [
+            resampled.to_ndarray() for resampled in (resampler.resample(frame) or ())
+        ]
+        # Сбрасываем внутренний буфер ресемплера, чтобы не потерять «хвост».
+        chunks.extend(
+            resampled.to_ndarray() for resampled in (resampler.resample(None) or ())
+        )
+    except Exception as exc:
+        raise AudioFileError(f"Не удалось изменить частоту дискретизации: {exc}") from exc
+
+    if not chunks:
+        raise AudioFileError("Ресемплинг не вернул ни одного сэмпла")
+
+    return np.concatenate(chunks, axis=1)[0]
+
+
 def write_wav(path: Path, waveform: np.ndarray, *, sample_rate: int = SAMPLE_RATE) -> None:
     """Записывает моно waveform float32 как 16-битный PCM WAV.
 

@@ -73,6 +73,19 @@ def test_diarization_enabled_must_be_boolean(audio_file: Path) -> None:
         AppConfig(input_file=audio_file, diarization_enabled="yes")  # type: ignore[arg-type]
 
 
+def test_denoise_defaults_to_true(audio_file: Path) -> None:
+    assert AppConfig(input_file=audio_file).denoise is True
+
+
+def test_denoise_can_be_disabled(audio_file: Path) -> None:
+    assert AppConfig(input_file=audio_file, denoise=False).denoise is False
+
+
+def test_denoise_must_be_boolean(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, denoise="yes")  # type: ignore[arg-type]
+
+
 def test_at_least_one_export_format_required(audio_file: Path) -> None:
     with pytest.raises(ConfigurationError):
         AppConfig(input_file=audio_file, export_formats=())

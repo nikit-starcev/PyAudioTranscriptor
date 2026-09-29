@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from audio_transcriber.utils.audio import SAMPLE_RATE, load_waveform
+from audio_transcriber.utils.audio import SAMPLE_RATE, load_waveform, resample_waveform
 from audio_transcriber.utils.exceptions import AudioFileError
 
 
@@ -31,3 +31,26 @@ def test_load_waveform_raises_on_non_audio_file(tmp_path: Path) -> None:
 
     with pytest.raises(AudioFileError):
         load_waveform(path)
+
+
+def test_resample_waveform_changes_length_and_keeps_dtype() -> None:
+    tone = np.sin(2 * np.pi * 440 * np.arange(SAMPLE_RATE) / SAMPLE_RATE).astype(np.float32)
+
+    resampled = resample_waveform(tone, source_rate=SAMPLE_RATE, target_rate=SAMPLE_RATE * 2)
+
+    assert resampled.dtype == np.float32
+    assert abs(resampled.shape[0] - tone.shape[0] * 2) <= 2
+
+
+def test_resample_waveform_same_rate_returns_input() -> None:
+    waveform = np.zeros(100, dtype=np.float32)
+
+    assert resample_waveform(waveform, source_rate=SAMPLE_RATE, target_rate=SAMPLE_RATE) is waveform
+
+
+def test_resample_waveform_rejects_non_positive_rate() -> None:
+    waveform = np.zeros(100, dtype=np.float32)
+
+    with pytest.raises(AudioFileError):
+        resample_waveform(waveform, source_rate=0, target_rate=SAMPLE_RATE)
+

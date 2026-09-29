@@ -197,6 +197,41 @@ def test_build_config_cleaning_can_be_disabled_via_env(
     assert asyncio.run(_run()).clean_artifacts is False
 
 
+def test_stages_start_with_denoise() -> None:
+    # Шумоподавление — первый этап конвейера, и он виден в списке стадий TUI.
+    assert tui_app.STAGES[0] == ("denoise", "Шумоподавление")
+
+
+def test_build_config_denoise_enabled_by_default(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            return app._build_config(audio_file)
+
+    assert asyncio.run(_run()).denoise is True
+
+
+def test_build_config_denoise_can_be_disabled_via_env(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    defaults = _defaults(tmp_path / "out")
+    defaults["DENOISE"] = "false"
+    monkeypatch.setattr(tui_app, "_load_env_defaults", lambda: defaults)
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            return app._build_config(audio_file)
+
+    assert asyncio.run(_run()).denoise is False
+
+
 def test_queue_does_not_duplicate_row_after_completion(
     tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

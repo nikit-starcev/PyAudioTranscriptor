@@ -3,10 +3,10 @@
 Запуск: ``audio-transcriber tui``.
 
 Позволяет выбрать аудио/видеофайлы, выстроить очередь, запустить обработку
-и наблюдать живой прогресс по этапам (распознавание, диаризация, объединение,
-очистка артефактов, автоисправление, экспорт). Пока идёт транскрибация, в
-очередь можно добавлять новые файлы — они обработаются следом. Результаты
-показываются после запуска.
+и наблюдать живой прогресс по этапам (шумоподавление, распознавание,
+диаризация, объединение, очистка артефактов, автоисправление, экспорт). Пока
+идёт транскрибация, в очередь можно добавлять новые файлы — они обработаются
+следом. Результаты показываются после запуска.
 """
 
 from __future__ import annotations
@@ -59,6 +59,7 @@ from audio_transcriber.utils.glossary_paths import normalize_glossary_paths_tupl
 logger = logging.getLogger(__name__)
 
 STAGES: list[tuple[str, str]] = [
+    ("denoise", "Шумоподавление"),
     ("asr", "Распознавание речи"),
     ("diarization", "Определение говорящих"),
     ("merge", "Объединение сегментов"),
@@ -374,6 +375,7 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
     enable_correction = app.query_one("#correction", Switch).value
     clean_artifacts = app.query_one("#clean", Switch).value
     diarization_enabled = app.query_one("#diarization", Switch).value
+    denoise_enabled = app.query_one("#denoise", Switch).value
 
     backend_raw = str(app.query_one("#backend", Select).value or "")
     backend = (
@@ -433,6 +435,7 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
         initial_prompt=defaults.get("INITIAL_PROMPT") or None,
         hotwords=hotwords,
         clean_artifacts=clean_artifacts,
+        denoise=denoise_enabled,
         enable_correction=enable_correction,
         correction_min_word_length=_to_int(
             defaults.get("CORRECTION_MIN_WORD_LENGTH"),
@@ -596,6 +599,12 @@ class TranscriberApp(App):
                     with Horizontal():
                         yield Label("Говорящих", classes="field-label")
                         yield Input(placeholder="пусто = авто", id="num_speakers", type="integer")
+                    with Horizontal():
+                        yield Label("Шумоподавление (денойз)", classes="field-label")
+                        yield Switch(
+                            value=_to_bool(self._defaults.get("DENOISE"), default=True),
+                            id="denoise",
+                        )
                     with Horizontal():
                         yield Label("Диаризация", classes="field-label")
                         yield Switch(

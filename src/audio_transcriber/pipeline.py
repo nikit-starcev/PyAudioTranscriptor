@@ -1,10 +1,10 @@
-"""Сборка конвейера: распознавание -> диаризация -> объединение -> очистка -> коррекция -> экспорт.
+"""Сборка конвейера: денойз -> распознавание -> диаризация -> объединение -> очистка -> коррекция -> экспорт.
 
 Каждый этап конвейера обращается к своему компоненту только через протокол
 (``SpeechRecognizer``, ``SpeakerDiarizer``, ``SegmentMerger``,
-``ArtifactCleanerProtocol``, ``TextCorrector``, ``ResultExporter``), поэтому
-конкретную реализацию можно передать снаружи — это используется в тестах для
-подстановки фиктивных движков.
+``ArtifactCleanerProtocol``, ``TextCorrector``, ``ResultExporter``,
+``DenoiserProtocol``), поэтому конкретную реализацию можно передать снаружи —
+это используется в тестах для подстановки фиктивных движков.
 """
 
 from __future__ import annotations
@@ -16,6 +16,8 @@ from audio_transcriber.cleaning.base import ArtifactCleanerProtocol
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.correction.base import TextCorrector
 from audio_transcriber.correction.morph_corrector import MorphTextCorrector
+from audio_transcriber.denoising.base import DenoiserProtocol
+from audio_transcriber.denoising.deepfilter import DeepFilterDenoiser
 from audio_transcriber.diarization.base import SpeakerDiarizer
 from audio_transcriber.diarization.pyannote_engine import PyannoteSpeakerDiarizer
 from audio_transcriber.domain.enums import AsrBackend, Device
@@ -67,6 +69,7 @@ def run_pipeline(
     artifact_cleaner: ArtifactCleanerProtocol | None = None,
     corrector: TextCorrector | None = None,
     llm_client: LlmClient | None = None,
+    denoiser: DenoiserProtocol | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> TranscriptionResult:
     """Прогоняет входной файл через полный конвейер и экспортирует результат.
@@ -91,34 +94,50 @@ def run_pipeline(
             max_candidates=config.correction_max_candidates,
         )
 
-    logger.info("Распознавание речи...")
-    emit(ProgressEvent("asr", "Распознавание речи", fraction=None))
-    transcription_segments, language, duration = recognizer.transcribe(
-        config.input_file, language=config.language
-    )
+    # Шумоподавление идёт первым: и распознавание, и диаризация должны видеть
+    # один и тот же очищенный файл, иначе временные метки разъедутся.
+    denoiser = denoiser or (DeepFilterDenoiser() if config.denoise else None)
+    audio_path = config.input_file
+    try:
+        if denoiser is not None:
+            logger.info("Шумоподавление (DeepFilterNet)...")
+            emit(ProgressEvent("denoise", "Шумоподавление", fraction=None))
+            audio_path = denoiser.denoise(config.input_file)
 
-    if config.diarization_enabled:
-        # whisper.cpp сам использует GPU через Vulkan; pyannote.audio в этом
-        # гибриде не имеет GPU-бэкенда (ROCm не поддерживает старые AMD-карты),
-        # поэтому диаризация всегда выполняется на CPU.
-        diarization_device = (
-            Device.CPU if config.asr_backend is AsrBackend.WHISPER_CPP else device
+        logger.info("Распознавание речи...")
+        emit(ProgressEvent("asr", "Распознавание речи", fraction=None))
+        transcription_segments, language, duration = recognizer.transcribe(
+            audio_path, language=config.language
         )
-        active_diarizer = diarizer or PyannoteSpeakerDiarizer(
-            diarization_device,
-            hf_token=config.hf_token,
-            local_model_path=config.pyannote_local_model,
-            on_progress=emit,
-        )
-        logger.info("Определение говорящих...")
-        emit(ProgressEvent("diarization", "Определение говорящих", fraction=None))
-        speaker_segments = active_diarizer.diarize(
-            config.input_file, num_speakers=config.num_speakers
-        )
-    else:
-        logger.info("Диаризация отключена — все реплики без разметки говорящих")
-        emit(ProgressEvent("diarization", "Диаризация отключена", fraction=1.0))
-        speaker_segments = []
+
+        if config.diarization_enabled:
+            # whisper.cpp сам использует GPU через Vulkan; pyannote.audio в этом
+            # гибриде не имеет GPU-бэкенда (ROCm не поддерживает старые AMD-карты),
+            # поэтому диаризация всегда выполняется на CPU.
+            diarization_device = (
+                Device.CPU if config.asr_backend is AsrBackend.WHISPER_CPP else device
+            )
+            active_diarizer = diarizer or PyannoteSpeakerDiarizer(
+                diarization_device,
+                hf_token=config.hf_token,
+                local_model_path=config.pyannote_local_model,
+                on_progress=emit,
+            )
+            logger.info("Определение говорящих...")
+            emit(ProgressEvent("diarization", "Определение говорящих", fraction=None))
+            speaker_segments = active_diarizer.diarize(
+                audio_path, num_speakers=config.num_speakers
+            )
+        else:
+            logger.info("Диаризация отключена — все реплики без разметки говорящих")
+            emit(ProgressEvent("diarization", "Диаризация отключена", fraction=1.0))
+            speaker_segments = []
+    finally:
+        # Временный денойзенный WAV нужен только ASR и диаризации; удаляем его,
+        # как только оба этапа завершились (в т.ч. при ошибке).
+        close = getattr(denoiser, "close", None)
+        if callable(close):
+            close()
 
     emit(ProgressEvent("merge", "Объединение сегментов", fraction=None))
     entries, speakers = merger.merge(transcription_segments, speaker_segments, config.speaker_names)

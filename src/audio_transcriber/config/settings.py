@@ -47,6 +47,9 @@ class AppConfig:
     hotwords: str | None = None
     # Удалять неречевые пометки Whisper ([СМЕХ], [BLANK_AUDIO], ♪ и т.п.).
     clean_artifacts: bool = True
+    # Шумоподавление (DeepFilterNet) перед распознаванием и диаризацией.
+    # При отсутствии движка этап мягко пропускается с предупреждением в лог.
+    denoise: bool = True
     enable_correction: bool = False
     correction_min_word_length: int = DEFAULT_CORRECTION_MIN_WORD_LENGTH
     correction_min_similarity: float = DEFAULT_CORRECTION_MIN_SIMILARITY
@@ -96,6 +99,9 @@ class AppConfig:
 
         if not isinstance(self.clean_artifacts, bool):
             raise ConfigurationError("CLEAN_ARTIFACTS должно быть true или false")
+
+        if not isinstance(self.denoise, bool):
+            raise ConfigurationError("DENOISE должно быть true или false")
 
         if self.correction_min_word_length < 1:
             raise ConfigurationError("CORRECTION_MIN_WORD_LENGTH должно быть целым числом >= 1")

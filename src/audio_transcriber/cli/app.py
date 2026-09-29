@@ -165,6 +165,15 @@ def transcribe(
             "По умолчанию включено."
         ),
     ),
+    denoise: bool = typer.Option(
+        True,
+        "--denoise/--no-denoise",
+        help=(
+            "Шумоподавление (DeepFilterNet) перед распознаванием и диаризацией. "
+            "По умолчанию включено; при отсутствии DeepFilterNet этап "
+            "пропускается без ошибки."
+        ),
+    ),
     enable_correction: bool = typer.Option(
         False,
         "--enable-correction",
@@ -335,6 +344,7 @@ def transcribe(
             initial_prompt=initial_prompt,
             hotwords=hotwords,
             clean_artifacts=clean_artifacts,
+            denoise=denoise,
             enable_correction=enable_correction,
             correction_min_word_length=correction_min_word_length,
             correction_min_similarity=correction_min_similarity,
@@ -373,6 +383,10 @@ def transcribe(
         logger.info(
             "Очистка неречевых артефактов: %s",
             "включена" if config.clean_artifacts else "выключена",
+        )
+        logger.info(
+            "Шумоподавление (DeepFilterNet): %s",
+            "включено" if config.denoise else "выключено",
         )
         logger.info(
             "Автоисправление опечаток: %s",
