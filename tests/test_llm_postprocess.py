@@ -483,6 +483,75 @@ def test_chunk_chars_for_context_scales_with_context() -> None:
     assert chunk_chars_for_context(128) == 1000
 
 
+class _LengthCountingClient:
+    """Считает суммарную длину сообщений каждого запроса (эмуляция контекста)."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.max_request_chars = 0
+
+    def chat(self, messages: list[dict[str, str]]) -> str:
+        self.calls += 1
+        total = sum(len(message.get("content", "")) for message in messages)
+        self.max_request_chars = max(self.max_request_chars, total)
+        return '{"corrections": []}'
+
+    def close(self) -> None:
+        pass
+
+
+def _long_entries(count: int = 60) -> list[TranscriptEntry]:
+    return [
+        TranscriptEntry(
+            start=float(i),
+            end=float(i) + 1,
+            text="обсуждали системы и регламенты " * 3,
+        )
+        for i in range(count)
+    ]
+
+
+def test_verify_terms_fits_budget_with_large_glossary() -> None:
+    """Большой глоссарий + длинный текст → каждый запрос влезает в бюджет."""
+    terms = [f"Термин{i:03d}" for i in range(480)]
+    glossary = Glossary(terms=terms)
+    llm = _LengthCountingClient()
+
+    _verify_terms_with_llm(_long_entries(), glossary, llm=llm, max_chunk_chars=6000)
+
+    assert llm.calls > 1
+    # Весь запрос (system + user + резерв ответа) укладывается в бюджет.
+    assert llm.max_request_chars <= 6000
+
+
+def test_verify_terms_limits_glossary_in_prompt() -> None:
+    """Глоссарий не влезает целиком — в промпт попадает только его часть."""
+    terms = [f"код{i:03d}" for i in range(480)]
+    glossary = Glossary(terms=terms)
+    llm = _TermCorrectionClient([])
+
+    _verify_terms_with_llm(_long_entries(), glossary, llm=llm, max_chunk_chars=6000)
+
+    assert llm.prompts
+    assert all(prompt.count("код") < len(terms) for prompt in llm.prompts)
+
+
+def test_verify_terms_rotates_glossary_across_chunks() -> None:
+    """Разные фрагменты проверяют разные термины — суммарное покрытие растёт."""
+    terms = [f"код{i:03d}" for i in range(480)]
+    glossary = Glossary(terms=terms)
+    llm = _TermCorrectionClient([])
+
+    _verify_terms_with_llm(_long_entries(120), glossary, llm=llm, max_chunk_chars=6000)
+
+    assert llm.prompts
+    first_prompt_terms = sum(term in llm.prompts[0] for term in terms)
+    union: set[str] = set()
+    for prompt in llm.prompts:
+        union.update(term for term in terms if term in prompt)
+    assert len(union) > first_prompt_terms
+
+
 def test_extract_participants_respects_chunk_limit() -> None:
     class _CountingClient:
         def __init__(self) -> None:

@@ -4,6 +4,13 @@
 подбираются к ближайшей известной форме из OpenCorpora (через pymorphy3).
 Известные слова и склонения не изменяются.
 
+Правки намеренно консервативны, чтобы не «исправлять» тех-заимствования
+(«залогинился» → «залоснился») на похожие русские слова:
+
+* допускается не более одной правки символа (``max_edit_distance``);
+* порог сходства высокий (по умолчанию 0.93);
+* слова с латиницей не трогаются вовсе.
+
 Пороги длины и сходства задаются через ``AppConfig`` / ``config.env``
 (см. ``CORRECTION_MIN_WORD_LENGTH``, ``CORRECTION_MIN_SIMILARITY``,
 ``CORRECTION_MAX_CANDIDATES``).
@@ -18,13 +25,22 @@ from typing import Any
 
 from audio_transcriber.correction.defaults import (
     DEFAULT_CORRECTION_MAX_CANDIDATES,
+    DEFAULT_CORRECTION_MAX_EDIT_DISTANCE,
     DEFAULT_CORRECTION_MIN_SIMILARITY,
     DEFAULT_CORRECTION_MIN_WORD_LENGTH,
 )
 from audio_transcriber.domain.models import TranscriptEntry
-from audio_transcriber.utils.text import WORD_PATTERN, match_case, ratio
+from audio_transcriber.utils.text import WORD_PATTERN, levenshtein, match_case, ratio
 
 logger = logging.getLogger(__name__)
+
+# Латиница в слове: тех-заимствование (login, reloadConfig, API_KEY) — не трогаем.
+_LATIN_RE = re.compile(r"[A-Za-z]")
+
+
+def contains_latin(word: str) -> bool:
+    """Есть ли в слове латинские буквы (a–z, A–Z)."""
+    return _LATIN_RE.search(word) is not None
 
 
 def is_spelling_like_form(
@@ -33,9 +49,20 @@ def is_spelling_like_form(
     *,
     min_word_length: int = DEFAULT_CORRECTION_MIN_WORD_LENGTH,
     min_similarity: float = DEFAULT_CORRECTION_MIN_SIMILARITY,
+    max_edit_distance: int = DEFAULT_CORRECTION_MAX_EDIT_DISTANCE,
 ) -> bool:
-    """Проверяет, похожа ли замена на исправление опечатки, а не на другое слово."""
+    """Похожа ли замена на исправление опечатки, а не на другое слово.
+
+    Отклоняет слова с латиницей (тех-заимствования) и замены, требующие более
+    ``max_edit_distance`` правок символов.
+    """
+    if contains_latin(original) or contains_latin(corrected):
+        return False
+
     if len(original) < min_word_length or len(corrected) < min_word_length:
+        return False
+
+    if levenshtein(original.casefold(), corrected.casefold()) > max_edit_distance:
         return False
 
     max_len_delta = max(2, len(original) // 5)
@@ -57,10 +84,12 @@ class MorphTextCorrector:
         min_word_length: int = DEFAULT_CORRECTION_MIN_WORD_LENGTH,
         min_similarity: float = DEFAULT_CORRECTION_MIN_SIMILARITY,
         max_candidates: int = DEFAULT_CORRECTION_MAX_CANDIDATES,
+        max_edit_distance: int = DEFAULT_CORRECTION_MAX_EDIT_DISTANCE,
     ) -> None:
         self._min_word_length = min_word_length
         self._min_similarity = min_similarity
         self._max_candidates = max_candidates
+        self._max_edit_distance = max_edit_distance
 
         self._morph: Any = None
         self._words_dawg: Any = None
@@ -92,6 +121,7 @@ class MorphTextCorrector:
             corrected,
             min_word_length=self._min_word_length,
             min_similarity=self._min_similarity,
+            max_edit_distance=self._max_edit_distance,
         )
 
     def _best_known_form(self, word: str) -> str | None:
@@ -146,6 +176,10 @@ class MorphTextCorrector:
             original_word = match.group(0)
 
             if len(original_word) < self._min_word_length:
+                return original_word
+
+            # Тех-заимствования с латиницей (login, reloadConfig) не трогаем.
+            if contains_latin(original_word):
                 return original_word
 
             if self._is_known_russian_word(original_word):

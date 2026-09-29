@@ -924,7 +924,10 @@ class TranscriberApp(App):
                         )
                     with Horizontal():
                         yield Label("Автоисправление", classes="field-label")
-                        yield Switch(value=False, id="correction")
+                        yield Switch(
+                            value=_to_bool(self._defaults.get("ENABLE_CORRECTION"), default=False),
+                            id="correction",
+                        )
                     with Horizontal():
                         yield Label("Очистка артефактов", classes="field-label")
                         yield Switch(

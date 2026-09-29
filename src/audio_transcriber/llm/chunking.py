@@ -80,5 +80,26 @@ def chunk_chars_for_context(context_size: int) -> int:
     return max(MIN_CHUNK_CHARS, int(context_size * CHUNK_CHARS_PER_CONTEXT_TOKEN))
 
 
+# Резерв символов на ответ модели (JSON со списком правок терминов).
+TERM_CHECK_RESPONSE_RESERVE_CHARS = 600
+
+
+def transcript_chunk_chars_for_prompt(
+    total_budget_chars: int,
+    *,
+    overhead_chars: int,
+) -> int:
+    """Сколько символов стенограммы можно добавить, не выходя за бюджет запроса.
+
+    ``total_budget_chars`` — безопасный объём всего запроса (системный промпт +
+    пользовательский промпт + ответ модели) в символах, ``overhead_chars`` —
+    объём фиксированной части промпта без текста стенограммы (инструкции,
+    список терминов, резерв на ответ). Так накладные расходы промпта учитываются
+    в размере фрагмента, и запрос не превышает контекст модели (иначе — HTTP 400).
+    """
+    return max(1, total_budget_chars - max(0, overhead_chars))
+
+
+
 # Значение по умолчанию — под стандартный контекст 4096 токенов.
 DEFAULT_CHUNK_CHARS = chunk_chars_for_context(DEFAULT_CONTEXT_SIZE)

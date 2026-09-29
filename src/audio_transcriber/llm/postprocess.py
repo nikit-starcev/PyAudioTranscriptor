@@ -26,7 +26,9 @@ from audio_transcriber.domain.models import Speaker, TranscriptEntry
 from audio_transcriber.llm.base import LlmClient
 from audio_transcriber.llm.chunking import (
     DEFAULT_CHUNK_CHARS,
+    TERM_CHECK_RESPONSE_RESERVE_CHARS,
     chunk_chars_for_context,
+    transcript_chunk_chars_for_prompt,
 )
 from audio_transcriber.llm.chunking import (
     iter_transcript_chunks as _iter_transcript_chunks,
@@ -385,6 +387,40 @@ def correct_terms(
     return corrected
 
 
+def _term_check_user_prompt(terms_block: str, chunk: str) -> str:
+    """Пользовательский промпт проверки терминов для одного фрагмента."""
+    return (
+        f"Термины:\n{terms_block}\n\n"
+        f"Стенограмма (фрагмент):\n{chunk}\n\n"
+        "Найди только опечатки перечисленных терминов и верни строгий JSON:\n"
+        '{"corrections": [{"before": "АИБ", "after": "ОИБ"}]}\n'
+        'Если опечаток нет, верни {"corrections": []}.'
+    )
+
+
+def _fit_terms_block(terms: list[str], *, max_chars: int, start: int) -> tuple[str, int]:
+    """Собирает блок терминов не длиннее ``max_chars`` (циклически от ``start``).
+
+    Возвращает ``(текст, сколько терминов вошло)``. Обход по кругу нужен, чтобы
+    при большом глоссарии за разные фрагменты стенограммы проверялись разные
+    термины — суммарно покрывая весь список и не переполняя контекст.
+    """
+    if max_chars <= 0 or not terms:
+        return "", 0
+
+    total = len(terms)
+    selected: list[str] = []
+    used = 0
+    for step in range(total):
+        term = terms[(start + step) % total]
+        cost = len(term) + 1  # + перевод строки
+        if used + cost > max_chars:
+            break
+        selected.append(term)
+        used += cost
+    return "\n".join(selected), len(selected)
+
+
 def _verify_terms_with_llm(
     entries: list[TranscriptEntry],
     glossary: Glossary,
@@ -394,25 +430,43 @@ def _verify_terms_with_llm(
 ) -> list[TranscriptEntry]:
     """Опциональная LLM-проверка спорных опечаток терминов (с защитой).
 
-    Стенограмма режется на фрагменты тем же механизмом, что и извлечение имён:
-    длинный текст иначе превышает контекст модели и запрос падает с HTTP 400.
-    Ответы всех фрагментов объединяются, затем применяются разрешённые замены.
+    Стенограмма режется на фрагменты тем же механизмом, что и извлечение имён.
+    Дополнительно учитываются накладные расходы промпта: инструкции, список
+    канонических терминов и резерв на ответ модели. Иначе большой глоссарий
+    (~сотни терминов) вместе с фрагментом превышает контекст модели, и запрос
+    падает с HTTP 400. Поэтому бюджет ``max_chars`` тратится на весь запрос:
+    из него вычитается фиксированная часть промпта, а список терминов
+    ограничивается и раздаётся фрагментам по кругу. Ответы всех фрагментов
+    объединяются, затем применяются разрешённые замены.
     """
     max_chars = max_chunk_chars if max_chunk_chars is not None else DEFAULT_CHUNK_CHARS
+    all_terms = glossary.terms
+    # Шаблон промпта с пустыми терминами и текстом — фиксированная часть запроса.
+    fixed_overhead = (
+        len(_TERM_CHECK_SYSTEM_PROMPT)
+        + len(_term_check_user_prompt("", ""))
+        + TERM_CHECK_RESPONSE_RESERVE_CHARS
+    )
+    # Мини-бюджет на термины: четверть остатка, но не больше самого списка.
+    terms_all_chars = sum(len(term) + 1 for term in all_terms)
+    terms_budget = min(terms_all_chars, max(0, max_chars - fixed_overhead) // 4)
+    chunk_limit = transcript_chunk_chars_for_prompt(
+        max_chars, overhead_chars=fixed_overhead + terms_budget
+    )
+
     speakers = _unique_speakers(entries)
     labels = _speaker_labels(speakers)
-    chunks = _iter_transcript_chunks(entries, labels, max_chars=max_chars)
-    terms = "\n".join(glossary.terms)
+    chunks = _iter_transcript_chunks(entries, labels, max_chars=chunk_limit)
 
     corrections: list[object] = []
+    term_cursor = 0
     for chunk in chunks:
-        user_prompt = (
-            f"Термины:\n{terms}\n\n"
-            f"Стенограмма (фрагмент):\n{chunk}\n\n"
-            "Найди только опечатки перечисленных терминов и верни строгий JSON:\n"
-            '{"corrections": [{"before": "АИБ", "after": "ОИБ"}]}\n'
-            'Если опечаток нет, верни {"corrections": []}.'
-        )
+        # Сколько символов остаётся терминам с учётом фактического фрагмента.
+        available = max_chars - fixed_overhead - len(chunk)
+        terms_block, used = _fit_terms_block(all_terms, max_chars=available, start=term_cursor)
+        if all_terms:
+            term_cursor = (term_cursor + used) % len(all_terms)
+        user_prompt = _term_check_user_prompt(terms_block, chunk)
         try:
             raw = llm.chat(
                 [

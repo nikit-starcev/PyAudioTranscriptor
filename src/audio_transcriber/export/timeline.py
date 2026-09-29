@@ -118,10 +118,25 @@ def build_speaker_tracks(result: TranscriptionResult) -> list[SpeakerTrack]:
     ]
 
 
+def _speaker_caption(label: str, display_name: str) -> str:
+    """Подпись говорящего без дублирования имени.
+
+    Если ``display_name`` пуст или совпадает с базовой меткой («Спикер 1»),
+    показываем имя один раз — просто ``label``.
+    """
+
+    name = display_name.strip()
+    if not name or name == label:
+        return label
+    return f"{label} ({name})"
+
+
 def render_timeline_text(result: TranscriptionResult) -> str:
     """Текстовая сводка вида «Спикер N (Имя): 00:00–00:29, 00:53–00:59».
 
-    Пустая строка, если данных о говорящих нет.
+    Имя не дублируется: если ``display_name`` совпадает с меткой говорящего
+    («Спикер 1») или пусто, выводится только метка. Пустая строка, если данных
+    о говорящих нет.
     """
 
     tracks = build_speaker_tracks(result)
@@ -140,7 +155,10 @@ def render_timeline_text(result: TranscriptionResult) -> str:
         ranges = ", ".join(
             f"{format_clock(start)}–{format_clock(end)}" for start, end in track.intervals
         )
-        lines.append(f"Спикер {numbering[track.speaker_id]} ({track.display_name}): {ranges}")
+        caption = _speaker_caption(
+            f"Спикер {numbering[track.speaker_id]}", track.display_name
+        )
+        lines.append(f"{caption}: {ranges}")
     return "\n".join(lines)
 
 

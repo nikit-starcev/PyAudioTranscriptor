@@ -116,7 +116,25 @@ def test_render_timeline_text_uses_long_form_for_hours(audio_file: Path) -> None
         speakers=[speaker],
     )
 
-    assert render_timeline_text(result) == "Спикер 1 (Спикер 1): 00:00–1:01:01"
+    # Имя не дублируется, если совпадает с базовой меткой говорящего.
+    assert render_timeline_text(result) == "Спикер 1: 00:00–1:01:01"
+
+
+def test_render_timeline_text_does_not_duplicate_speaker_name(audio_file: Path) -> None:
+    numbered = Speaker(id="SPEAKER_00", display_name="Спикер 1")
+    empty_name = Speaker(id="SPEAKER_01", display_name="")
+    result = TranscriptionResult(
+        source_path=audio_file,
+        language="ru",
+        duration=60.0,
+        entries=[
+            TranscriptEntry(start=0.0, end=10.0, text="раз", speaker=numbered),
+            TranscriptEntry(start=10.0, end=20.0, text="два", speaker=empty_name),
+        ],
+        speakers=[numbered, empty_name],
+    )
+
+    assert render_timeline_text(result) == "Спикер 1: 00:00–00:10\nСпикер 2: 00:10–00:20"
 
 
 class _Recognizer:
