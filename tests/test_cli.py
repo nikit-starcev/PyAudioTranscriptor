@@ -13,8 +13,19 @@ from audio_transcriber.cli.app import app
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.domain.enums import Device
 from audio_transcriber.domain.models import Speaker, TranscriptEntry, TranscriptionResult
+from audio_transcriber.utils.exceptions import AudioTranscriberError
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def notify_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+    """Перехватывает десктоп-уведомления, чтобы тесты не дёргали notify-send."""
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        app_module, "notify", lambda title, message: calls.append((title, message)) or True
+    )
+    return calls
 
 
 @pytest.fixture
@@ -598,3 +609,62 @@ def test_transcribe_clear_cache_removes_files(
 
     assert result.exit_code == 0
     assert not stale.exists()
+
+
+# --- Пакет 4 «интерфейс»: уведомления о завершении --------------------------
+
+
+def test_transcribe_notifications_enabled_by_default(
+    audio_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stub_pipeline,
+    notify_calls: list[tuple[str, str]],
+) -> None:
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 0
+    assert len(notify_calls) == 1
+    assert notify_calls[0][0] == "Транскрибация завершена"
+    assert audio_file.name in notify_calls[0][1]
+
+
+def test_transcribe_notifications_disabled_by_flag(
+    audio_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stub_pipeline,
+    notify_calls: list[tuple[str, str]],
+) -> None:
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(
+        app,
+        ["transcribe", str(audio_file), "-o", str(tmp_path / "out"), "--no-notify"],
+    )
+
+    assert result.exit_code == 0
+    assert notify_calls == []
+
+
+def test_transcribe_notifies_on_pipeline_error(
+    audio_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    notify_calls: list[tuple[str, str]],
+) -> None:
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    def failing_pipeline(config, **kwargs):
+        raise AudioTranscriberError("сбой распознавания")
+
+    monkeypatch.setattr(app_module, "run_pipeline", failing_pipeline)
+
+    result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 1
+    assert len(notify_calls) == 1
+    assert notify_calls[0][0] == "Транскрибация не удалась"
+    assert "сбой распознавания" in notify_calls[0][1]

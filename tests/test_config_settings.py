@@ -325,3 +325,19 @@ def test_resolved_cache_dir_honors_explicit_value(tmp_path: Path, audio_file: Pa
     config = AppConfig(input_file=audio_file, output_dir=tmp_path / "out", cache_dir=custom)
 
     assert config.resolved_cache_dir() == custom
+
+
+# --- Пакет 4 «интерфейс»: уведомления о завершении --------------------------
+
+
+def test_notifications_default_to_true(audio_file: Path) -> None:
+    assert AppConfig(input_file=audio_file).notifications is True
+
+
+def test_notifications_accepts_explicit_false(audio_file: Path) -> None:
+    assert AppConfig(input_file=audio_file, notifications=False).notifications is False
+
+
+def test_notifications_must_be_boolean(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, notifications="yes")  # type: ignore[arg-type]

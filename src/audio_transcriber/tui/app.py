@@ -14,10 +14,10 @@ from __future__ import annotations
 import logging
 import queue as queue_module
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, NamedTuple
 
 from rich.text import Text
 from textual import work
@@ -61,6 +61,7 @@ from audio_transcriber.pipeline import run_pipeline
 from audio_transcriber.progress import ProgressEvent
 from audio_transcriber.utils.config_env import load_config_env
 from audio_transcriber.utils.glossary_paths import normalize_glossary_paths_tuple
+from audio_transcriber.utils.notifications import notify
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +174,40 @@ _STATUS_MARK = {
     "done": Text("✓", style="green"),
     "error": Text("✗", style="red"),
 }
+
+
+class ResultRow(NamedTuple):
+    """Строка таблицы результатов: время, говорящий, метки, текст реплики."""
+
+    time: str
+    speaker: str
+    marks: str
+    text: str
+
+
+def _search_terms(query: str) -> list[str]:
+    """Разбивает запрос поиска на нормализованные (casefold) слова."""
+    return [term.casefold() for term in query.split() if term]
+
+
+def filter_result_rows(rows: Sequence[ResultRow], query: str) -> list[ResultRow]:
+    """Фильтрует строки стенограммы по запросу без учёта регистра.
+
+    Запрос разбивается по пробелам, и строка попадает в выборку, только если
+    **все** слова запроса встречаются как подстроки в тексте реплики или в
+    имени говорящего (логика «И»: ``"иван привет"`` найдёт реплики Ивана, в
+    которых есть «привет»). Пустой запрос возвращает все строки.
+    """
+    terms = _search_terms(query)
+    if not terms:
+        return list(rows)
+
+    matching: list[ResultRow] = []
+    for row in rows:
+        haystack = f"{row.speaker}\n{row.text}".casefold()
+        if all(term in haystack for term in terms):
+            matching.append(row)
+    return matching
 
 
 class MediaDirectoryTree(DirectoryTree):
@@ -375,6 +410,7 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
     diarization_enabled = app.query_one("#diarization", Switch).value
     denoise_enabled = app.query_one("#denoise", Switch).value
     use_cache = app.query_one("#cache", Switch).value
+    notifications_enabled = app.query_one("#notifications", Switch).value
 
     backend_raw = str(app.query_one("#backend", Select).value or "")
     backend = (
@@ -452,6 +488,7 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
         mark_overlap=mark_overlap,
         use_cache=use_cache,
         cache_dir=cache_dir,
+        notifications=notifications_enabled,
         low_confidence_threshold=low_confidence_threshold,
         enable_correction=enable_correction,
         correction_min_word_length=_to_int(
@@ -521,6 +558,9 @@ class TranscriberApp(App):
     #bar { height: 1; }
     #stage_list { height: auto; }
 
+    #search_bar { height: 3; }
+    #search { width: 1fr; }
+    #search_status { width: auto; padding: 0 1; content-align: left middle; color: $text-muted; }
     #results { height: 1fr; }
     #results.hidden { display: none; }
     #status { height: 1; color: $text-muted; }
@@ -536,6 +576,9 @@ class TranscriberApp(App):
         ("m", "toggle_mode", "Режим"),
         ("h", "toggle_settings", "Настройки"),
         ("t", "toggle_sidebar", "Файлы"),
+        ("slash", "focus_search", "Поиск (/)"),
+        ("ctrl+f", "focus_search", "Поиск"),
+        ("escape", "clear_search", "Сброс поиска"),
     ]
 
     def __init__(self) -> None:
@@ -545,6 +588,13 @@ class TranscriberApp(App):
         self._queue = QueueController()
         self._transcribing = False
         self._run_start_time: float | None = None
+        # Полный (нефильтрованный) набор строк таблицы результатов; фильтр
+        # поиска применяется к нему при каждой отрисовке.
+        self._result_rows: list[ResultRow] = []
+        # Уведомление по завершении очереди (берётся из собранного конфига).
+        self._notify_enabled = False
+        self._files_done = 0
+        self._files_failed = 0
 
     # --- очередь (тонкие обёртки над QueueController) ------------------
 
@@ -630,6 +680,12 @@ class TranscriberApp(App):
                         yield Switch(
                             value=_to_bool(self._defaults.get("USE_CACHE"), default=True),
                             id="cache",
+                        )
+                    with Horizontal():
+                        yield Label("Уведомления", classes="field-label")
+                        yield Switch(
+                            value=_to_bool(self._defaults.get("NOTIFICATIONS"), default=True),
+                            id="notifications",
                         )
                     with Horizontal():
                         yield Label("Диаризация", classes="field-label")
@@ -765,6 +821,9 @@ class TranscriberApp(App):
                     yield Button("Запустить очередь  [r]", id="run", variant="primary")
 
                 yield ProgressPanel()
+                with Horizontal(id="search_bar"):
+                    yield Input(placeholder="Поиск по стенограмме (/)…", id="search")
+                    yield Static("", id="search_status")
                 yield DataTable(id="results", zebra_stripes=True)
                 yield Static("", id="status")
 
@@ -805,7 +864,22 @@ class TranscriberApp(App):
     def action_toggle_sidebar(self) -> None:
         self.query_one("#sidebar", Vertical).toggle_class("hidden")
 
+    def action_focus_search(self) -> None:
+        """Переносит фокус в поле поиска по стенограмме (``/`` или ``Ctrl+F``)."""
+        self.query_one("#search", Input).focus()
+
+    def action_clear_search(self) -> None:
+        """Сбрасывает фильтр поиска (``Esc``) и показывает все строки."""
+        search = self.query_one("#search", Input)
+        if search.value:
+            search.value = ""
+        self._render_results()
+
     # --- сообщения ---
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "search":
+            self._render_results()
 
     def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
         self._selected_file = event.path
@@ -840,11 +914,13 @@ class TranscriberApp(App):
         self._render_queue()
 
         if message.error is not None:
+            self._files_failed += 1
             self.query_one("#status", Static).update(f"Ошибка: {message.error}")
             self.notify(message.error, severity="error", timeout=10)
             return
 
         assert message.result is not None
+        self._files_done += 1
         self._populate_results(message.result)
         self.query_one("#results", DataTable).remove_class("hidden")
         elapsed = time.time() - (self._run_start_time or time.time())
@@ -863,6 +939,21 @@ class TranscriberApp(App):
         self.query_one("#status", Static).update(
             "Очередь обработана. Можно добавить файлы и запустить снова."
         )
+        self._notify_queue_finished()
+
+    def _notify_queue_finished(self) -> None:
+        """Десктоп-уведомление о завершении очереди (если оно включено)."""
+        if not self._notify_enabled:
+            return
+        if self._files_failed:
+            notify(
+                "Транскрибация завершена с ошибками",
+                f"Обработано {self._files_done} из "
+                f"{self._files_done + self._files_failed} файл(ов), "
+                f"ошибок: {self._files_failed}",
+            )
+        else:
+            notify("Транскрибация завершена", f"Обработано {self._files_done} файл(ов)")
 
     # --- внутреннее ---
 
@@ -903,6 +994,9 @@ class TranscriberApp(App):
 
         self._transcribing = True
         self._run_start_time = time.time()
+        self._notify_enabled = base_config.notifications
+        self._files_done = 0
+        self._files_failed = 0
         run_button = self.query_one("#run", Button)
         run_button.disabled = True
         run_button.label = "Идёт транскрибация..."
@@ -914,12 +1008,11 @@ class TranscriberApp(App):
         return build_config_from_widgets(self, input_file)
 
     def _populate_results(self, result: TranscriptionResult) -> None:
-        table = self.query_one("#results", DataTable)
-        table.clear()
         from audio_transcriber.export.annotations import is_low_confidence
         from audio_transcriber.export.timestamps import format_timestamp
 
         threshold = result.low_confidence_threshold
+        rows: list[ResultRow] = []
         for entry in result.entries:
             speaker = entry.speaker.display_name if entry.speaker else "?"
             marks = ""
@@ -927,7 +1020,24 @@ class TranscriberApp(App):
                 marks += "⚠"
             if entry.overlap:
                 marks += "⇄"
-            table.add_row(format_timestamp(entry.start), speaker, marks, entry.text)
+            rows.append(ResultRow(format_timestamp(entry.start), speaker, marks, entry.text))
+        self._result_rows = rows
+        self._render_results()
+
+    def _render_results(self) -> None:
+        """Рисует таблицу результатов с учётом текущего фильтра поиска."""
+        query = self.query_one("#search", Input).value
+        table = self.query_one("#results", DataTable)
+        table.clear()
+        rows = filter_result_rows(self._result_rows, query)
+        for row in rows:
+            table.add_row(row.time, row.speaker, row.marks, row.text)
+
+        status = self.query_one("#search_status", Static)
+        if query.strip():
+            status.update(f"Совпадений: {len(rows)} / {len(self._result_rows)}")
+        else:
+            status.update(f"Реплик: {len(self._result_rows)}")
 
     def _tick(self) -> None:
         if self._transcribing and self._run_start_time is not None:

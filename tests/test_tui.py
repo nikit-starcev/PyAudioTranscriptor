@@ -17,6 +17,16 @@ from audio_transcriber.domain.models import TranscriptionResult
 from audio_transcriber.tui import app as tui_app
 
 
+@pytest.fixture(autouse=True)
+def tui_notify_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+    """Перехватывает десктоп-уведомления TUI, чтобы тесты не дёргали notify-send."""
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        tui_app, "notify", lambda title, message: calls.append((title, message)) or True
+    )
+    return calls
+
+
 def _defaults(output_dir: Path, **overrides: str) -> dict[str, str]:
     values = {
         "LANGUAGE": "en",
@@ -497,3 +507,242 @@ def test_build_config_cache_toggle_and_dir_from_env(
 
     assert config.use_cache is False
     assert config.cache_dir == cache_dir
+
+
+# --- Пакет 4 «интерфейс»: поиск по стенограмме ------------------------------
+
+
+def _search_result(audio_file: Path) -> TranscriptionResult:
+    from audio_transcriber.domain.models import Speaker, TranscriptEntry
+
+    ivan = Speaker(id="SPEAKER_00", display_name="Иван")
+    maria = Speaker(id="SPEAKER_01", display_name="Мария")
+    return TranscriptionResult(
+        source_path=audio_file,
+        language="ru",
+        duration=3.0,
+        entries=[
+            TranscriptEntry(start=0.0, end=1.0, text="Привет, Иван", speaker=ivan),
+            TranscriptEntry(start=1.0, end=2.0, text="привет мир", speaker=maria),
+            TranscriptEntry(start=2.0, end=3.0, text="пока", speaker=ivan),
+        ],
+        speakers=[ivan, maria],
+        low_confidence_threshold=-1.0,
+    )
+
+
+def test_search_filters_rows_and_shows_count(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run() -> tuple[int, str]:
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            app._populate_results(_search_result(audio_file))
+            app.query_one("#search", tui_app.Input).value = "привет"
+            await pilot.pause()
+            table = app.query_one("#results", tui_app.DataTable)
+            status = app.query_one("#search_status", tui_app.Static)
+            return table.row_count, str(status.render())
+
+    rows, status = asyncio.run(_run())
+
+    assert rows == 2
+    assert status == "Совпадений: 2 / 3"
+
+
+def test_search_is_case_insensitive_and_matches_speaker(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run() -> tuple[int, int]:
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            app._populate_results(_search_result(audio_file))
+            search = app.query_one("#search", tui_app.Input)
+            search.value = "МАРИЯ"
+            await pilot.pause()
+            table = app.query_one("#results", tui_app.DataTable)
+            return table.row_count, len(app._result_rows)
+
+    rows, total = asyncio.run(_run())
+
+    assert rows == 1  # нашли по говорящему без учёта регистра
+    assert total == 3
+
+
+def test_search_all_words_must_match(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run() -> int:
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            app._populate_results(_search_result(audio_file))
+            app.query_one("#search", tui_app.Input).value = "привет иван"
+            await pilot.pause()
+            return app.query_one("#results", tui_app.DataTable).row_count
+
+    # обе подстроки («привет» в тексте, «иван» в говорящем) — одна реплика
+    assert asyncio.run(_run()) == 1
+
+
+def test_search_reset_restores_all_rows(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run() -> tuple[str, int, str]:
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            app._populate_results(_search_result(audio_file))
+            search = app.query_one("#search", tui_app.Input)
+            search.focus()
+            search.value = "привет"
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            status = str(app.query_one("#search_status", tui_app.Static).render())
+            return search.value, app.query_one("#results", tui_app.DataTable).row_count, status
+
+    value, rows, status = asyncio.run(_run())
+
+    assert value == ""
+    assert rows == 3
+    assert status == "Реплик: 3"
+
+
+def test_slash_focuses_search(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run() -> str | None:
+        app = tui_app.TranscriberApp()
+        async with app.run_test() as pilot:
+            app.query_one("#tree", tui_app.MediaDirectoryTree).focus()
+            await pilot.pause()
+            await pilot.press("slash")
+            await pilot.pause()
+            focused = app.focused
+            return focused.id if focused is not None else None
+
+    assert asyncio.run(_run()) == "search"
+
+
+# --- Пакет 4 «интерфейс»: уведомления о завершении --------------------------
+
+
+def test_build_config_notifications_enabled_by_default(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            return app._build_config(audio_file)
+
+    assert asyncio.run(_run()).notifications is True
+
+
+def test_build_config_notifications_toggle_from_env(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    defaults = _defaults(tmp_path / "out")
+    defaults["NOTIFICATIONS"] = "false"
+    monkeypatch.setattr(tui_app, "_load_env_defaults", lambda: defaults)
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            return app._build_config(audio_file)
+
+    assert asyncio.run(_run()).notifications is False
+
+
+def test_queue_done_notifies_success(
+    tmp_path: Path,
+    audio_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tui_notify_calls: list[tuple[str, str]],
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run() -> None:
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            app._notify_enabled = True
+            app._files_done = 2
+            app._files_failed = 0
+            app.on_queue_done(tui_app.QueueDone())
+
+    asyncio.run(_run())
+
+    assert len(tui_notify_calls) == 1
+    assert tui_notify_calls[0][0] == "Транскрибация завершена"
+    assert "2" in tui_notify_calls[0][1]
+
+
+def test_queue_done_notifies_errors(
+    tmp_path: Path,
+    audio_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tui_notify_calls: list[tuple[str, str]],
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run() -> None:
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            app._notify_enabled = True
+            app._files_done = 1
+            app._files_failed = 2
+            app.on_queue_done(tui_app.QueueDone())
+
+    asyncio.run(_run())
+
+    assert len(tui_notify_calls) == 1
+    assert tui_notify_calls[0][0] == "Транскрибация завершена с ошибками"
+    assert "ошибок: 2" in tui_notify_calls[0][1]
+
+
+def test_queue_done_does_not_notify_when_disabled(
+    tmp_path: Path,
+    audio_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tui_notify_calls: list[tuple[str, str]],
+) -> None:
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+
+    async def _run() -> None:
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            app._notify_enabled = False
+            app._files_done = 3
+            app.on_queue_done(tui_app.QueueDone())
+
+    asyncio.run(_run())
+
+    assert tui_notify_calls == []

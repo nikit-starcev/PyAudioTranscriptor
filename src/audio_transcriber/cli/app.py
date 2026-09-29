@@ -27,6 +27,7 @@ from audio_transcriber.utils.exceptions import AudioTranscriberError
 from audio_transcriber.utils.glossary_paths import normalize_glossary_paths_tuple
 from audio_transcriber.utils.hotwords import build_hotwords
 from audio_transcriber.utils.logging import setup_logging
+from audio_transcriber.utils.notifications import notify
 
 logger = logging.getLogger(__name__)
 
@@ -242,6 +243,14 @@ def transcribe(
         "--cache-dir",
         help="Каталог постадийного кэша. По умолчанию <output_dir>/.cache.",
     ),
+    notifications: bool = typer.Option(
+        True,
+        "--notify/--no-notify",
+        help=(
+            "Показать десктоп-уведомление (notify-send) по завершении обработки. "
+            "Если утилиты нет — уведомление тихо пропускается. По умолчанию включено."
+        ),
+    ),
     low_confidence_threshold: float = typer.Option(
         DEFAULT_LOW_CONFIDENCE_THRESHOLD,
         "--low-confidence-threshold",
@@ -454,6 +463,7 @@ def transcribe(
             mark_overlap=mark_overlap,
             use_cache=cache,
             cache_dir=cache_dir,
+            notifications=notifications,
             low_confidence_threshold=low_confidence_threshold,
             enable_correction=enable_correction,
             correction_min_word_length=correction_min_word_length,
@@ -565,9 +575,17 @@ def transcribe(
         raise typer.Exit(code=130) from None
     except AudioTranscriberError as exc:
         logger.error(str(exc))
+        if notifications:
+            notify("Транскрибация не удалась", f"{input_file.name}: {exc}")
         raise typer.Exit(code=1) from exc
 
     logger.info("Готово: %d реплик(и), %d говорящих", len(result.entries), len(result.speakers))
+    if notifications:
+        notify(
+            "Транскрибация завершена",
+            f"{config.input_file.name}: {len(result.entries)} реплик(и), "
+            f"{len(result.speakers)} говорящих",
+        )
 
 
 @app.command()

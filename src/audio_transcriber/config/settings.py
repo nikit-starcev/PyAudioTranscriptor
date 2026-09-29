@@ -76,6 +76,9 @@ class AppConfig:
     use_cache: bool = True
     # Каталог кэша; None — <output_dir>/.cache.
     cache_dir: Path | None = None
+    # Десктоп-уведомление (notify-send) по завершении обработки. Если утилиты
+    # нет — тихий no-op (см. audio_transcriber.utils.notifications).
+    notifications: bool = True
     # Порог низкой уверенности ASR: реплики со средним avg_logprob ниже
     # порога помечаются в txt/docx/json. Логвероятности <= 0.
     low_confidence_threshold: float = DEFAULT_LOW_CONFIDENCE_THRESHOLD
@@ -156,6 +159,9 @@ class AppConfig:
 
         if not isinstance(self.use_cache, bool):
             raise ConfigurationError("USE_CACHE должно быть true или false")
+
+        if not isinstance(self.notifications, bool):
+            raise ConfigurationError("NOTIFICATIONS должно быть true или false")
 
         if isinstance(self.low_confidence_threshold, bool) or not isinstance(
             self.low_confidence_threshold, (int, float)
