@@ -43,13 +43,29 @@ def test_does_not_merge_different_speakers() -> None:
     assert [entry.speaker for entry in merged] == [_SPEAKER_1, _SPEAKER_2]
 
 
-def test_speaker_none_entries_are_not_merged_together() -> None:
+def test_speaker_none_entries_are_merged_together() -> None:
     entries = [
         _entry(0.0, 1.0, "раз", None),
         _entry(1.0, 2.0, "два", None),
+        _entry(2.0, 3.0, "три", None),
     ]
 
     merged = SentenceMerger().merge(entries)
+
+    assert len(merged) == 1
+    assert merged[0].text == "раз два три"
+    assert merged[0].speaker is None
+    assert merged[0].start == 0.0
+    assert merged[0].end == 3.0
+
+
+def test_large_gap_breaks_none_series() -> None:
+    entries = [
+        _entry(0.0, 1.0, "раз", None),
+        _entry(10.0, 11.0, "два", None),
+    ]
+
+    merged = SentenceMerger(max_gap=2.0).merge(entries)
 
     assert [entry.text for entry in merged] == ["раз", "два"]
 

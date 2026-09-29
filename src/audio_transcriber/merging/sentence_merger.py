@@ -31,10 +31,11 @@ def _join_text(left: str, right: str) -> str:
 class SentenceMerger:
     """Объединяет соседние реплики одного говорящего в одну.
 
-    Склейка выполняется, только когда у двух соседних реплик один и тот же
-    **непустой** говорящий и пауза между ними не превышает ``max_gap``.
-    Реплики без говорящего (``speaker is None``) не склеиваются между собой и
-    не присоединяются к именованным — они остаются отдельными строками.
+    Склейка выполняется, когда у двух соседних реплик один и тот же говорящий
+    (в т.ч. когда обе реплики **без говорящего**, ``speaker is None`` —
+    например, при ``--no-diarization``) и пауза между ними не превышает
+    ``max_gap``. Реплики без говорящего не присоединяются к именованным и
+    наоборот.
 
     При склейке ``start`` берётся у первой реплики, ``end`` — у последней,
     тексты соединяются через пробел.
@@ -61,7 +62,11 @@ class SentenceMerger:
         return merged
 
     def _can_merge(self, left: TranscriptEntry, right: TranscriptEntry) -> bool:
+        if left.speaker is None and right.speaker is None:
+            # обе реплики без говорящего — склеиваем в один блок
+            return (right.start - left.end) <= self._max_gap
         if left.speaker is None or right.speaker is None:
+            # не присоединяем реплику без говорящего к именованной и наоборот
             return False
         if left.speaker.id != right.speaker.id:
             return False
