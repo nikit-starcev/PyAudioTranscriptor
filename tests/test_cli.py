@@ -219,7 +219,7 @@ def _capturing_pipeline(captured: dict[str, AppConfig]):
     return fake_run_pipeline
 
 
-def test_transcribe_names_enabled_by_default(
+def test_transcribe_names_disabled_by_default(
     audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     captured: dict[str, AppConfig] = {}
@@ -227,6 +227,23 @@ def test_transcribe_names_enabled_by_default(
     monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
 
     result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 0
+    # экспериментальное определение имён выключено по умолчанию
+    assert captured["config"].llm_extract_names is False
+
+
+def test_transcribe_names_can_be_enabled(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(
+        app,
+        ["transcribe", str(audio_file), "-o", str(tmp_path / "out"), "--llm-names"],
+    )
 
     assert result.exit_code == 0
     assert captured["config"].llm_extract_names is True

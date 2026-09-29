@@ -608,9 +608,9 @@ class TranscriberApp(App):
                             id="llm",
                         )
                     with Horizontal():
-                        yield Label("Определять имена", classes="field-label")
+                        yield Label("Имена (эксперим.)", classes="field-label")
                         yield Switch(
-                            value=_to_bool(self._defaults.get("LLM_EXTRACT_NAMES"), default=True),
+                            value=_to_bool(self._defaults.get("LLM_EXTRACT_NAMES"), default=False),
                             id="llm_names",
                         )
                     with Horizontal():

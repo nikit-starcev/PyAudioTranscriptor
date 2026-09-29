@@ -102,7 +102,7 @@ def test_build_config_uses_safe_defaults_without_env(
     assert config.device is Device.AUTO
     assert config.export_formats == (ExportFormat.TXT,)
     assert config.llm_enabled is False
-    assert config.llm_extract_names is True
+    assert config.llm_extract_names is False
 
 
 def test_queue_controller_reuses_row_without_duplicates() -> None:

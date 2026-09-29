@@ -217,8 +217,15 @@ class _NamesAndTermsClient:
         pass
 
 
-def test_run_llm_postprocess_extracts_names_by_default(tmp_path: Path, audio_file: Path) -> None:
-    config = AppConfig(input_file=audio_file, output_dir=tmp_path / "out", llm_enabled=True)
+def test_run_llm_postprocess_extracts_names_when_enabled(
+    tmp_path: Path, audio_file: Path
+) -> None:
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        llm_enabled=True,
+        llm_extract_names=True,
+    )
     entries = _entries()
 
     new_entries, speakers, participants = run_llm_postprocess(
@@ -234,7 +241,12 @@ def test_run_llm_postprocess_extracts_names_by_default(tmp_path: Path, audio_fil
 
 def test_run_llm_postprocess_participants_only_renamed(tmp_path: Path, audio_file: Path) -> None:
     """Участники — только говорящие с именем; «Спикер N» без имени не попадает."""
-    config = AppConfig(input_file=audio_file, output_dir=tmp_path / "out", llm_enabled=True)
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        llm_enabled=True,
+        llm_extract_names=True,
+    )
 
     _, speakers, participants = run_llm_postprocess(
         config, _entries(), _speakers(), client=_NamesAndTermsClient()
@@ -373,7 +385,12 @@ def test_run_llm_postprocess_does_not_close_external_client(
 ) -> None:
     """Клиент, переданный снаружи, принадлежит вызывающему — не закрываем."""
     client = _EmptyChatClient()
-    config = AppConfig(input_file=audio_file, output_dir=tmp_path / "out", llm_enabled=True)
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        llm_enabled=True,
+        llm_extract_names=True,
+    )
 
     run_llm_postprocess(config, _entries(), _speakers(), client=client)
 
@@ -509,6 +526,7 @@ def test_run_llm_postprocess_passes_context_chunk_limit(
         output_dir=tmp_path / "out",
         llm_enabled=True,
         llm_context_size=8192,
+        llm_extract_names=True,
     )
 
     run_llm_postprocess(config, _entries(), _speakers(), client=_FakeClient())

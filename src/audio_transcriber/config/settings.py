@@ -63,7 +63,7 @@ class AppConfig:
     llm_context_size: int = DEFAULT_LLM_CONTEXT_SIZE
     llm_suggest_terms: bool = False
     # Определять имена участников через LLM (независимо от правки терминов).
-    llm_extract_names: bool = True
+    llm_extract_names: bool = False
     # Инвариант: после нормализации — всегда кортеж Path. Конструктор
     # принимает одиночный путь, строку со списком (через запятую/os.pathsep)
     # или последовательность (см. ``normalize_glossary_paths_tuple``).

@@ -108,8 +108,13 @@ def test_llm_context_must_be_at_least_128(audio_file: Path) -> None:
         AppConfig(input_file=audio_file, llm_context_size=64)
 
 
-def test_llm_extract_names_defaults_to_true(audio_file: Path) -> None:
-    assert AppConfig(input_file=audio_file).llm_extract_names is True
+def test_llm_extract_names_defaults_to_false(audio_file: Path) -> None:
+    # определение имён — экспериментальная функция, по умолчанию выключена
+    assert AppConfig(input_file=audio_file).llm_extract_names is False
+
+
+def test_llm_extract_names_accepts_explicit_true(audio_file: Path) -> None:
+    assert AppConfig(input_file=audio_file, llm_extract_names=True).llm_extract_names is True
 
 
 def test_llm_extract_names_accepts_explicit_false(audio_file: Path) -> None:
