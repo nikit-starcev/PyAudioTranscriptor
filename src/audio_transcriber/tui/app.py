@@ -886,6 +886,7 @@ class TranscriberApp(App):
     #search_bar { height: 3; }
     #search { width: 1fr; }
     #search_status { width: auto; padding: 0 1; content-align: left middle; color: $text-muted; }
+    #legend { width: auto; padding: 0 2; content-align: left middle; color: $text-muted; }
     #results { height: 1fr; }
     #results.hidden { display: none; }
     #status { height: 1; color: $text-muted; }
@@ -1200,6 +1201,10 @@ class TranscriberApp(App):
                 with Horizontal(id="search_bar"):
                     yield Input(placeholder="Поиск по стенограмме (/)…", id="search")
                     yield Static("", id="search_status")
+                    yield Static(
+                        "Метки:  ⚠ низкая уверенность  ·  ⇄ наложение речи",
+                        id="legend",
+                    )
                 yield DataTable(id="results", zebra_stripes=True)
                 yield Static("", id="status")
 
