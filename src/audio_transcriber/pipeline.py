@@ -41,6 +41,7 @@ from audio_transcriber.diarization.pyannote_engine import (
     DEFAULT_PIPELINE as DIARIZATION_PIPELINE,
 )
 from audio_transcriber.diarization.pyannote_engine import PyannoteSpeakerDiarizer
+from audio_transcriber.diarization.samples import extract_speaker_samples
 from audio_transcriber.domain.enums import AsrBackend, Device
 from audio_transcriber.domain.models import SpeakerOverlap, TranscriptionResult
 from audio_transcriber.export.factory import create_exporter
@@ -272,16 +273,14 @@ def run_pipeline(
         # Enrollment: сопоставляем говорящих с именами по образцам голоса.
         # Делаем это здесь, пока доступно аудио (денойзенный файл закрывается
         # в finally). Приоритет у enrollment-имён выше ``--speaker-name``.
-        if (
-            config.diarization_enabled
-            and config.speaker_references
-            and speaker_segments
-        ):
+        # К явным образцам добавляются файлы библиотеки ``voices_dir``.
+        references = config.resolved_speaker_references()
+        if config.diarization_enabled and references and speaker_segments:
             logger.info("Сопоставление говорящих с образцами голоса (enrollment)...")
             emit(ProgressEvent("diarization", "Сопоставление голосов", fraction=None))
             enrollment_names = assign_speaker_names(
                 speaker_segments=speaker_segments,
-                references=config.speaker_references,
+                references=references,
                 audio_path=audio_path,
                 min_similarity=config.enrollment_min_similarity,
                 device=diarization_device,
@@ -375,6 +374,30 @@ def run_pipeline(
             write_timeline(result, timeline_path)
         else:
             logger.info("Таймлайн пропущен — нет данных о говорящих")
+
+    if config.export_speaker_samples:
+        # Образцы голоса извлекаем из того же аудио, что шло в ASR/диаризацию
+        # (денойзенный файл), если оно ещё доступно; иначе — из исходного.
+        # Любая ошибка здесь не должна ронять конвейер: экспорт уже выполнен.
+        sample_audio = audio_path if audio_path.is_file() else config.input_file
+        emit(ProgressEvent("export", "Образцы голоса", fraction=None))
+        try:
+            written = extract_speaker_samples(
+                result,
+                audio_path=sample_audio,
+                output_dir=config.output_dir,
+            )
+        except Exception as exc:  # noqa: BLE001 — мягкая деградация
+            logger.warning("Образцы голоса не сохранены: %s", exc)
+            written = {}
+        if written:
+            logger.info(
+                "Образцы голоса сохранены (%d): %s",
+                len(written),
+                ", ".join(path.name for path in written.values()),
+            )
+        else:
+            logger.info("Образцы голоса пропущены — нет чистой речи говорящих")
 
     emit(ProgressEvent("done", "Готово", fraction=1.0))
     return result

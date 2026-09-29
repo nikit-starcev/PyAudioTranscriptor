@@ -152,6 +152,24 @@ def transcribe(
             f"По умолчанию {DEFAULT_ENROLLMENT_MIN_SIMILARITY}."
         ),
     ),
+    voices_dir: Path | None = typer.Option(
+        None,
+        "--voices-dir",
+        help=(
+            "Каталог-библиотека образцов голоса: каждый <Имя>.wav считается "
+            "образцом участника и добавляется к --speaker-reference. "
+            "По умолчанию ./voices (если каталог существует)."
+        ),
+    ),
+    speaker_samples: bool = typer.Option(
+        True,
+        "--speaker-samples/--no-speaker-samples",
+        help=(
+            "Сохранять по одному образцу голоса на говорящего рядом с "
+            "результатами (<файл>.speakers/<Имя>.wav) для последующего "
+            "enrollment. По умолчанию включено."
+        ),
+    ),
     hf_token: str | None = typer.Option(
         None,
         "--hf-token",
@@ -483,6 +501,8 @@ def transcribe(
             speaker_names=AppConfig.parse_speaker_names(speaker_name),
             speaker_references=AppConfig.parse_speaker_references(speaker_reference),
             enrollment_min_similarity=enrollment_min_similarity,
+            voices_dir=voices_dir,
+            export_speaker_samples=speaker_samples,
             hf_token=hf_token,
             pyannote_local_model=pyannote_local_model,
             initial_prompt=initial_prompt,
@@ -542,14 +562,21 @@ def transcribe(
             logger.info("Количество говорящих: %s", config.num_speakers or "автоопределение")
         if config.speaker_names:
             logger.info("Пользовательские имена говорящих: %s", config.speaker_names)
-        if config.speaker_references:
+        resolved_references = config.resolved_speaker_references()
+        if resolved_references:
             logger.info(
                 "Образцы голоса (enrollment): %s",
                 ", ".join(
-                    f"{name} ({len(paths)})" for name, paths in config.speaker_references.items()
+                    f"{name} ({len(paths)})" for name, paths in resolved_references.items()
                 ),
             )
             logger.info("Порог сопоставления по голосу: %.2f", config.enrollment_min_similarity)
+        if config.voices_dir is not None or config.resolved_voices_dir().is_dir():
+            logger.info("Библиотека голосов: %s", config.resolved_voices_dir())
+        logger.info(
+            "Сохранение образцов голоса: %s",
+            "включено" if config.export_speaker_samples else "выключено",
+        )
         logger.info(
             "Очистка неречевых артефактов: %s",
             "включена" if config.clean_artifacts else "выключена",

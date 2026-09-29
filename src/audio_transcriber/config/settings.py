@@ -22,6 +22,7 @@ from audio_transcriber.config.defaults import (
 from audio_transcriber.config.defaults import (
     DEFAULT_ENROLLMENT_MIN_SIMILARITY,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
+    DEFAULT_VOICES_DIR,
 )
 from audio_transcriber.correction.defaults import (
     DEFAULT_CORRECTION_MAX_CANDIDATES,
@@ -78,6 +79,14 @@ class AppConfig:
     # образцов на одно имя усредняются. Инвариант после нормализации — кортеж.
     speaker_references: dict[str, tuple[Path, ...]] = field(default_factory=dict)
     enrollment_min_similarity: float = DEFAULT_ENROLLMENT_MIN_SIMILARITY
+    # Каталог-библиотека образцов голоса: каждый ``<Имя>.wav`` трактуется как
+    # образец участника и добавляется к ``speaker_references``. ``None`` —
+    # использовать ``./voices`` (если каталог существует). Отсутствие каталога —
+    # предупреждение, не ошибка.
+    voices_dir: Path | None = None
+    # Сохранять по одному образцу голоса на говорящего рядом с результатами
+    # (``<output>/<файл>.speakers/<Имя>.wav``) для последующего enrollment.
+    export_speaker_samples: bool = True
     hf_token: str | None = None
     pyannote_local_model: Path | None = None
     initial_prompt: str | None = None
@@ -200,6 +209,15 @@ class AppConfig:
         if not isinstance(self.timeline, bool):
             raise ConfigurationError("TIMELINE должно быть true или false")
 
+        if not isinstance(self.export_speaker_samples, bool):
+            raise ConfigurationError("EXPORT_SPEAKER_SAMPLES должно быть true или false")
+
+        if self.voices_dir is not None and not self.voices_dir.is_dir():
+            logger.warning(
+                "Каталог библиотеки голосов не найден: %s — образцы из него не будут подхвачены",
+                self.voices_dir,
+            )
+
         if isinstance(self.low_confidence_threshold, bool) or not isinstance(
             self.low_confidence_threshold, (int, float)
         ):
@@ -279,6 +297,26 @@ class AppConfig:
     def resolved_cache_dir(self) -> Path:
         """Каталог постадийного кэша: ``cache_dir`` или ``<output_dir>/.cache``."""
         return self.cache_dir if self.cache_dir is not None else self.output_dir / ".cache"
+
+    def resolved_voices_dir(self) -> Path:
+        """Каталог-библиотека образцов голоса: ``voices_dir`` или ``./voices``."""
+        return self.voices_dir if self.voices_dir is not None else Path(DEFAULT_VOICES_DIR)
+
+    def resolved_speaker_references(self) -> dict[str, tuple[Path, ...]]:
+        """Явные образцы голоса плюс образцы из библиотеки ``voices_dir``.
+
+        Порядок и дедупликация — см.
+        :func:`audio_transcriber.diarization.voices.merge_references`.
+        """
+        from audio_transcriber.diarization.voices import (
+            collect_voice_library,
+            merge_references,
+        )
+
+        return merge_references(
+            self.speaker_references,
+            collect_voice_library(self.resolved_voices_dir()),
+        )
 
     def ensure_output_dir(self) -> None:
         """Создаёт директорию результатов, если её ещё нет.

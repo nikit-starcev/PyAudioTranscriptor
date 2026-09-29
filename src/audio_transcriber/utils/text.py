@@ -14,6 +14,25 @@ from difflib import SequenceMatcher
 # Выделяет «слова» без цифр и знаков препинания (Unicode-буквы).
 WORD_PATTERN = re.compile(r"[^\W\d_]+", re.UNICODE)
 
+#: Символы, недопустимые в именах файлов (Windows/POSIX), и управляющие коды.
+_FILENAME_FORBIDDEN = frozenset('/\\:*?"<>|')
+
+
+def sanitize_filename(name: str, *, fallback: str = "speaker") -> str:
+    """Преобразует произвольный текст в безопасное имя файла (без расширения).
+
+    Запрещённые символы (``/ \\ : * ? " < > |``) и управляющие символы
+    заменяются на ``_``; пробелы и точки по краям срезаются (иначе Windows не
+    создаст файл). Пустой результат заменяется на ``fallback``. Кириллица и
+    прочие буквы сохраняются — это имя говорящего, а не технический
+    идентификатор.
+    """
+    cleaned = "".join(
+        "_" if char in _FILENAME_FORBIDDEN or ord(char) < 32 else char for char in name
+    )
+    cleaned = cleaned.strip().strip(". ")
+    return cleaned or fallback
+
 
 def match_case(original: str, replacement: str, *, acronym: bool = False) -> str:
     """Сохраняет регистр исходного слова у замены.

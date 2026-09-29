@@ -77,6 +77,8 @@ if [ -n "${SPEAKER_REFERENCES:-}" ]; then
     done
 fi
 [ -n "${ENROLLMENT_MIN_SIMILARITY:-}" ] && ARGS+=(--enrollment-min-similarity "$ENROLLMENT_MIN_SIMILARITY")
+[ -n "${VOICES_DIR:-}" ] && ARGS+=(--voices-dir "$VOICES_DIR")
+[ "${EXPORT_SPEAKER_SAMPLES:-true}" = "false" ] && ARGS+=(--no-speaker-samples)
 
 [ -n "${HF_TOKEN:-}" ] && ARGS+=(--hf-token "$HF_TOKEN")
 [ -n "${PYANNOTE_LOCAL_MODEL:-}" ] && ARGS+=(--pyannote-local-model "$PYANNOTE_LOCAL_MODEL")

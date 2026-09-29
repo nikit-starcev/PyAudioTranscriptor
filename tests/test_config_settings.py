@@ -414,3 +414,81 @@ def test_timeline_accepts_explicit_false(audio_file: Path) -> None:
 def test_timeline_must_be_boolean(audio_file: Path) -> None:
     with pytest.raises(ConfigurationError):
         AppConfig(input_file=audio_file, timeline="yes")  # type: ignore[arg-type]
+
+
+# --- Пакет 8 «образцы голоса и библиотека» ---------------------------------
+
+
+def test_export_speaker_samples_defaults_to_true(audio_file: Path) -> None:
+    assert AppConfig(input_file=audio_file).export_speaker_samples is True
+
+
+def test_export_speaker_samples_can_be_disabled(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file, export_speaker_samples=False)
+
+    assert config.export_speaker_samples is False
+
+
+def test_export_speaker_samples_must_be_boolean(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, export_speaker_samples="yes")  # type: ignore[arg-type]
+
+
+def test_voices_dir_defaults_to_none(audio_file: Path) -> None:
+    assert AppConfig(input_file=audio_file).voices_dir is None
+
+
+def test_resolved_voices_dir_defaults_to_voices(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file)
+
+    assert config.resolved_voices_dir() == Path("voices")
+
+
+def test_resolved_voices_dir_honors_explicit_value(tmp_path: Path, audio_file: Path) -> None:
+    custom = tmp_path / "my-voices"
+    config = AppConfig(input_file=audio_file, voices_dir=custom)
+
+    assert config.resolved_voices_dir() == custom
+
+
+def test_voices_dir_missing_warns(
+    tmp_path: Path, audio_file: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level("WARNING"):
+        AppConfig(input_file=audio_file, voices_dir=tmp_path / "missing-voices")
+
+    assert any("библиотеки голосов" in record.message for record in caplog.records)
+
+
+def test_resolved_speaker_references_merges_library(tmp_path: Path, audio_file: Path) -> None:
+    explicit = tmp_path / "explicit.wav"
+    explicit.write_bytes(b"")
+    voices = tmp_path / "voices"
+    voices.mkdir()
+    library_file = voices / "Мария.wav"
+    library_file.write_bytes(b"")
+
+    config = AppConfig(
+        input_file=audio_file,
+        speaker_references={"Иван": explicit},
+        voices_dir=voices,
+    )
+
+    assert config.resolved_speaker_references() == {
+        "Иван": (explicit,),
+        "Мария": (library_file,),
+    }
+
+
+def test_resolved_speaker_references_without_library_is_explicit(
+    tmp_path: Path, audio_file: Path
+) -> None:
+    explicit = tmp_path / "explicit.wav"
+    explicit.write_bytes(b"")
+    config = AppConfig(
+        input_file=audio_file,
+        speaker_references={"Иван": explicit},
+        voices_dir=tmp_path / "absent",
+    )
+
+    assert config.resolved_speaker_references() == {"Иван": (explicit,)}

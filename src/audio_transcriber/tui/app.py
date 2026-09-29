@@ -15,7 +15,7 @@ import logging
 import queue as queue_module
 import time
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import ClassVar, NamedTuple
@@ -55,6 +55,8 @@ from audio_transcriber.correction.defaults import (
     DEFAULT_CORRECTION_MIN_SIMILARITY,
     DEFAULT_CORRECTION_MIN_WORD_LENGTH,
 )
+from audio_transcriber.diarization.samples import find_speaker_samples, samples_directory
+from audio_transcriber.diarization.voices import save_speaker_sample
 from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
 from audio_transcriber.domain.models import TranscriptionResult
 from audio_transcriber.export.factory import create_exporter
@@ -69,6 +71,7 @@ from audio_transcriber.progress import ProgressEvent
 from audio_transcriber.utils.config_env import load_config_env
 from audio_transcriber.utils.glossary_paths import normalize_glossary_paths_tuple
 from audio_transcriber.utils.notifications import notify
+from audio_transcriber.utils.playback import play_audio_file
 
 logger = logging.getLogger(__name__)
 
@@ -501,6 +504,9 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
     enrollment_min_similarity = _to_float(
         enrollment_min_raw or None, DEFAULT_ENROLLMENT_MIN_SIMILARITY
     )
+    export_speaker_samples = app.query_one("#speaker_samples", Switch).value
+    voices_dir_raw = app.query_one("#voices_dir", Input).value.strip()
+    voices_dir = Path(voices_dir_raw) if voices_dir_raw else None
 
     hotwords = app.query_one("#hotwords", Input).value.strip() or None
     output_dir = app.query_one("#output_dir", Input).value.strip() or "output"
@@ -544,6 +550,8 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
         speaker_names=speaker_names,
         speaker_references=speaker_references,
         enrollment_min_similarity=enrollment_min_similarity,
+        voices_dir=voices_dir,
+        export_speaker_samples=export_speaker_samples,
         hf_token=defaults.get("HF_TOKEN") or None,
         pyannote_local_model=pyannote_local_model,
         initial_prompt=defaults.get("INITIAL_PROMPT") or None,
@@ -606,6 +614,8 @@ class SpeakerEditorScreen(ModalScreen[TranscriptionResult | None]):
         ("escape", "cancel", "Отмена"),
         ("r", "rename", "Переименовать"),
         ("m", "merge", "Объединить"),
+        ("p", "play_sample", "Проиграть"),
+        ("l", "save_to_library", "В библиотеку"),
         ("s", "save", "Сохранить"),
     ]
 
@@ -620,15 +630,25 @@ class SpeakerEditorScreen(ModalScreen[TranscriptionResult | None]):
     #rename_row, #merge_row, #editor_actions { height: auto; margin-top: 1; }
     #new_name, #merge_target { width: 1fr; }
     #rename, #merge { margin-left: 1; }
+    #editor_actions Button { margin-right: 1; }
     #editor_status { height: 1; margin-top: 1; color: $text-muted; }
     """
 
-    def __init__(self, result: TranscriptionResult) -> None:
+    def __init__(
+        self,
+        result: TranscriptionResult,
+        *,
+        samples: Mapping[str, Path] | None = None,
+        voices_dir: Path | None = None,
+    ) -> None:
         super().__init__()
         # Копия: Esc не должен менять исходный результат приложения.
         self._result = replace(
             result, speakers=list(result.speakers), entries=list(result.entries)
         )
+        # Образцы голоса говорящих (speaker_id -> WAV) и куда их сохранять.
+        self._samples: dict[str, Path] = dict(samples or {})
+        self._voices_dir = voices_dir
         self._speaker_ids: list[str] = []
 
     @property
@@ -647,7 +667,9 @@ class SpeakerEditorScreen(ModalScreen[TranscriptionResult | None]):
                 yield Select([], id="merge_target", allow_blank=True, prompt="Куда объединить")
                 yield Button("Объединить [m]", id="merge")
             with Horizontal(id="editor_actions"):
-                yield Button("Сохранить и экспорт [s]", id="save", variant="primary")
+                yield Button("Проиграть [p]", id="play_sample")
+                yield Button("В библиотеку [l]", id="save_to_library")
+                yield Button("Сохранить [s]", id="save", variant="primary")
                 yield Button("Отмена [Esc]", id="cancel")
             yield Static("", id="editor_status")
         yield Footer()
@@ -726,6 +748,83 @@ class SpeakerEditorScreen(ModalScreen[TranscriptionResult | None]):
         value = self.query_one("#merge_target", Select).value
         self.merge_selected_into(value if isinstance(value, str) else None)
 
+    def _selected_sample(self) -> Path | None:
+        """Путь к образцу голоса выбранного говорящего (или ``None``)."""
+        speaker_id = self.selected_speaker_id()
+        if speaker_id is None:
+            return None
+        sample = self._samples.get(speaker_id)
+        if sample is None:
+            return None
+        try:
+            return sample if sample.is_file() else None
+        except OSError:
+            return None
+
+    def _selected_display_name(self) -> str:
+        speaker_id = self.selected_speaker_id() or ""
+        return next(
+            (
+                speaker.display_name
+                for speaker in self._result.speakers
+                if speaker.id == speaker_id
+            ),
+            speaker_id,
+        )
+
+    def action_play_sample(self) -> None:
+        """Неблокирующе проигрывает образец голоса выбранного говорящего (``p``)."""
+        if self.selected_speaker_id() is None:
+            self._set_status("Не выбран говорящий")
+            return
+        sample = self._selected_sample()
+        if sample is None:
+            self.app.notify(
+                "Для выбранного говорящего нет образца голоса",
+                severity="warning",
+                timeout=6,
+            )
+            return
+        if play_audio_file(sample):
+            self._set_status(f"Проигрываю образец: {sample.name}")
+        else:
+            self.app.notify(
+                "Аудио-плеер не найден (ffplay/paplay/aplay/mpv/afplay) — "
+                "установите один из них, чтобы прослушивать образцы",
+                severity="warning",
+                timeout=8,
+            )
+
+    def action_save_to_library(self) -> None:
+        """Копирует образец выбранного говорящего в библиотеку ``voices_dir`` (``l``)."""
+        if self.selected_speaker_id() is None:
+            self._set_status("Не выбран говорящий")
+            return
+        sample = self._selected_sample()
+        if sample is None:
+            self.app.notify(
+                "Для выбранного говорящего нет образца голоса",
+                severity="warning",
+                timeout=6,
+            )
+            return
+        if self._voices_dir is None:
+            self.app.notify(
+                "Библиотека голосов не задана (voices_dir)",
+                severity="warning",
+                timeout=6,
+            )
+            return
+        name = self._selected_display_name()
+        try:
+            target = save_speaker_sample(sample, self._voices_dir, name)
+        except OSError as exc:
+            self.app.notify(
+                f"Не удалось сохранить образец: {exc}", severity="error", timeout=8
+            )
+            return
+        self._set_status(f"Сохранено в библиотеку: {target.name}")
+
     def action_save(self) -> None:
         self.dismiss(self._result)
 
@@ -737,6 +836,10 @@ class SpeakerEditorScreen(ModalScreen[TranscriptionResult | None]):
             self.action_rename()
         elif event.button.id == "merge":
             self.action_merge()
+        elif event.button.id == "play_sample":
+            self.action_play_sample()
+        elif event.button.id == "save_to_library":
+            self.action_save_to_library()
         elif event.button.id == "save":
             self.action_save()
         elif event.button.id == "cancel":
@@ -823,6 +926,10 @@ class TranscriberApp(App):
         # повторного прогона транскрибации.
         self._last_result: TranscriptionResult | None = None
         self._last_config: AppConfig | None = None
+        # Образцы голоса говорящих последнего результата (speaker_id -> WAV),
+        # найденные в <output>/<файл>.speakers/ — для проигрывания и сохранения
+        # в библиотеку из редактора говорящих.
+        self._last_samples: dict[str, Path] = {}
         self._base_config: AppConfig | None = None
 
     # --- очередь (тонкие обёртки над QueueController) ------------------
@@ -959,6 +1066,14 @@ class TranscriberApp(App):
                             id="timeline",
                         )
                     with Horizontal():
+                        yield Label("Образцы голоса (файлы)", classes="field-label")
+                        yield Switch(
+                            value=_to_bool(
+                                self._defaults.get("EXPORT_SPEAKER_SAMPLES"), default=True
+                            ),
+                            id="speaker_samples",
+                        )
+                    with Horizontal():
                         yield Label("Порог уверенности", classes="field-label")
                         yield Input(
                             value=self._defaults.get("LOW_CONFIDENCE_THRESHOLD", "-1.0"),
@@ -1060,6 +1175,13 @@ class TranscriberApp(App):
                                 id="speaker_references",
                             )
                         with Horizontal():
+                            yield Label("Библиотека голосов", classes="field-label")
+                            yield Input(
+                                value=self._defaults.get("VOICES_DIR", ""),
+                                placeholder="voices",
+                                id="voices_dir",
+                            )
+                        with Horizontal():
                             yield Label("Порог голоса", classes="field-label")
                             yield Input(
                                 value=self._defaults.get(
@@ -1138,8 +1260,18 @@ class TranscriberApp(App):
                 timeout=5,
             )
             return
+        voices_dir = (
+            self._last_config.resolved_voices_dir()
+            if self._last_config is not None
+            else None
+        )
         self.push_screen(
-            SpeakerEditorScreen(self._last_result), self._on_speaker_editor_closed
+            SpeakerEditorScreen(
+                self._last_result,
+                samples=self._last_samples,
+                voices_dir=voices_dir,
+            ),
+            self._on_speaker_editor_closed,
         )
 
     # --- сообщения ---
@@ -1192,6 +1324,7 @@ class TranscriberApp(App):
         self._last_result = message.result
         if self._base_config is not None:
             self._last_config = replace(self._base_config, input_file=message.path)
+        self._last_samples = self._collect_samples(message.result)
         self._populate_results(message.result)
         self.query_one("#results", DataTable).remove_class("hidden")
         elapsed = time.time() - (self._run_start_time or time.time())
@@ -1278,6 +1411,13 @@ class TranscriberApp(App):
 
     def _build_config(self, input_file: Path) -> AppConfig:
         return build_config_from_widgets(self, input_file)
+
+    def _collect_samples(self, result: TranscriptionResult) -> dict[str, Path]:
+        """Ищет сохранённые образцы голоса последнего прогона (``<файл>.speakers``)."""
+        if self._last_config is None:
+            return {}
+        directory = samples_directory(self._last_config.output_dir, result.source_path)
+        return find_speaker_samples(result, directory)
 
     def _populate_results(self, result: TranscriptionResult) -> None:
         from audio_transcriber.export.annotations import is_low_confidence

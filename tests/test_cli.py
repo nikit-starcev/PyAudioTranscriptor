@@ -783,3 +783,69 @@ def test_transcribe_no_timeline_flag(
 
     assert result.exit_code == 0
     assert captured["config"].timeline is False
+
+
+# --- Пакет 8 «образцы голоса и библиотека» ---------------------------------
+
+
+def test_transcribe_speaker_samples_enabled_by_default(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 0
+    assert captured["config"].export_speaker_samples is True
+
+
+def test_transcribe_no_speaker_samples_flag(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(
+        app,
+        [
+            "transcribe",
+            str(audio_file),
+            "-o",
+            str(tmp_path / "out"),
+            "--no-speaker-samples",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["config"].export_speaker_samples is False
+
+
+def test_transcribe_voices_dir_is_merged_into_references(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    voices = tmp_path / "voices"
+    voices.mkdir()
+    library_file = voices / "Мария.wav"
+    library_file.write_bytes(b"")
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(
+        app,
+        [
+            "transcribe",
+            str(audio_file),
+            "-o",
+            str(tmp_path / "out"),
+            "--voices-dir",
+            str(voices),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["config"].voices_dir == voices
+    assert captured["config"].resolved_speaker_references() == {"Мария": (library_file,)}
