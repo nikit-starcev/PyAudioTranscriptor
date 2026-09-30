@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from audio_transcriber.config.settings import AppConfig
@@ -24,7 +25,7 @@ from audio_transcriber.domain.models import (
     TranscriptionResult,
 )
 from audio_transcriber.progress import ProgressEvent
-from audio_transcriber.web.app import create_app
+from audio_transcriber.web.app import _resolve_upload_file, create_app
 from audio_transcriber.web.events import JobEventBus
 from audio_transcriber.web.paths import WebPaths
 
@@ -171,6 +172,100 @@ def test_create_job_rejects_path_outside_uploads(client: TestClient, tmp_path: P
     response = client.post("/api/jobs", json={"path": str(outside)})
 
     assert response.status_code == 400
+
+
+def test_files_path_roundtrip_to_job(client: TestClient) -> None:
+    """``GET /api/files`` → ``POST /api/jobs`` с тем же ``path`` даёт 201."""
+    uploaded = _upload(client, "round.mp3", b"abc")
+    files = client.get("/api/files").json()
+    assert [item["name"] for item in files] == ["round.mp3"]
+
+    listed = files[0]["path"]
+    assert Path(listed).is_absolute()
+
+    created = client.post("/api/jobs", json={"path": listed})
+    assert created.status_code == 201
+    assert created.json()["name"] == uploaded["name"]
+
+
+def test_files_path_roundtrip_with_relative_data_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_pipeline, config_builder
+) -> None:
+    """Круговой сценарий работает и при относительном ``web-data``.
+
+    Именно этот случай ломался: ``/api/files`` отдавал относительный путь
+    ``web-data/uploads/x.mp4``, а ``POST /api/jobs`` повторно добавлял каталог.
+    """
+    monkeypatch.chdir(tmp_path)
+    paths = WebPaths(Path("web-data"))
+    app = create_app(
+        paths=paths,
+        pipeline_fn=fake_pipeline,
+        config_builder=config_builder,
+        heartbeat=0.05,
+    )
+    with TestClient(app) as client:
+        _upload(client, "round.mp3", b"abc")
+        listed = client.get("/api/files").json()[0]["path"]
+        assert Path(listed).is_absolute()
+        assert client.post("/api/jobs", json={"path": listed}).status_code == 201
+        # Обратная совместимость: относительная форма с каталогом загрузок.
+        legacy = str(Path("web-data/uploads/round.mp3"))
+        assert client.post("/api/jobs", json={"path": legacy}).status_code == 201
+
+
+def test_delete_file(client: TestClient, web_paths: WebPaths) -> None:
+    _upload(client, "gone.mp3", b"abc")
+
+    response = client.delete("/api/files/gone.mp3")
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted": "gone.mp3"}
+    assert client.get("/api/files").json() == []
+    assert not (web_paths.input_dir / "gone.mp3").exists()
+    # Повторное удаление уже отсутствующего файла.
+    assert client.delete("/api/files/gone.mp3").status_code == 404
+
+
+def test_delete_missing_file(client: TestClient) -> None:
+    assert client.delete("/api/files/nope.mp3").status_code == 404
+
+
+def test_delete_file_rejects_non_media(client: TestClient, web_paths: WebPaths) -> None:
+    web_paths.input_dir.mkdir(parents=True, exist_ok=True)
+    (web_paths.input_dir / "notes.txt").write_text("x", encoding="utf-8")
+
+    assert client.delete("/api/files/notes.txt").status_code == 400
+    assert (web_paths.input_dir / "notes.txt").is_file()
+
+
+def test_delete_file_rejects_path_outside_uploads(
+    web_paths: WebPaths, tmp_path: Path
+) -> None:
+    web_paths.input_dir.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside.mp3"
+    outside.write_bytes(b"x")
+
+    with pytest.raises(HTTPException) as absolute:
+        _resolve_upload_file(web_paths, str(outside))
+    assert absolute.value.status_code == 400
+
+    with pytest.raises(HTTPException) as traversal:
+        _resolve_upload_file(web_paths, "..")
+    assert traversal.value.status_code == 400
+
+
+def test_delete_file_used_by_running_job(
+    client: TestClient, web_paths: WebPaths
+) -> None:
+    _upload(client, "busy.mp3", b"abc")
+    job_id = client.post("/api/jobs", json={"path": "busy.mp3"}).json()["id"]
+    client.app.state.store.update(job_id, status="running")
+
+    response = client.delete("/api/files/busy.mp3")
+
+    assert response.status_code == 409
+    assert (web_paths.input_dir / "busy.mp3").is_file()
 
 
 def test_run_job_and_result(client: TestClient) -> None:
@@ -358,6 +453,40 @@ def test_audio_endpoint_supports_range(client: TestClient) -> None:
 def test_delete_job(client: TestClient) -> None:
     uploaded = _upload(client)
     job_id = client.post("/api/jobs", json={"path": uploaded["name"]}).json()["id"]
+
+    assert client.delete(f"/api/jobs/{job_id}").status_code == 200
+    assert client.get(f"/api/jobs/{job_id}").status_code == 404
+
+
+def test_delete_job_removes_artifacts(
+    client: TestClient, web_paths: WebPaths
+) -> None:
+    uploaded = _upload(client)
+    job_id = client.post("/api/jobs", json={"path": uploaded["name"]}).json()["id"]
+    result_path = web_paths.results_dir / f"{job_id}.json"
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text("{}", encoding="utf-8")
+    stage_dir = web_paths.results_dir / job_id
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    (stage_dir / "stage.wav").write_bytes(b"wav")
+    client.app.state.store.update(job_id, result_path=str(result_path))
+
+    assert client.delete(f"/api/jobs/{job_id}").status_code == 200
+
+    assert not result_path.exists()
+    assert not stage_dir.exists()
+    assert client.get(f"/api/jobs/{job_id}").status_code == 404
+
+
+def test_delete_job_with_missing_artifacts(
+    client: TestClient, web_paths: WebPaths
+) -> None:
+    uploaded = _upload(client)
+    job_id = client.post("/api/jobs", json={"path": uploaded["name"]}).json()["id"]
+    # ``result_path`` указывает на несуществующий файл — удаление не падает.
+    client.app.state.store.update(
+        job_id, result_path=str(web_paths.results_dir / "ghost.json")
+    )
 
     assert client.delete(f"/api/jobs/{job_id}").status_code == 200
     assert client.get(f"/api/jobs/{job_id}").status_code == 404

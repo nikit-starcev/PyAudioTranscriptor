@@ -308,6 +308,22 @@ function App() {
     [refreshFiles],
   )
 
+  const deleteFile = useCallback(
+    async (name: string) => {
+      if (!window.confirm(`Удалить загруженный файл «${name}»?`)) return
+      setError(null)
+      try {
+        await api<{ deleted: string }>(`/api/files/${encodeURIComponent(name)}`, {
+          method: 'DELETE',
+        })
+        await refreshFiles()
+      } catch (cause) {
+        setError(errorMessage(cause))
+      }
+    },
+    [refreshFiles],
+  )
+
   const patchSpeakers = useCallback(
     async (jobId: string, body: Record<string, unknown>) => {
       const updated = await api<TranscriptResult>(`/api/jobs/${jobId}/speakers`, {
@@ -518,6 +534,13 @@ function App() {
                       className="rounded-md border border-slate-300 px-3 py-1 text-xs hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:hover:bg-slate-800"
                     >
                       В очередь
+                    </button>
+                    <button
+                      onClick={() => void deleteFile(file.name)}
+                      title="Удалить загруженный файл"
+                      className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:bg-red-50 hover:text-red-600 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-red-950/50 dark:hover:text-red-300"
+                    >
+                      Удалить
                     </button>
                   </li>
                 ))}

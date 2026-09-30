@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import shutil
 import tempfile
 import threading
 import uuid
@@ -588,6 +589,28 @@ def register_api(
     async def upload_file(file: Annotated[UploadFile, File()]) -> dict[str, object]:
         return await _save_upload(file, paths.input_dir)
 
+    @router.delete("/files/{name}")
+    def delete_file(name: str) -> dict[str, object]:
+        """Удаляет загруженный файл внутри каталога загрузок."""
+        target = _resolve_upload_file(paths, name)
+        for job in store.list():
+            if job.status == STATUS_RUNNING and _same_file(
+                Path(job.source_path), target
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Файл используется выполняющейся задачей",
+                )
+        try:
+            target.unlink()
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Файл не найден") from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Не удалось удалить файл: {exc}"
+            ) from exc
+        return {"deleted": target.name}
+
     @router.get("/jobs")
     def list_jobs() -> list[dict[str, object]]:
         return [job.as_dict() for job in store.list()]
@@ -1139,10 +1162,12 @@ def _list_files(input_dir: Path) -> list[dict[str, object]]:
         try:
             if not path.is_file() or path.suffix.lower() not in MEDIA_EXTENSIONS:
                 continue
+            # Абсолютный путь: клиент шлёт его обратно в ``POST /api/jobs``,
+            # и он должен приниматься независимо от текущего рабочего каталога.
             items.append(
                 {
                     "name": path.name,
-                    "path": str(path),
+                    "path": str(path.resolve()),
                     "size": path.stat().st_size,
                     "duration": _probe_duration(path),
                 }
@@ -1166,7 +1191,7 @@ async def _save_upload(file: UploadFile, input_dir: Path) -> dict[str, object]:
         raise HTTPException(status_code=500, detail=f"Не удалось сохранить файл: {exc}") from exc
     return {
         "name": target.name,
-        "path": str(target),
+        "path": str(target.resolve()),
         "size": target.stat().st_size,
         "duration": None,
     }
@@ -1187,23 +1212,85 @@ def _unique_path(directory: Path, name: str) -> Path:
 
 
 def _resolve_input_path(paths: WebPaths, raw: str) -> Path:
+    """Приводит присланный клиентом путь к файлу внутри каталога загрузок.
+
+    Принимает несколько форм, чтобы круговой сценарий «``GET /api/files`` →
+    ``POST /api/jobs``» был надёжным:
+
+    * абсолютный путь (``/data/web-data/uploads/x.mp4``);
+    * простое имя файла (``x.mp4``);
+    * относительный путь, уже содержащий каталог загрузок
+      (``web-data/uploads/x.mp4``) — например, от старых версий SPA.
+
+    Любой вариант обязан после разрешения лежать внутри каталога загрузок;
+    иначе — ``400``. Существующий путь вне каталога не принимается никогда.
+    """
     value = raw.strip()
     if not value:
         raise HTTPException(status_code=400, detail="Не указан путь к файлу")
-    candidate = Path(value).expanduser()
-    if not candidate.is_absolute():
-        candidate = paths.input_dir / candidate
     try:
-        candidate = candidate.resolve()
+        input_root = paths.input_dir.resolve()
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Каталог загрузок недоступен: {exc}"
+        ) from exc
+    candidate = Path(value).expanduser()
+    candidates: list[Path] = []
+    if candidate.is_absolute():
+        candidates.append(candidate)
+    else:
+        candidates.append(paths.input_dir / candidate)
+        prefix = paths.input_dir.parts
+        parts = candidate.parts
+        if len(parts) > len(prefix) and parts[: len(prefix)] == prefix:
+            candidates.append(paths.input_dir / Path(*parts[len(prefix) :]))
+    inside = False
+    for item in candidates:
+        try:
+            resolved = item.resolve()
+        except OSError:
+            continue
+        if not resolved.is_relative_to(input_root):
+            continue
+        inside = True
+        if resolved.is_file():
+            return resolved
+    if inside:
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    raise HTTPException(
+        status_code=400, detail="Файл должен находиться в каталоге загрузок"
+    )
+
+
+def _resolve_upload_file(paths: WebPaths, name: str) -> Path:
+    """Разрешает имя файла загрузки для удаления (безопасно по путям)."""
+    value = name.strip()
+    if not value:
+        raise HTTPException(status_code=400, detail="Не указано имя файла")
+    if Path(value).name != value:
+        raise HTTPException(status_code=400, detail="Некорректное имя файла")
+    try:
+        input_root = paths.input_dir.resolve()
+        candidate = (paths.input_dir / value).resolve()
     except OSError as exc:
         raise HTTPException(status_code=400, detail=f"Некорректный путь: {exc}") from exc
-    if not candidate.is_relative_to(paths.input_dir.resolve()):
+    if not candidate.is_relative_to(input_root):
         raise HTTPException(
             status_code=400, detail="Файл должен находиться в каталоге загрузок"
         )
+    if candidate.suffix.lower() not in MEDIA_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Можно удалять только медиафайлы")
     if not candidate.is_file():
         raise HTTPException(status_code=404, detail="Файл не найден")
     return candidate
+
+
+def _same_file(left: Path, right: Path) -> bool:
+    """Сравнивает два пути по разрешённому виду (устойчиво к относительным)."""
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return str(left) == str(right)
 
 
 def _require_job(store: JobsDB, job_id: str) -> Job:
@@ -1220,8 +1307,15 @@ def _result_path(paths: WebPaths, job: Job) -> Path:
 
 
 def _remove_job_artifacts(paths: WebPaths, job: Job) -> None:
-    """Удаляет JSON-результат и постадийный вывод задачи (безопасно по путям)."""
-    results_root = paths.results_dir.resolve()
+    """Удаляет JSON-результат и постадийный вывод задачи (безопасно по путям).
+
+    Отсутствие файлов и любые ошибки файловой системы не считаются сбоем
+    удаления задачи: сам факт удаления записи важнее очистки артефактов.
+    """
+    try:
+        results_root = paths.results_dir.resolve()
+    except OSError:
+        return
     for candidate in (_result_path(paths, job), paths.results_dir / job.id):
         try:
             resolved = candidate.resolve()
@@ -1229,21 +1323,13 @@ def _remove_job_artifacts(paths: WebPaths, job: Job) -> None:
             continue
         if not resolved.is_relative_to(results_root):
             continue
-        if resolved.is_file():
-            resolved.unlink(missing_ok=True)
-        elif resolved.is_dir():
-            for child in sorted(resolved.rglob("*"), reverse=True):
-                try:
-                    if child.is_file():
-                        child.unlink(missing_ok=True)
-                    elif child.is_dir():
-                        child.rmdir()
-                except OSError:
-                    continue
-            try:
-                resolved.rmdir()
-            except OSError:
-                continue
+        try:
+            if resolved.is_file() or resolved.is_symlink():
+                resolved.unlink(missing_ok=True)
+            elif resolved.is_dir():
+                shutil.rmtree(resolved, ignore_errors=True)
+        except OSError:
+            continue
 
 
 def _probe_duration(path: Path) -> float | None:
