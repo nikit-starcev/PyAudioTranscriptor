@@ -323,6 +323,9 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # Подвешенные задачи прошлого процесса (running/queued вне активного
+        # набора воркера) помечаем как error ещё до приёма запросов.
+        runner.reconcile_orphans()
         runner.start()
         try:
             yield
@@ -406,6 +409,17 @@ def register_api(
 
     def _effective_token() -> str | None:
         return effective_hf_token(secrets_store, env_defaults())
+
+    def job_payload(job: Job) -> dict[str, object]:
+        """Представление задачи с признаком «обрабатывается этим воркером».
+
+        ``active=False`` у ``running``-задачи означает, что её никто не ведёт
+        (осиротевшая): клиенту не стоит показывать «живой» прогресс и можно
+        предлагать удаление/перезапуск.
+        """
+        payload = job.as_dict()
+        payload["active"] = runner.is_active(job.id)
+        return payload
 
     register_glossary_routes(router, db_path=_glossary_db_path)
 
@@ -624,7 +638,7 @@ def register_api(
 
     @router.get("/jobs")
     def list_jobs() -> list[dict[str, object]]:
-        return [job.as_dict() for job in store.list()]
+        return [job_payload(job) for job in store.list()]
 
     @router.post("/jobs", status_code=201)
     def create_job(payload: CreateJobRequest) -> dict[str, object]:
@@ -632,23 +646,23 @@ def register_api(
         job = store.create(
             uuid.uuid4().hex, source, num_speakers=payload.num_speakers
         )
-        return job.as_dict()
+        return job_payload(job)
 
     @router.patch("/jobs/{job_id}")
     def update_job(job_id: str, payload: UpdateJobRequest) -> dict[str, object]:
         """Меняет число говорящих задачи (``null`` — авто) до/после запуска."""
         job = _require_job(store, job_id)
-        if job.status == STATUS_RUNNING:
+        if job.status == STATUS_RUNNING and runner.is_active(job_id):
             raise HTTPException(status_code=409, detail="Задача уже выполняется")
         if "num_speakers" not in payload.model_fields_set:
             raise HTTPException(status_code=400, detail="Нет полей для обновления")
         updated = store.update(job_id, num_speakers=payload.num_speakers)
-        return updated.as_dict() if updated is not None else job.as_dict()
+        return job_payload(updated) if updated is not None else job_payload(job)
 
     @router.get("/jobs/{job_id}")
     def job_details(job_id: str) -> dict[str, object]:
         job = _require_job(store, job_id)
-        payload = job.as_dict()
+        payload = job_payload(job)
         payload["summary"] = None
         result = load_result_file(_result_path(paths, job))
         if result is not None:
@@ -658,7 +672,7 @@ def register_api(
     @router.post("/jobs/{job_id}/run")
     def run_job(job_id: str) -> dict[str, object]:
         job = _require_job(store, job_id)
-        if job.status == STATUS_RUNNING:
+        if job.status == STATUS_RUNNING and runner.is_active(job_id):
             raise HTTPException(status_code=409, detail="Задача уже выполняется")
         source = Path(job.source_path)
         if not source.is_file():
@@ -677,12 +691,14 @@ def register_api(
         if not runner.submit(job_id, source):
             raise HTTPException(status_code=409, detail="Задача уже в очереди")
         updated = store.get(job_id)
-        return updated.as_dict() if updated is not None else job.as_dict()
+        return job_payload(updated) if updated is not None else job_payload(job)
 
     @router.delete("/jobs/{job_id}")
     def delete_job(job_id: str) -> dict[str, object]:
         job = _require_job(store, job_id)
-        if job.status == STATUS_RUNNING:
+        # 409 — только для реально активного прогона. Осиротевшую ``running``-
+        # задачу (воркер её не ведёт) удаляем вместе с артефактами.
+        if job.status == STATUS_RUNNING and runner.is_active(job_id):
             raise HTTPException(status_code=409, detail="Нельзя удалить выполняющуюся задачу")
         _remove_job_artifacts(paths, job)
         store.delete(job_id)
@@ -959,14 +975,16 @@ def register_api(
             )
 
         async def stream() -> AsyncIterator[str]:
+            active = runner.is_active(job_id)
             yield _sse(
                 {
                     "stage": job.stage or STATUS_QUEUED,
                     "fraction": job.fraction,
                     "message": "Подключено",
                     "status": job.status,
-                    "elapsed": job.total_seconds,
-                    "stage_elapsed": job.stage_elapsed,
+                    "active": active,
+                    "elapsed": job.total_seconds if active else None,
+                    "stage_elapsed": job.stage_elapsed if active else None,
                     "stage_times": [timing.as_dict() for timing in job.stage_times],
                 }
             )

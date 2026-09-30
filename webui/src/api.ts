@@ -40,6 +40,8 @@ export type Job = {
   stage_times: StageTime[]
   total_seconds: number | null
   stage_elapsed: number | null
+  /** Обрабатывается ли задача текущим воркером (false — осиротевшая running). */
+  active: boolean
 }
 
 export type Summary = {
@@ -97,6 +99,7 @@ export type JobEvent = {
   fraction: number | null
   message: string
   status: string
+  active?: boolean
   elapsed?: number | null
   stage_elapsed?: number | null
   stage_times?: StageTime[]

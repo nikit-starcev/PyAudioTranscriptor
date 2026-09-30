@@ -28,6 +28,7 @@ from audio_transcriber.web.results import serialize_result
 from audio_transcriber.web.storage.jobs_db import (
     STATUS_DONE,
     STATUS_ERROR,
+    STATUS_QUEUED,
     STATUS_RUNNING,
     JobsDB,
     utc_now_iso,
@@ -41,6 +42,9 @@ ConfigBuilder = Callable[[str, Path], AppConfig]
 
 #: Функция конвейера (совместима с ``run_pipeline``); подменяется в тестах.
 PipelineFn = Callable[..., TranscriptionResult]
+
+#: Сообщение для «подвешенной» задачи, осиротевшей после перезапуска сервера.
+ORPHAN_ERROR_MESSAGE = "Прервано: сервер был перезапущен"
 
 
 @dataclass(slots=True)
@@ -101,6 +105,59 @@ class JobRunner:
             self._active.add(job_id)
         self._queue.put(JobRequest(job_id=job_id, source_path=source_path))
         return True
+
+    def active_job_ids(self) -> set[str]:
+        """Снимок id задач, реально взятых воркером (в очереди или в работе)."""
+        with self._lock:
+            return set(self._active)
+
+    def is_active(self, job_id: str) -> bool:
+        """Обрабатывается ли задача этим воркером прямо сейчас (или ждёт в очереди)."""
+        with self._lock:
+            return job_id in self._active
+
+    def reconcile_orphans(self, *, message: str = ORPHAN_ERROR_MESSAGE) -> list[str]:
+        """Помечает «подвешенные» задачи как ``error`` и возвращает их id.
+
+        Источник истины — :attr:`_active`: задачи, взятые этим воркером. Всё,
+        что лежит в БД в ``running``/``queued`` вне этого набора, осиротело
+        (например, процесс обработки был убит при перезапуске сервера) и
+        никогда не завершится само. Такие записи переводим в ``error``, чтобы
+        их можно было удалить или запустить заново, и сбрасываем прогресс.
+        Активные задачи не трогаем.
+        """
+        active = self.active_job_ids()
+        reconciled: list[str] = []
+        for job in self._store.list():
+            if job.status not in (STATUS_RUNNING, STATUS_QUEUED):
+                continue
+            if job.id in active:
+                continue
+            self._store.update(
+                job.id,
+                status=STATUS_ERROR,
+                error=message,
+                finished_at=utc_now_iso(),
+                stage=None,
+                fraction=None,
+                stage_started_at=None,
+                stage_times=[],
+            )
+            self._bus.publish(
+                job.id,
+                {
+                    "stage": "error",
+                    "fraction": None,
+                    "message": message,
+                    "status": STATUS_ERROR,
+                },
+            )
+            reconciled.append(job.id)
+        if reconciled:
+            logger.warning(
+                "Осиротевшие задачи помечены как error: %s", ", ".join(reconciled)
+            )
+        return reconciled
 
     def _worker(self) -> None:
         while True:

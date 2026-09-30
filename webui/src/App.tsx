@@ -59,6 +59,12 @@ const STATUS_STYLES: Record<string, string> = {
   cancelled: 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
 }
 
+//: Задача реально выполняется: running и её ведёт воркер (``active``).
+//: Осиротевшая running-задача (active=false) «не идёт» — прогресс не тикает.
+function isLiveJob(job: { status: string; active?: boolean }): boolean {
+  return job.status === 'running' && job.active !== false
+}
+
 // «Говорящих»: пусто — авто (null); иначе целое >= 1. `undefined` — ошибка ввода.
 function parseSpeakerCount(raw: string | undefined): number | null | undefined {
   const trimmed = (raw ?? '').trim()
@@ -171,7 +177,7 @@ function App() {
       const details = await api<JobDetails>(`/api/jobs/${jobId}`)
       setStageTimes(details.stage_times ?? [])
       setFinalTotalSeconds(details.total_seconds)
-      if (details.status === 'running') {
+      if (isLiveJob(details)) {
         setTotalStartedAt(
           details.total_seconds != null ? Date.now() - details.total_seconds * 1000 : Date.now(),
         )
@@ -339,10 +345,11 @@ function App() {
           fraction: details.fraction,
           message: '',
           status: details.status,
+          active: details.active,
         })
         setStageTimes(details.stage_times ?? [])
         setFinalTotalSeconds(details.total_seconds)
-        if (details.status === 'running') {
+        if (isLiveJob(details)) {
           setTotalStartedAt(
             details.total_seconds != null ? Date.now() - details.total_seconds * 1000 : Date.now(),
           )
@@ -675,7 +682,10 @@ function App() {
                     >
                       {STATUS_LABELS[job.status] ?? job.status}
                     </span>
-                    {(job.status === 'queued' || job.status === 'done' || job.status === 'error') && (
+                    {(job.status === 'queued' ||
+                      job.status === 'done' ||
+                      job.status === 'error' ||
+                      (job.status === 'running' && job.active === false)) && (
                       <button
                         onClick={() => void runJob(job.id)}
                         disabled={readinessBlocked}
@@ -685,7 +695,7 @@ function App() {
                         Запустить
                       </button>
                     )}
-                    {job.status !== 'running' && (
+                    {(job.status !== 'running' || job.active === false) && (
                       <button
                         onClick={() => void deleteJob(job.id)}
                         className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:bg-red-50 hover:text-red-600 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-red-950/50 dark:hover:text-red-300"
@@ -751,7 +761,7 @@ function App() {
             </ol>
             <StageTimes
               times={stageTimes}
-              running={progress != null && !isTerminal(progress.status)}
+              running={progress != null && !isTerminal(progress.status) && progress.active !== false}
               totalStartedAt={totalStartedAt}
               finalTotalSeconds={finalTotalSeconds}
               currentStage={liveStage}

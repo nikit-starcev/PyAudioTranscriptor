@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import threading
 import time
 import wave
 from collections.abc import Iterator
@@ -28,6 +29,13 @@ from audio_transcriber.progress import ProgressEvent
 from audio_transcriber.web.app import _resolve_upload_file, create_app
 from audio_transcriber.web.events import JobEventBus
 from audio_transcriber.web.paths import WebPaths
+from audio_transcriber.web.runner import ORPHAN_ERROR_MESSAGE, JobRunner
+from audio_transcriber.web.storage.jobs_db import (
+    STATUS_ERROR,
+    STATUS_RUNNING,
+    JobsDB,
+    utc_now_iso,
+)
 
 
 @pytest.fixture
@@ -368,6 +376,8 @@ def test_jobs_listing(client: TestClient) -> None:
     assert jobs[0]["name"] == "sample.mp3"
     assert jobs[0]["status"] == "queued"
     assert jobs[0]["num_speakers"] is None
+    # Созданная, но не поставленная воркеру задача не активна.
+    assert jobs[0]["active"] is False
 
 
 def test_create_job_with_num_speakers_reaches_config(
@@ -551,6 +561,171 @@ def test_delete_job_with_missing_artifacts(
 
     assert client.delete(f"/api/jobs/{job_id}").status_code == 200
     assert client.get(f"/api/jobs/{job_id}").status_code == 404
+
+
+def test_reconcile_marks_orphans_and_keeps_active(
+    web_paths: WebPaths, config_builder
+) -> None:
+    """Реконсиляция: running/queued вне активного набора → error, активные — нет."""
+    store = JobsDB(web_paths.jobs_db)
+    store.initialize()
+    active = store.create("active-job", web_paths.input_dir / "a.mp3")
+    store.update(
+        active.id,
+        status=STATUS_RUNNING,
+        stage="asr",
+        fraction=0.4,
+        stage_started_at=utc_now_iso(),
+    )
+    orphan = store.create("orphan-job", web_paths.input_dir / "b.mp3")
+    store.update(
+        orphan.id,
+        status=STATUS_RUNNING,
+        stage="diarization",
+        fraction=0.3,
+        stage_started_at=utc_now_iso(),
+    )
+    pending = store.create("pending-job", web_paths.input_dir / "c.mp3")
+
+    runner = JobRunner(store, JobEventBus(heartbeat=0.05), web_paths, config_builder)
+    assert runner.submit(active.id, Path(active.source_path)) is True
+
+    reconciled = runner.reconcile_orphans()
+
+    assert set(reconciled) == {"orphan-job", "pending-job"}
+    kept = store.get(active.id)
+    assert kept is not None
+    assert kept.status == STATUS_RUNNING
+    assert kept.stage == "asr"
+    assert kept.fraction == 0.4
+    assert runner.is_active(active.id) is True
+
+    fixed = store.get(orphan.id)
+    assert fixed is not None
+    assert fixed.status == STATUS_ERROR
+    assert fixed.error == ORPHAN_ERROR_MESSAGE
+    assert fixed.finished_at is not None
+    assert fixed.stage is None
+    assert fixed.fraction is None
+    assert fixed.stage_started_at is None
+    assert fixed.stage_times == []
+
+    queued = store.get(pending.id)
+    assert queued is not None
+    assert queued.status == STATUS_ERROR
+
+
+def test_startup_reconciles_orphaned_jobs(
+    web_paths: WebPaths, fake_pipeline, config_builder
+) -> None:
+    """Подвешенная задача прошлого процесса переводится в error при старте."""
+    store = JobsDB(web_paths.jobs_db)
+    store.initialize()
+    orphan = store.create("stale", web_paths.input_dir / "stale.mp3")
+    store.update(
+        orphan.id,
+        status=STATUS_RUNNING,
+        stage="diarization",
+        fraction=0.3,
+        stage_started_at=utc_now_iso(),
+    )
+
+    app = create_app(
+        paths=web_paths,
+        pipeline_fn=fake_pipeline,
+        config_builder=config_builder,
+        heartbeat=0.05,
+    )
+    with TestClient(app) as client:
+        listing = client.get("/api/jobs").json()
+
+    assert listing[0]["status"] == STATUS_ERROR
+    assert listing[0]["error"] == ORPHAN_ERROR_MESSAGE
+    assert listing[0]["active"] is False
+    assert listing[0]["stage"] is None
+
+
+def test_delete_orphaned_running_job(client: TestClient) -> None:
+    """Осиротевшую running-задачу (воркер её не ведёт) можно удалить."""
+    uploaded = _upload(client)
+    job_id = client.post("/api/jobs", json={"path": uploaded["name"]}).json()["id"]
+    client.app.state.store.update(
+        job_id,
+        status=STATUS_RUNNING,
+        stage="diarization",
+        fraction=0.3,
+        stage_started_at=utc_now_iso(),
+    )
+
+    response = client.delete(f"/api/jobs/{job_id}")
+
+    assert response.status_code == 200
+    assert client.get(f"/api/jobs/{job_id}").status_code == 404
+
+
+def test_delete_active_running_job_conflicts(
+    web_paths: WebPaths, config_builder
+) -> None:
+    """Реально выполняющуюся задачу удалить нельзя — 409."""
+    started = threading.Event()
+    release = threading.Event()
+
+    def pipeline(config: AppConfig, *, on_progress=None) -> TranscriptionResult:
+        started.set()
+        release.wait(timeout=5.0)
+        return TranscriptionResult(
+            source_path=config.input_file,
+            language="ru",
+            duration=1.0,
+            entries=[],
+            speakers=[],
+            low_confidence_threshold=-1.0,
+        )
+
+    app = create_app(
+        paths=web_paths,
+        pipeline_fn=pipeline,
+        config_builder=config_builder,
+        heartbeat=0.05,
+    )
+    with TestClient(app) as client:
+        uploaded = _upload(client)
+        job_id = client.post("/api/jobs", json={"path": uploaded["name"]}).json()["id"]
+        assert client.post(f"/api/jobs/{job_id}/run").status_code == 200
+        assert started.wait(timeout=5.0)
+
+        listing = client.get("/api/jobs").json()
+        assert listing[0]["active"] is True
+        assert client.delete(f"/api/jobs/{job_id}").status_code == 409
+
+        release.set()
+
+
+def test_run_orphaned_running_job_reruns(
+    web_paths: WebPaths, fake_pipeline, config_builder
+) -> None:
+    """Осиротевшую running-задачу можно запустить заново."""
+    app = create_app(
+        paths=web_paths,
+        pipeline_fn=fake_pipeline,
+        config_builder=config_builder,
+        heartbeat=0.05,
+    )
+    with TestClient(app) as client:
+        uploaded = _upload(client)
+        job_id = client.post("/api/jobs", json={"path": uploaded["name"]}).json()["id"]
+        store = client.app.state.store
+        store.update(job_id, status=STATUS_RUNNING, stage="diarization")
+
+        assert client.post(f"/api/jobs/{job_id}/run").status_code == 200
+
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            details = client.get(f"/api/jobs/{job_id}").json()
+            if details["status"] == "done":
+                break
+            time.sleep(0.02)
+        assert details["status"] == "done"
 
 
 def test_missing_job_returns_404(client: TestClient) -> None:
