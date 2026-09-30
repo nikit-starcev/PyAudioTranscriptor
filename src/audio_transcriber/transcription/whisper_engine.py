@@ -8,6 +8,7 @@ from typing import Any
 
 from audio_transcriber.domain.enums import Device
 from audio_transcriber.domain.models import TranscriptionSegment
+from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.utils.exceptions import TranscriptionError
 from audio_transcriber.utils.hotwords import truncate_hotwords_by_tokens
 
@@ -24,12 +25,20 @@ class WhisperSpeechRecognizer:
         *,
         initial_prompt: str | None = None,
         hotwords: str | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> None:
         self._model_name = model_name
         self._device = device
         self._initial_prompt = initial_prompt
         self._hotwords = hotwords
+        self._on_progress = on_progress
         self._model: Any = None
+
+    def _emit(self, fraction: float | None = None, detail: str = "") -> None:
+        if self._on_progress is not None:
+            self._on_progress(
+                ProgressEvent("asr", "Распознавание речи", fraction=fraction, detail=detail)
+            )
 
     def _load_model(self) -> Any:
         if self._model is not None:
@@ -95,15 +104,29 @@ class WhisperSpeechRecognizer:
                 initial_prompt=self._initial_prompt,
                 hotwords=hotwords,
             )
-            segments = [
-                TranscriptionSegment(
-                    start=segment.start,
-                    end=segment.end,
-                    text=segment.text.strip(),
-                    avg_logprob=segment.avg_logprob,
+            # Длительность известна сразу (до порождения сегментов); по ней
+            # нормируем прогресс. ``None``/0 — длительность неизвестна, тогда
+            # прогресс остаётся неопределённым (без fraction).
+            duration = info.duration
+            has_duration = isinstance(duration, (int, float)) and duration > 0
+            self._emit(0.0 if has_duration else None)
+            segments: list[TranscriptionSegment] = []
+            for segment in raw_segments:
+                fraction: float | None = None
+                if has_duration:
+                    # Конец уже обработанного сегмента, нормированный на
+                    # длительность аудио, ограничен [0; 1]. Генератор отдаёт
+                    # сегменты в порядке возрастания времени — прогресс растёт.
+                    fraction = max(0.0, min(1.0, segment.end / duration))
+                self._emit(fraction)
+                segments.append(
+                    TranscriptionSegment(
+                        start=segment.start,
+                        end=segment.end,
+                        text=segment.text.strip(),
+                        avg_logprob=segment.avg_logprob,
+                    )
                 )
-                for segment in raw_segments
-            ]
         except Exception as exc:
             raise TranscriptionError(
                 f"Ошибка при распознавании речи в файле {audio_path}: {exc}"

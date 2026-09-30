@@ -22,7 +22,7 @@ from pathlib import Path
 
 from audio_transcriber.domain.models import TranscriptionSegment
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
-from audio_transcriber.utils.audio import load_waveform, write_wav
+from audio_transcriber.utils.audio import SAMPLE_RATE, load_waveform, write_wav
 from audio_transcriber.utils.env import with_library_path
 from audio_transcriber.utils.exceptions import TranscriptionError
 from audio_transcriber.utils.subprocess_registry import register_process, terminate_process
@@ -30,6 +30,15 @@ from audio_transcriber.utils.subprocess_registry import register_process, termin
 logger = logging.getLogger(__name__)
 
 _PROGRESS_RE = re.compile(r"progress\s*=\s*(\d+(?:\.\d+)?)%")
+
+# Параметры VAD по умолчанию — как в faster-whisper
+# (``faster_whisper.vad.VadOptions``), чтобы оба движка отсекали тишину/не-речь
+# по одинаковым условиям. whisper.cpp требует отдельную Silero-VAD-модель
+# (``--vad-model``), поэтому VAD включается, только если путь задан.
+VAD_THRESHOLD = 0.5
+VAD_MIN_SPEECH_DURATION_MS = 0
+VAD_MIN_SILENCE_DURATION_MS = 2000
+VAD_SPEECH_PAD_MS = 400
 
 # Служебные токены whisper.cpp в полном JSON (``-ojf``): ``[_BEG_]``,
 # ``[_TT_129]``, ``[_EOT_]`` и т.п. У них тоже есть вероятность ``p``, но она
@@ -83,6 +92,8 @@ class WhisperCppRecognizer:
         initial_prompt: str | None = None,
         hotwords: str | None = None,
         on_progress: ProgressCallback | None = None,
+        vad_filter: bool = True,
+        vad_model: Path | None = None,
     ) -> None:
         self._model_path = Path(model_path)
         self._binary = binary
@@ -91,6 +102,8 @@ class WhisperCppRecognizer:
         self._initial_prompt = initial_prompt
         self._hotwords = hotwords
         self._on_progress = on_progress
+        self._vad_filter = vad_filter
+        self._vad_model = Path(vad_model) if vad_model is not None else None
 
     def _emit(self, fraction: float | None = None, detail: str = "") -> None:
         if self._on_progress is not None:
@@ -111,6 +124,43 @@ class WhisperCppRecognizer:
             parts.append(self._hotwords.strip())
         return " ".join(parts) or None
 
+    def _vad_args(self) -> list[str]:
+        """Флаги VAD для whisper-cli, выровненные с faster-whisper.
+
+        whisper.cpp включает VAD только вместе с моделью Silero (``--vad-model``).
+        Если фильтр включён, а модель не задана/не найдена, VAD мягко
+        пропускается (как и прочие необязательные возможности проекта), чтобы
+        не ронять распознавание.
+        """
+        if not self._vad_filter:
+            return []
+        if self._vad_model is None:
+            logger.debug(
+                "VAD включён, но модель whisper.cpp VAD не задана "
+                "(WHISPER_CPP_VAD_MODEL) — распознавание идёт без VAD"
+            )
+            return []
+        if not self._vad_model.is_file():
+            logger.warning(
+                "Модель whisper.cpp VAD не найдена: %s — распознавание идёт без VAD",
+                self._vad_model,
+            )
+            return []
+        return [
+            "--vad",
+            "-vm",
+            str(self._vad_model),
+            # Значения — как в faster_whisper.vad.VadOptions по умолчанию.
+            "-vt",
+            str(VAD_THRESHOLD),
+            "-vspd",
+            str(VAD_MIN_SPEECH_DURATION_MS),
+            "-vsd",
+            str(VAD_MIN_SILENCE_DURATION_MS),
+            "-vp",
+            str(VAD_SPEECH_PAD_MS),
+        ]
+
     def transcribe(
         self, audio_path: Path, *, language: str | None = None
     ) -> tuple[list[TranscriptionSegment], str, float]:
@@ -124,7 +174,12 @@ class WhisperCppRecognizer:
             # whisper-cli (miniaudio) не декодирует все форматы (например,
             # WebM), поэтому перекодируем вход в 16-кГц WAV через PyAV.
             wav_path = tmpdir_path / "audio.wav"
-            write_wav(wav_path, load_waveform(audio_path))
+            waveform = load_waveform(audio_path)
+            write_wav(wav_path, waveform)
+            # Реальная длительность аудио (включая хвостовую тишину), а не конец
+            # последнего сегмента — VAD отсекает тишину, из-за чего ``end``
+            # последней реплики систематически занижает длительность.
+            audio_duration = len(waveform) / SAMPLE_RATE
 
             cmd = [
                 self._binary,
@@ -144,6 +199,7 @@ class WhisperCppRecognizer:
                 # показывает реальный прогресс распознавания.
                 "-pp",
             ]
+            cmd += self._vad_args()
             if self._threads:
                 cmd += ["-t", str(self._threads)]
             prompt = self._build_prompt()
@@ -203,6 +259,8 @@ class WhisperCppRecognizer:
         ]
 
         detected = data.get("result", {}).get("language")
-        duration = segments[-1].end if segments else 0.0
+        # Длительность берём из декодированного аудио. Если по какой-то причине
+        # она неизвестна, откатываемся к концу последней реплики.
+        duration = audio_duration if audio_duration > 0 else (segments[-1].end if segments else 0.0)
 
         return segments, language or detected, duration

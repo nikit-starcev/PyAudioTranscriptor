@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import time
 
 from audio_transcriber.domain.models import SpeakerSegment, TranscriptionSegment
 from audio_transcriber.merging.aligner import OverlapSegmentMerger
@@ -50,7 +51,10 @@ def _assert_equivalent(
     merger = OverlapSegmentMerger(max_gap=max_gap)
     entries, _ = merger.merge(transcription_segments, speaker_segments)
 
+    # Порядок и таймкоды/текст реплик не меняются — меняется только говорящий.
+    assert len(entries) == len(transcription_segments)
     for segment, entry in zip(transcription_segments, entries, strict=True):
+        assert (entry.start, entry.end, entry.text) == (segment.start, segment.end, segment.text)
         expected = _reference_speaker_id(segment, speaker_segments, max_gap)
         actual = entry.speaker.id if entry.speaker else None
         assert actual == expected, (segment, expected, actual)
@@ -174,3 +178,109 @@ def test_same_speaker_reused_across_segments() -> None:
 
     assert entries[0].speaker is entries[1].speaker
     assert len(speakers) == 1
+
+
+# --- быстрый путь для произвольных перекрытий (совпадение с перебором) -------
+
+
+def test_matches_brute_force_on_dense_multiple_overlaps() -> None:
+    # Много пересекающихся интервалов (в т.ч. тройные наложения) — старый
+    # перебор давал тот же результат, новый быстрый путь обязан совпасть.
+    rng = random.Random(2024)
+    speaker_segments = []
+    for index in range(120):
+        start = rng.uniform(0.0, 20.0)
+        speaker_segments.append(
+            SpeakerSegment(
+                start=start,
+                end=start + rng.uniform(0.5, 12.0),
+                speaker_id=f"SPEAKER_{index % 5:02d}",
+            )
+        )
+
+    transcription_segments = []
+    for i in range(200):
+        start = rng.uniform(0.0, 25.0)
+        transcription_segments.append(
+            TranscriptionSegment(start=start, end=start + rng.uniform(0.1, 10.0), text=str(i))
+        )
+
+    _assert_equivalent(transcription_segments, speaker_segments)
+
+
+def test_matches_brute_force_on_degenerate_intervals() -> None:
+    rng = random.Random(5)
+    speaker_segments = []
+    for index in range(40):
+        if rng.random() < 0.3:
+            point = rng.uniform(0.0, 10.0)
+            start = end = point
+        else:
+            start = rng.uniform(0.0, 10.0)
+            end = start + rng.uniform(0.0, 4.0)
+        speaker_segments.append(
+            SpeakerSegment(start=start, end=end, speaker_id=f"SPEAKER_{index % 3:02d}")
+        )
+
+    transcription_segments = []
+    for i in range(60):
+        start = rng.uniform(0.0, 12.0)
+        transcription_segments.append(
+            TranscriptionSegment(start=start, end=start + rng.uniform(0.0, 5.0), text=str(i))
+        )
+
+    _assert_equivalent(transcription_segments, speaker_segments)
+
+
+def test_matches_brute_force_on_exact_overlap_ties() -> None:
+    # Целочисленные координаты дают точные тай-брейки по перекрытию.
+    rng = random.Random(77)
+    speaker_segments = [
+        SpeakerSegment(
+            start=float(start),
+            end=float(start + rng.randint(0, 6)),
+            speaker_id=f"SPEAKER_{index % 4:02d}",
+        )
+        for index, start in enumerate(rng.randint(0, 12) for _ in range(50))
+    ]
+
+    transcription_segments = [
+        TranscriptionSegment(
+            start=float(start),
+            end=float(start + rng.randint(0, 6)),
+            text=str(i),
+        )
+        for i, start in enumerate(rng.randint(0, 12) for _ in range(80))
+    ]
+
+    _assert_equivalent(transcription_segments, speaker_segments)
+
+
+def test_large_overlapping_input_is_fast() -> None:
+    # 5000×5000 тяжело пересекающихся сегментов: прежний O(N×M) перебор
+    # выполнялся бы десятки секунд, быстрый путь укладывается в доли секунды.
+    rng = random.Random(123)
+    speaker_segments = []
+    for index in range(5000):
+        start = rng.uniform(0.0, 1000.0)
+        speaker_segments.append(
+            SpeakerSegment(
+                start=start,
+                end=start + rng.uniform(0.5, 8.0),
+                speaker_id=f"SPEAKER_{index % 50:02d}",
+            )
+        )
+
+    transcription_segments = []
+    for i in range(5000):
+        start = rng.uniform(0.0, 1000.0)
+        transcription_segments.append(
+            TranscriptionSegment(start=start, end=start + rng.uniform(0.1, 7.0), text=str(i))
+        )
+
+    started = time.perf_counter()
+    entries, _ = OverlapSegmentMerger().merge(transcription_segments, speaker_segments)
+    elapsed = time.perf_counter() - started
+
+    assert len(entries) == 5000
+    assert elapsed < 2.0, f"слишком медленно: {elapsed:.3f}s"

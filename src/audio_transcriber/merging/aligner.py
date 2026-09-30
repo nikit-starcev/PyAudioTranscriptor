@@ -14,6 +14,13 @@ from audio_transcriber.domain.models import (
 
 _MAX_GAP_DEFAULT = 5.0
 
+# Запись интервала диаризации для оффлайн-обходов:
+# ``(sort_key, coord, original_index, score)``. ``score`` максимизируется
+# (кортежное сравнение), ``coord`` — координата в BIT (end или start).
+_Record = tuple[float, float, int, tuple[float, ...]]
+# Запрос: ``(sort_key, coord_bound, query_id)``.
+_Query = tuple[float, float, int]
+
 
 class OverlapSegmentMerger:
     """Присваивает каждому сегменту речи говорящего с наибольшим перекрытием.
@@ -36,9 +43,9 @@ class OverlapSegmentMerger:
         speakers_by_id: dict[str, Speaker] = {}
         entries: list[TranscriptEntry] = []
         resolver = _SpeakerResolver(speaker_segments, max_gap=self._max_gap)
+        speaker_ids = resolver.best_speaker_ids(transcription_segments)
 
-        for segment in transcription_segments:
-            speaker_id = resolver.best_speaker_id(segment)
+        for segment, speaker_id in zip(transcription_segments, speaker_ids, strict=True):
             speaker = None
             if speaker_id is not None:
                 if speaker_id not in speakers_by_id:
@@ -59,17 +66,115 @@ class OverlapSegmentMerger:
         return entries, list(speakers_by_id.values())
 
 
+def _better_overlap(
+    current: tuple[float, float] | None, candidate: tuple[float, float] | None
+) -> tuple[float, float] | None:
+    """Выбирает кандидата с максимальным перекрытием, при равенстве — с меньшим индексом."""
+    if candidate is None:
+        return current
+    if current is None:
+        return candidate
+    if candidate[0] > current[0] or (candidate[0] == current[0] and candidate[1] < current[1]):
+        return candidate
+    return current
+
+
+def _better_gap(
+    current: tuple[float, float] | None, candidate: tuple[float, float] | None
+) -> tuple[float, float] | None:
+    """Выбирает кандидата с минимальным зазором, при равенстве — с меньшим индексом."""
+    if candidate is None:
+        return current
+    if current is None:
+        return candidate
+    if candidate[0] < current[0] or (candidate[0] == current[0] and candidate[1] < current[1]):
+        return candidate
+    return current
+
+
+def _sweep(
+    records: Sequence[_Record],
+    queries: Sequence[_Query],
+    *,
+    ascending: bool,
+    select_ge: bool,
+    coords: Sequence[float],
+) -> dict[int, tuple[float, ...]]:
+    """Оффлайн-обход с деревом Фенвика (BIT) для максимума score.
+
+    Записи добавляются по ``sort_key`` (возрастающе — ``<=`` ключа запроса,
+    убывающе — ``>=``), после чего берётся максимум ``score`` среди добавленных
+    с координатой ``<= bound`` (``select_ge=False``) или ``>= bound``
+    (``select_ge=True``). Сложность — ``O((n + m) log n)``.
+    """
+    if not records or not queries:
+        return {}
+
+    size = len(coords)
+    position = {value: index for index, value in enumerate(coords)}
+    tree: list[tuple[float, ...] | None] = [None] * (size + 1)
+
+    def update(index: int, value: tuple[float, ...]) -> None:
+        i = index + 1
+        while i <= size:
+            current = tree[i]
+            if current is None or value > current:
+                tree[i] = value
+            i += i & (-i)
+
+    def query(index: int) -> tuple[float, ...] | None:
+        if index < 0:
+            return None
+        best: tuple[float, ...] | None = None
+        i = index + 1
+        while i > 0:
+            current = tree[i]
+            if current is not None and (best is None or current > best):
+                best = current
+            i -= i & (-i)
+        return best
+
+    ordered_records = sorted(records, key=lambda record: record[0], reverse=not ascending)
+    ordered_queries = sorted(queries, key=lambda item: item[0], reverse=not ascending)
+
+    result: dict[int, tuple[float, ...]] = {}
+    pointer = 0
+    for sort_key, bound, query_id in ordered_queries:
+        while pointer < len(ordered_records):
+            record = ordered_records[pointer]
+            if ascending:
+                if record[0] > sort_key:
+                    break
+            elif record[0] < sort_key:
+                break
+            bit_index = position[record[1]]
+            if select_ge:
+                bit_index = size - 1 - bit_index
+            update(bit_index, record[3])
+            pointer += 1
+
+        if select_ge:
+            bit_index = size - 1 - bisect_left(coords, bound)
+        else:
+            bit_index = bisect_right(coords, bound) - 1
+        best = query(bit_index)
+        if best is not None:
+            result[query_id] = best
+
+    return result
+
+
 class _SpeakerResolver:
     """Ищет говорящего для реплики: максимальное перекрытие, затем ближайший.
 
-    Диаризация (pyannote) выдаёт неперекрывающиеся интервалы: в каждый момент
-    говорит один человек. Для таких данных достаточно отсортировать границы и
-    отвечать на запрос за O(log M + k), где ``k`` — число интервалов, попавших
-    в окно реплики, вместо перебора всех ``M`` интервалов на каждую реплику.
-
-    Если интервалы пересекаются (или есть вырожденные нулевой длины), индекс
-    неприменим — используется прежний перебор «в лоб», поэтому поведение
-    сохраняется для любых входных данных.
+    Диаризация обычно выдаёт неперекрывающиеся интервалы, но при наложении речи
+    интервалы пересекаются. Чтобы не перебирать все ``M`` интервалов на каждую
+    реплику (``O(N * M)``), ответы считаются пакетно оффлайн: четыре
+    «квадранта» максимального перекрытия и три запроса ближайшего говорящего
+    обрабатываются ленивыми обходами с BIT за ``O((N + M) log N)``. Результат
+    полностью совпадает с прежним перебором «в лоб», включая тай-брейк по
+    исходному порядку интервалов и произвольные (в т.ч. множественные)
+    перекрытия.
     """
 
     def __init__(
@@ -77,90 +182,157 @@ class _SpeakerResolver:
     ) -> None:
         self._max_gap = max_gap
         self._brute: list[SpeakerSegment] = list(speaker_segments)
-
-        ordered = sorted(
-            enumerate(speaker_segments), key=lambda item: (item[1].start, item[0])
-        )
-        self._indexable = not self._is_overlapping(ordered) and not any(
-            segment.end <= segment.start for segment in speaker_segments
-        )
-
-        if self._indexable:
-            self._segments = [segment for _, segment in ordered]
-            self._orig_index = [index for index, _ in ordered]
-            self._starts = [segment.start for segment in self._segments]
-            self._ends = [segment.end for segment in self._segments]
-
-    @staticmethod
-    def _is_overlapping(ordered: Sequence[tuple[int, SpeakerSegment]]) -> bool:
-        if len(ordered) < 2:
-            return False
-        running_end = ordered[0][1].end
-        for _, segment in ordered[1:]:
-            if segment.start < running_end:
-                return True
-            running_end = max(running_end, segment.end)
-        return False
+        # ``(start, end, original_index)`` — исходный индекс нужен для тай-брейка.
+        self._records: list[tuple[float, float, int]] = [
+            (segment.start, segment.end, index)
+            for index, segment in enumerate(speaker_segments)
+        ]
+        self._speaker_ids = [segment.speaker_id for segment in speaker_segments]
+        # Обратные (end < start) интервалы нефизичны и не покрываются быстрым
+        # путём — для них сохраняем прежний точный перебор, чтобы не менять
+        # поведение на любых входных данных.
+        self._fallback = any(end < start for start, end, _ in self._records)
+        if self._records and not self._fallback:
+            self._coords_e = sorted({end for _, end, _ in self._records})
+            self._coords_s = sorted({start for start, _, _ in self._records})
 
     def best_speaker_id(self, segment: TranscriptionSegment) -> str | None:
-        if not self._indexable:
-            return self._brute_best_speaker_id(segment)
-        return self._indexed_best_speaker_id(segment)
+        return self.best_speaker_ids([segment])[0]
 
-    # -- быстрый путь (неперекрывающиеся интервалы) --------------------
-    def _indexed_best_speaker_id(self, segment: TranscriptionSegment) -> str | None:
-        # Отрезок [lo, hi) — интервалы, гарантированно перекрывающиеся с репликой:
-        # end > start реплики (lo) и start < end реплики (hi).
-        lo = bisect_right(self._ends, segment.start)
-        hi = bisect_left(self._starts, segment.end)
+    def best_speaker_ids(
+        self, transcription_segments: Sequence[TranscriptionSegment]
+    ) -> list[str | None]:
+        count = len(transcription_segments)
+        if not self._records:
+            return [None] * count
+        # Нефизичные интервалы (обратные) не покрываются быстрым путём — для
+        # любых таких входных данных сохраняем прежний точный перебор.
+        if self._fallback or any(
+            segment.end < segment.start for segment in transcription_segments
+        ):
+            return [self._brute_best_speaker_id(segment) for segment in transcription_segments]
 
-        speaker_id = self._best_overlap_id(segment, lo, hi)
-        if speaker_id is not None:
-            return speaker_id
-        return self._nearest_id(segment, lo)
+        queries: list[tuple[float, float, int]] = [
+            (segment.start, segment.end, index)
+            for index, segment in enumerate(transcription_segments)
+        ]
+        if not queries:
+            return []
 
-    def _best_overlap_id(
-        self, segment: TranscriptionSegment, lo: int, hi: int
-    ) -> str | None:
-        best_id: str | None = None
-        best_key: tuple[float, int] | None = None
-        for index in range(lo, hi):
-            speaker_segment = self._segments[index]
-            overlap = min(segment.end, speaker_segment.end) - max(
-                segment.start, speaker_segment.start
-            )
-            # Ничью разрешаем по исходному порядку — как перебор «в лоб».
-            key = (overlap, -self._orig_index[index])
-            if best_key is None or key > best_key:
-                best_key = key
-                best_id = speaker_segment.speaker_id
-        return best_id
+        resolution: list[str | None] = [None] * count
+        best_overlap = self._best_overlap(queries)
+        unresolved: list[tuple[float, float, int]] = []
+        for query in queries:
+            candidate = best_overlap.get(query[2])
+            if candidate is not None and candidate[0] > 0.0:
+                resolution[query[2]] = self._speaker_ids[int(candidate[1])]
+            else:
+                unresolved.append(query)
 
-    def _nearest_id(self, segment: TranscriptionSegment, lo: int) -> str | None:
-        nearest_id: str | None = None
-        nearest_key: tuple[float, int] | None = None
+        if unresolved:
+            nearest = self._nearest(unresolved)
+            for query in unresolved:
+                candidate = nearest.get(query[2])
+                if candidate is None:
+                    continue
+                index, gap = candidate
+                if gap <= self._max_gap:
+                    resolution[query[2]] = self._speaker_ids[int(index)]
 
-        def consider(gap: float, orig_index: int, speaker_id: str) -> None:
-            nonlocal nearest_id, nearest_key
-            key = (gap, orig_index)
-            if nearest_key is None or key < nearest_key:
-                nearest_key = key
-                nearest_id = speaker_id
+        return resolution
 
-        # Ближайшими могут быть только два соседа окна: последний интервал,
-        # закончившийся до реплики, и первый, начавшийся после неё.
-        if lo > 0:
-            before = self._segments[lo - 1]
-            consider(segment.start - before.end, self._orig_index[lo - 1], before.speaker_id)
-        if lo < len(self._segments):
-            after = self._segments[lo]
-            consider(after.start - segment.end, self._orig_index[lo], after.speaker_id)
+    # -- максимальное перекрытие ----------------------------------------------
+    def _best_overlap(
+        self, queries: Sequence[tuple[float, float, int]]
+    ) -> dict[int, tuple[float, float]]:
+        """Для каждой реплики — (перекрытие, исходный индекс) лучшего говорящего.
 
-        if nearest_key is not None and nearest_key[0] <= self._max_gap:
-            return nearest_id
-        return None
+        Реплика ``[qs, qe]`` и интервал ``[s, e]`` разбиваются на четыре
+        квадранта по взаимному положению границ; перекрытие в каждом имеет
+        простую форму (``e - qs``, ``qe - s``, ``qe - qs``, ``e - s``), а
+        максимум по каждому квадранту берётся одним обходом.
+        """
+        records_e: list[_Record] = []
+        records_d: list[_Record] = []
+        for start, end, index in self._records:
+            records_e.append((start, end, index, (end, -index)))
+            records_d.append((start, end, index, (end - start, -index)))
+        records_b = [(s, e, i, (-s, -i)) for s, e, i in self._records]
+        records_c = [(s, e, i, (-i,)) for s, e, i in self._records]
 
-    # -- запасной путь (пересекающиеся интервалы) ----------------------
+        queries_cd = list(queries)
+        # A: s <= qs, e <= qe  →  overlap = e - qs
+        result_a = _sweep(records_e, queries_cd, ascending=True, select_ge=False, coords=self._coords_e)
+        # B: s >= qs, e >= qe  →  overlap = qe - s
+        result_b = _sweep(records_b, queries_cd, ascending=False, select_ge=True, coords=self._coords_e)
+        # C: s <= qs, e >= qe  →  overlap = qe - qs (полное перекрытие реплики)
+        result_c = _sweep(records_c, queries_cd, ascending=True, select_ge=True, coords=self._coords_e)
+        # D: s >= qs, e <= qe  →  overlap = e - s
+        result_d = _sweep(records_d, queries_cd, ascending=False, select_ge=False, coords=self._coords_e)
+
+        best: dict[int, tuple[float, float]] = {}
+        for qs, qe, query_id in queries_cd:
+            candidate: tuple[float, float] | None = None
+            found_a = result_a.get(query_id)
+            if found_a is not None:
+                candidate = _better_overlap(candidate, (found_a[0] - qs, -found_a[1]))
+            found_b = result_b.get(query_id)
+            if found_b is not None:
+                candidate = _better_overlap(candidate, (qe + found_b[0], -found_b[1]))
+            found_c = result_c.get(query_id)
+            if found_c is not None:
+                candidate = _better_overlap(candidate, (qe - qs, -found_c[0]))
+            found_d = result_d.get(query_id)
+            if found_d is not None:
+                candidate = _better_overlap(candidate, (found_d[0], -found_d[1]))
+            if candidate is not None:
+                best[query_id] = candidate
+        return best
+
+    # -- ближайший говорящий --------------------------------------------------
+    def _nearest(
+        self, queries: Sequence[tuple[float, float, int]]
+    ) -> dict[int, tuple[float, float]]:
+        """Для каждой реплики без перекрытия — (исходный индекс, зазор)."""
+        records_gap0 = [(s, e, i, (-i,)) for s, e, i in self._records]
+        # Зазор 0: интервал касается/накрывает реплику (``s <= qe`` и ``e >= qs``).
+        queries_gap0 = [(qe, qs, query_id) for qs, qe, query_id in queries]
+        result_gap0 = _sweep(
+            records_gap0, queries_gap0, ascending=True, select_ge=True, coords=self._coords_e
+        )
+
+        # Интервал до реплики: ``e <= qs`` (максимизируем e, затем min индекс).
+        records_before = [(e, e, i, (e, -i)) for s, e, i in self._records]
+        queries_before = [(qs, qs, query_id) for qs, qe, query_id in queries]
+        result_before = _sweep(
+            records_before, queries_before, ascending=True, select_ge=False, coords=self._coords_e
+        )
+
+        # Интервал после реплики: ``s >= qe`` (минимизируем s, затем min индекс).
+        records_after = [(s, s, i, (-s, -i)) for s, e, i in self._records]
+        queries_after = [(qe, qe, query_id) for qs, qe, query_id in queries]
+        result_after = _sweep(
+            records_after, queries_after, ascending=False, select_ge=True, coords=self._coords_s
+        )
+
+        nearest: dict[int, tuple[float, float]] = {}
+        for qs, qe, query_id in queries:
+            found_gap0 = result_gap0.get(query_id)
+            if found_gap0 is not None:
+                nearest[query_id] = (-found_gap0[0], 0.0)
+                continue
+            candidate: tuple[float, float] | None = None
+            found_before = result_before.get(query_id)
+            if found_before is not None:
+                candidate = _better_gap(candidate, (qs - found_before[0], -found_before[1]))
+            found_after = result_after.get(query_id)
+            if found_after is not None:
+                candidate = _better_gap(candidate, (-found_after[0] - qe, -found_after[1]))
+            if candidate is not None:
+                nearest[query_id] = (candidate[1], candidate[0])
+        return nearest
+
+    # -- запасной путь (обратные интервалы) -----------------------------------
     def _brute_best_speaker_id(self, segment: TranscriptionSegment) -> str | None:
         best_id: str | None = None
         best_overlap = 0.0

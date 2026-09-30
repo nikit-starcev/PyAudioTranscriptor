@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 
 from audio_transcriber.cache.denoiser import CachingDenoiser
 from audio_transcriber.cache.serialization import (
@@ -64,11 +66,20 @@ from audio_transcriber.utils.device import resolve_device
 logger = logging.getLogger(__name__)
 
 
+def _whisper_cpp_vad_model() -> Path | None:
+    """Необязательная ggml-модель Silero VAD для whisper.cpp (из окружения)."""
+    raw = os.environ.get("WHISPER_CPP_VAD_MODEL", "").strip()
+    return Path(raw) if raw else None
+
+
 def _build_recognizer(
     config: AppConfig, device: Device, on_progress: ProgressCallback | None = None
 ) -> SpeechRecognizer:
     """Создаёт движок распознавания речи в зависимости от выбранного бэкенда."""
     if config.asr_backend is AsrBackend.WHISPER_CPP:
+        # Silero-VAD-модель для whisper.cpp (необязательно). Если путь задан,
+        # VAD выравнивается с faster-whisper (vad_filter=True) — те же условия
+        # отсечения тишины/не-речи.
         return WhisperCppRecognizer(
             config.whisper_cpp_model,  # type: ignore[arg-type]
             binary=config.whisper_cpp_binary,
@@ -77,12 +88,15 @@ def _build_recognizer(
             initial_prompt=config.initial_prompt,
             hotwords=config.hotwords,
             on_progress=on_progress,
+            vad_filter=True,
+            vad_model=_whisper_cpp_vad_model(),
         )
     return WhisperSpeechRecognizer(
         config.model_name,
         device,
         initial_prompt=config.initial_prompt,
         hotwords=config.hotwords,
+        on_progress=on_progress,
     )
 
 
@@ -109,6 +123,10 @@ def _asr_cache_params(
             str(config.whisper_cpp_model) if config.whisper_cpp_model else None
         )
         params["whisper_cpp_threads"] = config.whisper_cpp_threads
+        # VAD влияет на сегменты, поэтому смена модели VAD должна сбрасывать
+        # кэш ASR (иначе включение VAD не даст эффекта на закэшированном файле).
+        vad_model = _whisper_cpp_vad_model()
+        params["whisper_cpp_vad_model"] = str(vad_model) if vad_model else None
     else:
         params["model"] = config.model_name
     return params
