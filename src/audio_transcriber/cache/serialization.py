@@ -86,7 +86,14 @@ def diarization_payload(
             {"start": segment.start, "end": segment.end, "speaker_id": segment.speaker_id}
             for segment in segments
         ],
-        "overlaps": [{"start": overlap.start, "end": overlap.end} for overlap in overlaps],
+        "overlaps": [
+            {
+                "start": overlap.start,
+                "end": overlap.end,
+                "speaker_ids": list(overlap.speaker_ids),
+            }
+            for overlap in overlaps
+        ],
     }
 
 
@@ -103,7 +110,15 @@ def diarization_from_payload(
         for item in _as_list(data.get("segments"))
     ]
     overlaps = [
-        SpeakerOverlap(start=_as_float(item["start"]), end=_as_float(item["end"]))
+        SpeakerOverlap(
+            start=_as_float(item["start"]),
+            end=_as_float(item["end"]),
+            # Терпимость к старому формату: кэши без ``speaker_ids`` дают
+            # пустой кортеж (участники зоны неизвестны), а не ошибку разбора.
+            speaker_ids=tuple(
+                _as_str(speaker_id) for speaker_id in _as_list(item.get("speaker_ids", []))
+            ),
+        )
         for item in _as_list(data.get("overlaps", []))
     ]
     return segments, overlaps

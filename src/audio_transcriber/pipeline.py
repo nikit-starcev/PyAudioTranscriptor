@@ -39,6 +39,7 @@ from audio_transcriber.diarization.enrollment import (
     SpeakerEmbeddingEngine,
     assign_speaker_names,
 )
+from audio_transcriber.diarization.overlap import DIARIZATION_IMPL_VERSION
 from audio_transcriber.diarization.pyannote_engine import (
     DEFAULT_PIPELINE as DIARIZATION_PIPELINE,
 )
@@ -55,7 +56,7 @@ from audio_transcriber.export.timeline import (
 from audio_transcriber.llm.base import LlmClient
 from audio_transcriber.merging.aligner import OverlapSegmentMerger
 from audio_transcriber.merging.base import SegmentMerger
-from audio_transcriber.merging.overlap import mark_overlap_entries
+from audio_transcriber.merging.overlap import apply_overlap_regions
 from audio_transcriber.merging.sentence_merger import SentenceMerger
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.transcription.base import SpeechRecognizer
@@ -149,6 +150,10 @@ def _diarization_cache_params(
         "denoise": config.denoise,
         "num_speakers": config.num_speakers,
         "pipeline": DIARIZATION_PIPELINE,
+        # Версия формата/алгоритма диаризации: добавление участников зон
+        # наложения (``SpeakerOverlap.speaker_ids``) меняет результат при тех же
+        # параметрах, поэтому старый кэш пересчитывается ровно один раз.
+        "diarization_impl_version": DIARIZATION_IMPL_VERSION,
         "local_model": (
             str(config.pyannote_local_model) if config.pyannote_local_model else None
         ),
@@ -354,6 +359,15 @@ def run_pipeline(
         )
     entries = merged_entries
 
+    # Сов-говорящие и признак наложения — из зон перекрытий (они несут
+    # участников), вычисляются после склейки: интервалы реплик уже финальные.
+    # Дополняет extras, собранные объединителем из перекрывающихся
+    # ``speaker_segments`` (для движков, отдающих неэксклюзивную разметку).
+    if config.mark_overlap and overlaps:
+        entries, speakers = apply_overlap_regions(
+            entries, speakers, overlaps, known_speakers=known_speakers
+        )
+
     if corrector is not None:
         logger.info("Автоисправление опечаток (только неизвестные словоформы)...")
         emit(ProgressEvent("correction", "Автоисправление опечаток", fraction=None))
@@ -376,11 +390,6 @@ def run_pipeline(
             summarize=config.protocol_auto and config.llm_summary,
             on_progress=emit,
         )
-
-    # Помечаем реплики в зонах наложения речи в самом конце — после всех
-    # текстовых правок, чтобы пометка соответствовала финальным репликам.
-    if config.mark_overlap and overlaps:
-        entries = mark_overlap_entries(entries, overlaps)
 
     result = TranscriptionResult(
         source_path=config.input_file,

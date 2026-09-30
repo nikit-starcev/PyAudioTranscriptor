@@ -2,23 +2,30 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+from audio_transcriber.cache.serialization import (
+    diarization_from_payload,
+    diarization_payload,
+)
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.diarization.overlap import compute_overlap_regions
 from audio_transcriber.diarization.pyannote_engine import PyannoteSpeakerDiarizer
 from audio_transcriber.domain.enums import Device, ExportFormat
 from audio_transcriber.domain.models import (
+    Speaker,
     SpeakerOverlap,
     SpeakerSegment,
     TranscriptEntry,
     TranscriptionSegment,
 )
-from audio_transcriber.merging.overlap import mark_overlap_entries
+from audio_transcriber.merging.aligner import OverlapSegmentMerger
+from audio_transcriber.merging.overlap import apply_overlap_regions, mark_overlap_entries
 from audio_transcriber.pipeline import run_pipeline
 
 # --- вычисление зон ----------------------------------------------------------
@@ -30,7 +37,11 @@ def test_compute_overlap_regions_finds_shared_interval() -> None:
         SpeakerSegment(start=2.0, end=5.0, speaker_id="SPEAKER_01"),
     ]
 
-    assert compute_overlap_regions(segments) == [SpeakerOverlap(start=2.0, end=3.0)]
+    assert compute_overlap_regions(segments) == [
+        SpeakerOverlap(
+            start=2.0, end=3.0, speaker_ids=("SPEAKER_00", "SPEAKER_01")
+        )
+    ]
 
 
 def test_compute_overlap_regions_empty_without_overlap() -> None:
@@ -49,7 +60,13 @@ def test_compute_overlap_regions_three_speakers() -> None:
         SpeakerSegment(start=2.0, end=3.0, speaker_id="SPEAKER_02"),
     ]
 
-    assert compute_overlap_regions(segments) == [SpeakerOverlap(start=1.0, end=4.0)]
+    assert compute_overlap_regions(segments) == [
+        SpeakerOverlap(
+            start=1.0,
+            end=4.0,
+            speaker_ids=("SPEAKER_00", "SPEAKER_01", "SPEAKER_02"),
+        )
+    ]
 
 
 def test_compute_overlap_regions_ignores_degenerate() -> None:
@@ -140,7 +157,11 @@ def _run_diarizer(output: object, monkeypatch: pytest.MonkeyPatch) -> PyannoteSp
 def test_overlap_regions_from_regular_annotation(monkeypatch: pytest.MonkeyPatch) -> None:
     diarizer = _run_diarizer(_FakeDiarizationOutput(with_regular=True), monkeypatch)
 
-    assert diarizer.overlap_regions() == [SpeakerOverlap(start=2.0, end=3.0)]
+    assert diarizer.overlap_regions() == [
+        SpeakerOverlap(
+            start=2.0, end=3.0, speaker_ids=("SPEAKER_00", "SPEAKER_01")
+        )
+    ]
 
 
 def test_overlap_regions_empty_without_regular_annotation(
@@ -239,3 +260,219 @@ def test_pipeline_degrades_without_overlap_method(audio_file: Path, tmp_path: Pa
     )
 
     assert result.entries[0].overlap is False
+
+
+# --- участники зон наложения (speaker_ids) -----------------------------------
+
+
+def test_diarization_payload_roundtrip_preserves_speaker_ids() -> None:
+    segments = [SpeakerSegment(start=0.0, end=1.0, speaker_id="SPEAKER_00")]
+    overlaps = [
+        SpeakerOverlap(
+            start=0.2, end=0.8, speaker_ids=("SPEAKER_00", "SPEAKER_01")
+        )
+    ]
+
+    restored_segments, restored_overlaps = diarization_from_payload(
+        diarization_payload(segments, overlaps)
+    )
+
+    assert restored_segments == segments
+    assert restored_overlaps == overlaps
+
+
+def test_diarization_from_payload_tolerates_old_overlap_format() -> None:
+    # Старый кэш: у зоны нет поля ``speaker_ids`` — разбор не должен падать.
+    data = {"segments": [], "overlaps": [{"start": 0.2, "end": 0.8}]}
+
+    _, restored_overlaps = diarization_from_payload(data)
+
+    assert restored_overlaps == [SpeakerOverlap(start=0.2, end=0.8, speaker_ids=())]
+
+
+def test_apply_overlap_regions_names_extra_speakers() -> None:
+    main = Speaker(id="SPEAKER_00", display_name="Аня")
+    entries = [TranscriptEntry(start=0.0, end=4.0, text="спор", speaker=main)]
+    regions = [
+        SpeakerOverlap(
+            start=1.0, end=3.0, speaker_ids=("SPEAKER_00", "SPEAKER_01")
+        )
+    ]
+
+    result, speakers = apply_overlap_regions(
+        entries, [main], regions, known_speakers={"SPEAKER_01": "Боря"}
+    )
+
+    assert result[0].overlap is True
+    assert [speaker.id for speaker in result[0].extra_speakers] == ["SPEAKER_01"]
+    assert result[0].speaker_label == "Аня + Боря"
+    assert {speaker.id for speaker in speakers} == {"SPEAKER_00", "SPEAKER_01"}
+
+
+def test_apply_overlap_regions_unions_with_existing_extra_speakers() -> None:
+    main = Speaker(id="SPEAKER_00", display_name="Аня")
+    sweep_extra = Speaker(id="SPEAKER_09", display_name="Спикер 9")
+    entries = [
+        TranscriptEntry(
+            start=0.0,
+            end=4.0,
+            text="спор",
+            speaker=main,
+            extra_speakers=[sweep_extra],
+            overlap=True,
+        )
+    ]
+    regions = [
+        SpeakerOverlap(
+            start=1.0, end=3.0, speaker_ids=("SPEAKER_00", "SPEAKER_01")
+        )
+    ]
+
+    result, _ = apply_overlap_regions(entries, [main], regions)
+
+    # extras из заметания сохраняются, участник зоны добавляется без дублей.
+    assert [speaker.id for speaker in result[0].extra_speakers] == [
+        "SPEAKER_09",
+        "SPEAKER_01",
+    ]
+
+
+def test_apply_overlap_regions_old_format_marks_without_names() -> None:
+    main = Speaker(id="SPEAKER_00", display_name="Аня")
+    entries = [TranscriptEntry(start=0.0, end=2.0, text="x", speaker=main)]
+
+    result, _ = apply_overlap_regions(
+        entries, [main], [SpeakerOverlap(start=0.5, end=1.5)]
+    )
+
+    assert result[0].overlap is True
+    assert result[0].extra_speakers == []
+
+
+def test_apply_overlap_regions_orders_by_accumulated_overlap() -> None:
+    main = Speaker(id="SPEAKER_00", display_name="Аня")
+    entries = [TranscriptEntry(start=0.0, end=10.0, text="общий", speaker=main)]
+    regions = [
+        SpeakerOverlap(start=0.0, end=4.0, speaker_ids=("SPEAKER_00", "SPEAKER_01")),
+        SpeakerOverlap(start=5.0, end=6.0, speaker_ids=("SPEAKER_00", "SPEAKER_02")),
+    ]
+
+    result, _ = apply_overlap_regions(entries, [main], regions)
+
+    # SPEAKER_01 даёт 4 с, SPEAKER_02 — 1 с.
+    assert [speaker.id for speaker in result[0].extra_speakers] == [
+        "SPEAKER_01",
+        "SPEAKER_02",
+    ]
+
+
+def test_apply_overlap_regions_below_threshold_marks_but_no_names() -> None:
+    main = Speaker(id="SPEAKER_00", display_name="Аня")
+    entries = [TranscriptEntry(start=0.0, end=10.0, text="микро", speaker=main)]
+    regions = [
+        SpeakerOverlap(start=3.0, end=3.1, speaker_ids=("SPEAKER_00", "SPEAKER_01"))
+    ]
+
+    result, _ = apply_overlap_regions(entries, [main], regions)
+
+    assert result[0].overlap is True  # зона пересекает реплику
+    assert result[0].extra_speakers == []  # 0.1 с < порога 0.3
+
+
+def test_apply_overlap_regions_no_regions_is_noop() -> None:
+    main = Speaker(id="SPEAKER_00", display_name="Аня")
+    entries = [TranscriptEntry(start=0.0, end=2.0, text="x", speaker=main)]
+
+    same_entries, same_speakers = apply_overlap_regions(entries, [main], [])
+
+    assert same_entries is entries
+    assert same_speakers == [main]
+
+
+# --- интеграция: extras из зон наложения (эксклюзивные сегменты) --------------
+
+
+class _DisjointOverlapDiarizer:
+    """Эксклюзивные сегменты не пересекаются, но зона наложения — с участниками."""
+
+    def diarize(self, audio_path: Path, *, num_speakers: int | None = None):
+        return [
+            SpeakerSegment(start=0.0, end=1.0, speaker_id="SPEAKER_00"),
+            SpeakerSegment(start=1.0, end=2.0, speaker_id="SPEAKER_01"),
+        ]
+
+    def overlap_regions(self):
+        return [
+            SpeakerOverlap(
+                start=0.5, end=1.5, speaker_ids=("SPEAKER_00", "SPEAKER_01")
+            )
+        ]
+
+
+class _TwoSecondRecognizer:
+    def transcribe(self, audio_path: Path, *, language: str | None = None):
+        return ([TranscriptionSegment(start=0.0, end=2.0, text="спор")], "ru", 2.0)
+
+
+def test_pipeline_extra_speakers_from_overlap_regions(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    output_dir = tmp_path / "out"
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=output_dir,
+        export_formats=(ExportFormat.TXT, ExportFormat.JSON),
+        denoise=False,
+        speaker_names={"SPEAKER_00": "Аня", "SPEAKER_01": "Боря"},
+    )
+
+    result = run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=_TwoSecondRecognizer(),
+        diarizer=_DisjointOverlapDiarizer(),
+        merger=OverlapSegmentMerger(),
+    )
+
+    entry = result.entries[0]
+    assert entry.speaker is not None
+    assert entry.speaker.id == "SPEAKER_00"  # тай-брейк при равном перекрытии
+    assert [speaker.id for speaker in entry.extra_speakers] == ["SPEAKER_01"]
+    assert entry.overlap is True
+    assert entry.speaker_label == "Аня + Боря"
+
+    content = (output_dir / "sample.txt").read_text(encoding="utf-8")
+    assert "Аня + Боря" in content
+
+    payload = json.loads((output_dir / "sample.json").read_text(encoding="utf-8"))
+    assert payload["entries"][0]["extra_speakers"] == ["SPEAKER_01"]
+
+
+def test_pipeline_old_cache_overlaps_mark_without_names(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    # Старый формат зон (без участников): реплика помечается, extras пусты.
+    class _OldFormatDiarizer:
+        def diarize(self, audio_path: Path, *, num_speakers: int | None = None):
+            return [SpeakerSegment(start=0.0, end=2.0, speaker_id="SPEAKER_00")]
+
+        def overlap_regions(self):
+            return [SpeakerOverlap(start=0.5, end=1.5)]
+
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+        denoise=False,
+    )
+
+    result = run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=_TwoSecondRecognizer(),
+        diarizer=_OldFormatDiarizer(),
+        merger=OverlapSegmentMerger(),
+    )
+
+    assert result.entries[0].overlap is True
+    assert result.entries[0].extra_speakers == []

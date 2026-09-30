@@ -18,6 +18,12 @@ from audio_transcriber.domain.models import SpeakerOverlap, SpeakerSegment
 
 _MIN_OVERLAP_SPEAKERS = 2
 
+# Версия формата/алгоритма диаризации для ключа кэша. Изменение списка
+# участников зон наложения (``SpeakerOverlap.speaker_ids``) меняет результат
+# при тех же входных параметрах, поэтому старый кэш должен быть пересчитан
+# ровно один раз (см. ``pipeline._diarization_cache_params``).
+DIARIZATION_IMPL_VERSION = 2
+
 
 def compute_overlap_regions(
     speaker_segments: Iterable[SpeakerSegment],
@@ -27,6 +33,10 @@ def compute_overlap_regions(
     Реализовано линейным заметанием: события начала (+1) и конца (-1)
     сортируются по времени, при равенстве сначала обрабатываются концы — чтобы
     стык «один закончил, другой начал» не давал ложного нулевого наложения.
+
+    Каждая зона несёт ``speaker_ids`` — идентификаторы всех говорящих, активных
+    внутри неё хотя бы в один момент (объединение), в устойчивом порядке
+    (лексикографически). Это позволяет позже назвать участников наложения.
     """
     events: list[tuple[float, int, str]] = []
     for segment in speaker_segments:
@@ -40,9 +50,13 @@ def compute_overlap_regions(
 
     events.sort(key=lambda event: (event[0], event[1]))
 
+    # ``active`` хранит только говорящих с положительным числом активных
+    # сегментов: нулевые записи удаляются, иначе они бы попадали в участников
+    # зоны. ``region_speakers`` — объединение активных за время зоны.
     active: dict[str, int] = {}
     distinct = 0
     region_start: float | None = None
+    region_speakers: dict[str, None] = {}
     regions: list[SpeakerOverlap] = []
 
     for time, delta, speaker_id in events:
@@ -52,16 +66,27 @@ def compute_overlap_regions(
             active[speaker_id] = active.get(speaker_id, 0) + 1
         else:
             remaining = active.get(speaker_id, 0) - 1
-            active[speaker_id] = remaining
-            if remaining == 0:
+            if remaining > 0:
+                active[speaker_id] = remaining
+            else:
+                active.pop(speaker_id, None)
                 distinct -= 1
 
         if distinct >= _MIN_OVERLAP_SPEAKERS:
             if region_start is None:
                 region_start = time
+            for active_id in sorted(active):
+                region_speakers.setdefault(active_id, None)
         elif region_start is not None:
             if time > region_start:
-                regions.append(SpeakerOverlap(start=region_start, end=time))
+                regions.append(
+                    SpeakerOverlap(
+                        start=region_start,
+                        end=time,
+                        speaker_ids=tuple(region_speakers),
+                    )
+                )
             region_start = None
+            region_speakers = {}
 
     return regions

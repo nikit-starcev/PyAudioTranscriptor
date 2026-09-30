@@ -15,13 +15,18 @@ import pytest
 
 from audio_transcriber.cache.store import compute_cache_key
 from audio_transcriber.config.settings import AppConfig
+from audio_transcriber.diarization.overlap import DIARIZATION_IMPL_VERSION
 from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
 from audio_transcriber.domain.models import (
     SpeakerSegment,
     TranscriptEntry,
     TranscriptionSegment,
 )
-from audio_transcriber.pipeline import _asr_cache_params, run_pipeline
+from audio_transcriber.pipeline import (
+    _asr_cache_params,
+    _diarization_cache_params,
+    run_pipeline,
+)
 from audio_transcriber.transcription.whisper_cpp_engine import (
     ASR_IMPL_VERSION,
     WhisperCppRecognizer,
@@ -283,3 +288,32 @@ def test_faster_whisper_cache_params_have_no_whisper_cpp_salt(
     params = _asr_cache_params(config, Device.CPU, RecordingRecognizer())
 
     assert "asr_impl_version" not in params
+
+
+def test_diarization_cache_params_include_impl_version(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    config = _config(audio_file, tmp_path)
+
+    params = _diarization_cache_params(config, Device.CPU, RecordingDiarizer())
+
+    assert params["diarization_impl_version"] == DIARIZATION_IMPL_VERSION
+
+
+def test_diarization_cache_key_changes_with_impl_version(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config(audio_file, tmp_path)
+
+    before = compute_cache_key(
+        "diarization", audio_file, _diarization_cache_params(config, Device.CPU, RecordingDiarizer())
+    )
+    monkeypatch.setattr(
+        "audio_transcriber.pipeline.DIARIZATION_IMPL_VERSION",
+        DIARIZATION_IMPL_VERSION + 1,
+    )
+    after = compute_cache_key(
+        "diarization", audio_file, _diarization_cache_params(config, Device.CPU, RecordingDiarizer())
+    )
+
+    assert before != after
