@@ -17,6 +17,7 @@ from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
 from audio_transcriber.domain.models import TranscriptionResult
 from audio_transcriber.storage.glossary_db import Source
 from audio_transcriber.tui import app as tui_app
+from audio_transcriber.tui import screens as tui_screens
 
 
 @pytest.fixture(autouse=True)
@@ -1234,7 +1235,7 @@ def test_apply_names_renames_speakers_with_enrollment(
             mapping={"SPEAKER_00": "Пётр"}, best_candidates={}, speaker_count=1
         )
 
-    monkeypatch.setattr(tui_app, "enroll_speakers", fake_enroll)
+    monkeypatch.setattr(tui_screens, "enroll_speakers", fake_enroll)
     config = AppConfig(
         input_file=audio_file,
         output_dir=tmp_path / "out",
@@ -1318,7 +1319,7 @@ def test_apply_names_reports_counts_and_best_unmatched(
             speaker_count=2,
         )
 
-    monkeypatch.setattr(tui_app, "enroll_speakers", fake_enroll)
+    monkeypatch.setattr(tui_screens, "enroll_speakers", fake_enroll)
     config = AppConfig(
         input_file=audio_file,
         output_dir=tmp_path / "out",
