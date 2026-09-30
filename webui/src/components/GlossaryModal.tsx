@@ -201,28 +201,28 @@ function GlossaryModal({ open, onClose, onChanged }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 sm:items-center"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 sm:items-center dark:bg-black/60"
       onClick={onClose}
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-label="Глоссарий"
-        className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg bg-white shadow-xl"
+        className="flex max-h-[88vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg bg-white shadow-xl dark:bg-slate-900"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-800">
           <h2 className="font-medium">Глоссарий</h2>
           <div className="flex items-center gap-3">
             {stats && (
-              <span className="text-xs text-slate-400">
+              <span className="text-xs text-slate-400 dark:text-slate-500">
                 {stats.sources} источников · {stats.entries} записей ({stats.enabled} вкл.)
               </span>
             )}
             <button
               type="button"
               onClick={onClose}
-              className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100"
+              className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
             >
               Закрыть
             </button>
@@ -231,20 +231,25 @@ function GlossaryModal({ open, onClose, onChanged }: Props) {
 
         <div className="space-y-4 overflow-y-auto px-4 py-3">
           {error && (
-            <p className="rounded-md bg-red-50 px-3 py-1.5 text-xs text-red-700">{error}</p>
+            <p className="rounded-md bg-red-50 px-3 py-1.5 text-xs text-red-700 dark:bg-red-950/50 dark:text-red-300">
+              {error}
+            </p>
           )}
           {status && (
-            <p role="status" className="rounded-md bg-emerald-50 px-3 py-1.5 text-xs text-emerald-700">
+            <p
+              role="status"
+              className="rounded-md bg-emerald-50 px-3 py-1.5 text-xs text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300"
+            >
               {status}
             </p>
           )}
 
-          <section className="rounded-md border border-slate-200 p-3">
-            <p className="mb-2 text-xs font-medium text-slate-500">Источники</p>
+          <section className="rounded-md border border-slate-200 p-3 dark:border-slate-800">
+            <p className="mb-2 text-xs font-medium text-slate-500 dark:text-slate-400">Источники</p>
             {sources.length === 0 ? (
-              <p className="text-sm text-slate-400">Источников пока нет</p>
+              <p className="text-sm text-slate-400 dark:text-slate-500">Источников пока нет</p>
             ) : (
-              <ul className="divide-y divide-slate-100">
+              <ul className="divide-y divide-slate-100 dark:divide-slate-800">
                 {sources.map((source) => (
                   <li key={source.name} className="flex flex-wrap items-center gap-3 py-2">
                     <label className="flex items-center gap-2 text-sm">
@@ -256,12 +261,12 @@ function GlossaryModal({ open, onClose, onChanged }: Props) {
                       />
                       <span className="font-medium">{source.name}</span>
                     </label>
-                    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-500">
+                    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-500 dark:bg-slate-800 dark:text-slate-300">
                       {source.kind}
                     </span>
-                    <span className="text-xs text-slate-400">{source.count} записей</span>
+                    <span className="text-xs text-slate-400 dark:text-slate-500">{source.count} записей</span>
                     {source.path && (
-                      <span className="truncate text-xs text-slate-300" title={source.path}>
+                      <span className="truncate text-xs text-slate-300 dark:text-slate-600" title={source.path}>
                         {source.path}
                       </span>
                     )}
@@ -269,7 +274,7 @@ function GlossaryModal({ open, onClose, onChanged }: Props) {
                       type="button"
                       onClick={() => void deleteSource(source)}
                       disabled={busy}
-                      className="ml-auto rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
+                      className="ml-auto rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-40 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-red-950/50 dark:hover:text-red-300"
                     >
                       Удалить
                     </button>
@@ -279,8 +284,8 @@ function GlossaryModal({ open, onClose, onChanged }: Props) {
             )}
           </section>
 
-          <section className="rounded-md border border-slate-200 p-3">
-            <p className="mb-2 text-xs font-medium text-slate-500">Импорт файла (.txt / .csv)</p>
+          <section className="rounded-md border border-slate-200 p-3 dark:border-slate-800">
+            <p className="mb-2 text-xs font-medium text-slate-500 dark:text-slate-400">Импорт файла (.txt / .csv)</p>
             <div className="flex flex-wrap items-center gap-2">
               <input
                 type="file"
@@ -292,12 +297,12 @@ function GlossaryModal({ open, onClose, onChanged }: Props) {
                 value={importSource}
                 onChange={(event) => setImportSource(event.target.value)}
                 placeholder="Имя источника"
-                className="w-40 rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none"
+                className="w-40 rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
               />
               <select
                 value={importKind}
                 onChange={(event) => setImportKind(event.target.value)}
-                className="rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none"
+                className="rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
               >
                 <option value="auto">авто</option>
                 <option value="txt">txt</option>
@@ -307,58 +312,58 @@ function GlossaryModal({ open, onClose, onChanged }: Props) {
                 type="button"
                 onClick={() => void importFileSubmit()}
                 disabled={busy}
-                className="rounded-md bg-slate-800 px-3 py-1.5 text-xs text-white hover:bg-slate-700 disabled:opacity-40"
+                className="rounded-md bg-slate-800 px-3 py-1.5 text-xs text-white hover:bg-slate-700 disabled:opacity-40 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-white"
               >
                 Импортировать
               </button>
             </div>
             {report && (
-              <p className="mt-2 text-xs text-slate-500">
+              <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
                 «{report.source}» ({report.kind}): добавлено {report.added}, пропущено{' '}
                 {report.skipped}, всего {report.total}
               </p>
             )}
           </section>
 
-          <section className="rounded-md border border-slate-200 p-3">
-            <p className="mb-2 text-xs font-medium text-slate-500">Добавить запись</p>
+          <section className="rounded-md border border-slate-200 p-3 dark:border-slate-800">
+            <p className="mb-2 text-xs font-medium text-slate-500 dark:text-slate-400">Добавить запись</p>
             <div className="grid gap-2 sm:grid-cols-4">
               <input
                 value={draft.canonical}
                 onChange={(event) => setDraft({ ...draft, canonical: event.target.value })}
                 placeholder="Канон *"
-                className="rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none"
+                className="rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
               />
               <input
                 value={draft.variant}
                 onChange={(event) => setDraft({ ...draft, variant: event.target.value })}
                 placeholder="Вариант (ошибка)"
-                className="rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none"
+                className="rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
               />
               <input
                 value={draft.note}
                 onChange={(event) => setDraft({ ...draft, note: event.target.value })}
                 placeholder="Заметка"
-                className="rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none"
+                className="rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
               />
               <input
                 value={draft.source}
                 onChange={(event) => setDraft({ ...draft, source: event.target.value })}
                 placeholder="Источник"
-                className="rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none"
+                className="rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
               />
             </div>
             <button
               type="button"
               onClick={() => void addEntry()}
               disabled={busy}
-              className="mt-2 rounded-md bg-slate-800 px-3 py-1.5 text-xs text-white hover:bg-slate-700 disabled:opacity-40"
+              className="mt-2 rounded-md bg-slate-800 px-3 py-1.5 text-xs text-white hover:bg-slate-700 disabled:opacity-40 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-white"
             >
               Добавить
             </button>
           </section>
 
-          <section className="rounded-md border border-slate-200 p-3">
+          <section className="rounded-md border border-slate-200 p-3 dark:border-slate-800">
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <input
                 value={search}
@@ -367,7 +372,7 @@ function GlossaryModal({ open, onClose, onChanged }: Props) {
                   setOffset(0)
                 }}
                 placeholder="Поиск по записям…"
-                className="w-56 rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none"
+                className="w-56 rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
               />
               <select
                 value={sourceFilter}
@@ -375,7 +380,7 @@ function GlossaryModal({ open, onClose, onChanged }: Props) {
                   setSourceFilter(event.target.value)
                   setOffset(0)
                 }}
-                className="rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none"
+                className="rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
               >
                 <option value="">Все источники</option>
                 {sources.map((source) => (
@@ -384,14 +389,14 @@ function GlossaryModal({ open, onClose, onChanged }: Props) {
                   </option>
                 ))}
               </select>
-              <span className="ml-auto text-xs text-slate-400">
+              <span className="ml-auto text-xs text-slate-400 dark:text-slate-500">
                 {total === 0 ? '0' : `${offset + 1}–${pageEnd}`} из {total}
               </span>
               <button
                 type="button"
                 onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
                 disabled={!canPrev || loading}
-                className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100 disabled:opacity-40"
+                className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800 disabled:opacity-40"
               >
                 ←
               </button>
@@ -399,20 +404,20 @@ function GlossaryModal({ open, onClose, onChanged }: Props) {
                 type="button"
                 onClick={() => setOffset(offset + PAGE_SIZE)}
                 disabled={!canNext || loading}
-                className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100 disabled:opacity-40"
+                className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800 disabled:opacity-40"
               >
                 →
               </button>
             </div>
 
             {loading ? (
-              <p className="py-6 text-center text-sm text-slate-400">Загрузка…</p>
+              <p className="py-6 text-center text-sm text-slate-400 dark:text-slate-500">Загрузка…</p>
             ) : entries.length === 0 ? (
-              <p className="py-6 text-center text-sm text-slate-400">Записей нет</p>
+              <p className="py-6 text-center text-sm text-slate-400 dark:text-slate-500">Записей нет</p>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full border-collapse text-sm">
-                  <thead className="text-left text-xs uppercase text-slate-500">
+                  <thead className="text-left text-xs uppercase text-slate-500 dark:text-slate-400">
                     <tr>
                       <th className="px-2 py-1.5 font-medium">Вкл</th>
                       <th className="px-2 py-1.5 font-medium">Канон</th>
@@ -424,7 +429,7 @@ function GlossaryModal({ open, onClose, onChanged }: Props) {
                   </thead>
                   <tbody>
                     {entries.map((entry) => (
-                      <tr key={entry.id} className="border-t border-slate-100">
+                      <tr key={entry.id} className="border-t border-slate-100 dark:border-slate-800">
                         <td className="px-2 py-1.5">
                           <input
                             type="checkbox"
@@ -439,32 +444,32 @@ function GlossaryModal({ open, onClose, onChanged }: Props) {
                               <input
                                 value={edit.canonical}
                                 onChange={(event) => setEdit({ ...edit, canonical: event.target.value })}
-                                className="w-32 rounded border border-slate-300 px-1 py-0.5"
+                                className="w-32 rounded border border-slate-300 px-1 py-0.5 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                               />
                             </td>
                             <td className="px-2 py-1.5">
                               <input
                                 value={edit.variant}
                                 onChange={(event) => setEdit({ ...edit, variant: event.target.value })}
-                                className="w-32 rounded border border-slate-300 px-1 py-0.5"
+                                className="w-32 rounded border border-slate-300 px-1 py-0.5 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                               />
                             </td>
                             <td className="px-2 py-1.5">
                               <input
                                 value={edit.note}
                                 onChange={(event) => setEdit({ ...edit, note: event.target.value })}
-                                className="w-40 rounded border border-slate-300 px-1 py-0.5"
+                                className="w-40 rounded border border-slate-300 px-1 py-0.5 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                               />
                             </td>
                           </>
                         ) : (
                           <>
                             <td className="px-2 py-1.5">{entry.canonical}</td>
-                            <td className="px-2 py-1.5 text-slate-500">{entry.variant ?? '—'}</td>
-                            <td className="px-2 py-1.5 text-slate-500">{entry.note ?? '—'}</td>
+                            <td className="px-2 py-1.5 text-slate-500 dark:text-slate-400">{entry.variant ?? '—'}</td>
+                            <td className="px-2 py-1.5 text-slate-500 dark:text-slate-400">{entry.note ?? '—'}</td>
                           </>
                         )}
-                        <td className="px-2 py-1.5 text-xs text-slate-400">{entry.source ?? '—'}</td>
+                        <td className="px-2 py-1.5 text-xs text-slate-400 dark:text-slate-500">{entry.source ?? '—'}</td>
                         <td className="whitespace-nowrap px-2 py-1.5 text-right">
                           {edit?.id === entry.id ? (
                             <span className="flex gap-1">
@@ -472,14 +477,14 @@ function GlossaryModal({ open, onClose, onChanged }: Props) {
                                 type="button"
                                 onClick={saveEdit}
                                 disabled={busy}
-                                className="rounded bg-slate-800 px-2 py-0.5 text-xs text-white hover:bg-slate-700 disabled:opacity-40"
+                                className="rounded bg-slate-800 px-2 py-0.5 text-xs text-white hover:bg-slate-700 disabled:opacity-40 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-white"
                               >
                                 ОК
                               </button>
                               <button
                                 type="button"
                                 onClick={() => setEdit(null)}
-                                className="rounded border border-slate-300 px-2 py-0.5 text-xs hover:bg-slate-100"
+                                className="rounded border border-slate-300 px-2 py-0.5 text-xs hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
                               >
                                 Отмена
                               </button>
@@ -496,7 +501,7 @@ function GlossaryModal({ open, onClose, onChanged }: Props) {
                                     note: entry.note ?? '',
                                   })
                                 }
-                                className="rounded border border-slate-300 px-2 py-0.5 text-xs hover:bg-slate-100"
+                                className="rounded border border-slate-300 px-2 py-0.5 text-xs hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
                               >
                                 Правка
                               </button>
@@ -504,7 +509,7 @@ function GlossaryModal({ open, onClose, onChanged }: Props) {
                                 type="button"
                                 onClick={() => void deleteEntry(entry)}
                                 disabled={busy}
-                                className="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
+                                className="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-40 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-red-950/50 dark:hover:text-red-300"
                               >
                                 Удалить
                               </button>

@@ -5,9 +5,7 @@ import {
   errorMessage,
   formatDuration,
   formatSize,
-  formatTime,
   isTerminal,
-  speakerName,
   type ApplyNamesResponse,
   type ConfigInfo,
   type FileItem,
@@ -23,6 +21,8 @@ import {
 import GlossaryModal from './components/GlossaryModal'
 import SettingsModal from './components/SettingsModal'
 import SpeakersPanel from './components/SpeakersPanel'
+import ThemeToggle from './components/ThemeToggle'
+import TranscriptTable from './components/TranscriptTable'
 import VoicesModal from './components/VoicesModal'
 
 const STAGES: { key: string; label: string }[] = [
@@ -45,11 +45,11 @@ const STATUS_LABELS: Record<string, string> = {
 }
 
 const STATUS_STYLES: Record<string, string> = {
-  queued: 'bg-slate-100 text-slate-600',
-  running: 'bg-blue-100 text-blue-700',
-  done: 'bg-emerald-100 text-emerald-700',
-  error: 'bg-red-100 text-red-700',
-  cancelled: 'bg-amber-100 text-amber-700',
+  queued: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300',
+  running: 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300',
+  done: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
+  error: 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300',
+  cancelled: 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
 }
 
 function App() {
@@ -318,38 +318,49 @@ function App() {
   const activeJob = jobs.find((job) => job.id === activeJobId) ?? null
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-6xl items-baseline gap-3 px-6 py-4">
+    <div className="min-h-screen bg-slate-50 text-slate-800 dark:bg-slate-950 dark:text-slate-100">
+      <header className="border-b border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-3 gap-y-2 px-6 py-4">
           <h1 className="text-xl font-semibold">AudioTranscriber</h1>
-          <span className="text-sm text-slate-400">веб-интерфейс · этап 3</span>
-          <div className="ml-auto flex items-center gap-2">
+          <span className="text-sm text-slate-400 dark:text-slate-500">
+            веб-интерфейс · этап 3
+          </span>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => setVoicesOpen(true)}
+              className="rounded-md border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
+            >
+              Коллекция голосов
+            </button>
             <button
               onClick={() => setGlossaryOpen(true)}
-              className="rounded-md border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-100"
+              className="rounded-md border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
             >
               Глоссарий
             </button>
             <button
               onClick={() => setSettingsOpen(true)}
-              className="rounded-md border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-100"
+              className="rounded-md border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
             >
               Настройки
             </button>
+            <ThemeToggle />
           </div>
-          {version && <span className="text-xs text-slate-400">v{version}</span>}
+          {version && (
+            <span className="text-xs text-slate-400 dark:text-slate-500">v{version}</span>
+          )}
         </div>
       </header>
 
       <main className="mx-auto max-w-6xl space-y-6 px-6 py-6">
         {error && (
-          <div className="rounded-md border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
+          <div className="rounded-md border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/50 dark:text-red-300">
             {error}
           </div>
         )}
 
         {config && (
-          <p className="text-xs text-slate-500">
+          <p className="text-xs text-slate-500 dark:text-slate-400">
             Файлы: <code>{config.input_dir}</code> · Результаты: <code>{config.output_dir}</code> ·
             Экспорт: {config.export_formats.join(', ')}
             {config.llm_enabled ? ' · LLM вкл.' : ''}
@@ -358,7 +369,7 @@ function App() {
         )}
 
         <div className="grid gap-6 lg:grid-cols-2">
-          <section className="rounded-lg border border-slate-200 bg-white p-4">
+          <section className="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="font-medium">Файлы</h2>
               <div>
@@ -374,27 +385,29 @@ function App() {
                 />
                 <button
                   onClick={() => fileInput.current?.click()}
-                  className="rounded-md bg-slate-800 px-3 py-1.5 text-sm text-white hover:bg-slate-700"
+                  className="rounded-md bg-slate-800 px-3 py-1.5 text-sm text-white hover:bg-slate-700 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-white"
                 >
                   Загрузить файл
                 </button>
               </div>
             </div>
             {files.length === 0 ? (
-              <p className="py-6 text-center text-sm text-slate-400">Файлов пока нет</p>
+              <p className="py-6 text-center text-sm text-slate-400 dark:text-slate-500">
+                Файлов пока нет
+              </p>
             ) : (
-              <ul className="divide-y divide-slate-100">
+              <ul className="divide-y divide-slate-100 dark:divide-slate-800">
                 {files.map((file) => (
                   <li key={file.path} className="flex items-center gap-3 py-2">
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm">{file.name}</p>
-                      <p className="text-xs text-slate-400">
+                      <p className="text-xs text-slate-400 dark:text-slate-500">
                         {formatSize(file.size)} · {formatDuration(file.duration)}
                       </p>
                     </div>
                     <button
                       onClick={() => void enqueue(file.name)}
-                      className="rounded-md border border-slate-300 px-3 py-1 text-xs hover:bg-slate-100"
+                      className="rounded-md border border-slate-300 px-3 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
                     >
                       В очередь
                     </button>
@@ -404,20 +417,22 @@ function App() {
             )}
           </section>
 
-          <section className="rounded-lg border border-slate-200 bg-white p-4">
+          <section className="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="font-medium">Задачи</h2>
               <button
                 onClick={() => void refreshJobs()}
-                className="rounded-md border border-slate-300 px-3 py-1 text-xs hover:bg-slate-100"
+                className="rounded-md border border-slate-300 px-3 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
               >
                 Обновить
               </button>
             </div>
             {jobs.length === 0 ? (
-              <p className="py-6 text-center text-sm text-slate-400">Задач пока нет</p>
+              <p className="py-6 text-center text-sm text-slate-400 dark:text-slate-500">
+                Задач пока нет
+              </p>
             ) : (
-              <ul className="divide-y divide-slate-100">
+              <ul className="divide-y divide-slate-100 dark:divide-slate-800">
                 {jobs.map((job) => (
                   <li key={job.id} className="flex items-center gap-3 py-2">
                     <button
@@ -425,14 +440,15 @@ function App() {
                       className="min-w-0 flex-1 text-left"
                     >
                       <p className="truncate text-sm">{job.name}</p>
-                      <p className="text-xs text-slate-400">
+                      <p className="text-xs text-slate-400 dark:text-slate-500">
                         {job.stage ? `${job.stage} · ` : ''}
                         {job.fraction != null ? `${Math.round(job.fraction * 100)}%` : '—'}
                       </p>
                     </button>
                     <span
                       className={`rounded-full px-2 py-0.5 text-xs ${
-                        STATUS_STYLES[job.status] ?? 'bg-slate-100 text-slate-600'
+                        STATUS_STYLES[job.status] ??
+                        'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
                       }`}
                     >
                       {STATUS_LABELS[job.status] ?? job.status}
@@ -448,7 +464,7 @@ function App() {
                     {job.status !== 'running' && (
                       <button
                         onClick={() => void deleteJob(job.id)}
-                        className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:bg-red-50 hover:text-red-600"
+                        className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:bg-red-50 hover:text-red-600 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-red-950/50 dark:hover:text-red-300"
                       >
                         Удалить
                       </button>
@@ -461,11 +477,11 @@ function App() {
         </div>
 
         {activeJobId && (
-          <section className="rounded-lg border border-slate-200 bg-white p-4">
+          <section className="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
             <h2 className="mb-3 font-medium">
               Прогресс{activeJob ? ` · ${activeJob.name}` : ''}
             </h2>
-            <div className="mb-2 h-2 w-full overflow-hidden rounded-full bg-slate-100">
+            <div className="mb-2 h-2 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
               <div
                 className={`h-full rounded-full bg-blue-500 transition-all ${
                   progress?.fraction == null ? 'animate-pulse' : ''
@@ -473,7 +489,7 @@ function App() {
                 style={{ width: `${Math.round((progress?.fraction ?? 0) * 100)}%` }}
               />
             </div>
-            <p className="mb-3 text-sm text-slate-600">
+            <p className="mb-3 text-sm text-slate-600 dark:text-slate-300">
               {progress
                 ? STATUS_LABELS[progress.status] ?? progress.status
                 : 'Ожидание...'}
@@ -492,15 +508,17 @@ function App() {
                     <span
                       className={
                         state === 'done'
-                          ? 'text-emerald-600'
+                          ? 'text-emerald-600 dark:text-emerald-400'
                           : state === 'current'
-                            ? 'text-blue-600'
-                            : 'text-slate-300'
+                            ? 'text-blue-600 dark:text-blue-400'
+                            : 'text-slate-300 dark:text-slate-600'
                       }
                     >
                       {state === 'done' ? '✓' : state === 'current' ? '●' : '·'}
                     </span>
-                    <span className={state === 'pending' ? 'text-slate-400' : ''}>
+                    <span
+                      className={state === 'pending' ? 'text-slate-400 dark:text-slate-500' : ''}
+                    >
                       {stage.label}
                     </span>
                   </li>
@@ -511,10 +529,10 @@ function App() {
         )}
 
         {result && activeJobId && (
-          <section className="space-y-4 rounded-lg border border-slate-200 bg-white p-4">
+          <section className="space-y-4 rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
             <div className="flex flex-wrap items-center gap-3">
               <h2 className="font-medium">Стенограмма</h2>
-              <span className="text-xs text-slate-400">
+              <span className="text-xs text-slate-400 dark:text-slate-500">
                 {result.entries.length} реплик · {result.speakers.length} говорящих ·{' '}
                 {formatDuration(result.duration)} · язык {result.language ?? '—'}
               </span>
@@ -522,11 +540,11 @@ function App() {
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Поиск по тексту..."
-                className="ml-auto w-64 rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:border-blue-400 focus:outline-none"
+                className="ml-auto w-64 rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder-slate-500"
               />
             </div>
 
-            <div className="flex flex-wrap items-center gap-4 text-xs text-slate-500">
+            <div className="flex flex-wrap items-center gap-4 text-xs text-slate-500 dark:text-slate-400">
               {result.marks.map((mark) => (
                 <span key={mark.key}>
                   <span className="mr-1 text-base">{mark.symbol}</span>
@@ -551,63 +569,36 @@ function App() {
               onOpenVoices={() => setVoicesOpen(true)}
             />
 
-            <div className="max-h-[28rem] overflow-auto rounded-md border border-slate-200">
-              <table className="w-full border-collapse text-sm">
-                <thead className="sticky top-0 bg-slate-100 text-left text-xs uppercase text-slate-500">
-                  <tr>
-                    <th className="px-3 py-2 font-medium">Время</th>
-                    <th className="px-3 py-2 font-medium">Говорящий</th>
-                    <th className="px-3 py-2 font-medium">Метки</th>
-                    <th className="px-3 py-2 font-medium">Текст</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredEntries.map((entry, index) => (
-                    <tr key={`${entry.start}-${index}`} className="border-t border-slate-100">
-                      <td className="whitespace-nowrap px-3 py-1.5 font-mono text-xs text-slate-500">
-                        {formatTime(entry.start)}
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-1.5">
-                        {speakerName(result.speakers, entry.speaker_id)}
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-1.5 text-base">
-                        {entry.low_confidence && <span title="низкая уверенность">⚠</span>}
-                        {entry.overlap && <span title="наложение речи">⇄</span>}
-                      </td>
-                      <td className="px-3 py-1.5">{entry.text}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {filteredEntries.length === 0 && (
-                <p className="py-6 text-center text-sm text-slate-400">Ничего не найдено</p>
-              )}
-            </div>
+            <TranscriptTable
+              jobId={activeJobId}
+              entries={filteredEntries}
+              speakers={result.speakers}
+            />
 
-            <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+            <div className="rounded-md border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-800/50">
               <div className="flex flex-wrap items-center gap-3">
                 <button
                   onClick={() => void generateProtocol(activeJobId)}
                   disabled={protocolBusy}
-                  className="rounded-md bg-slate-800 px-3 py-1.5 text-sm text-white hover:bg-slate-700 disabled:opacity-40"
+                  className="rounded-md bg-slate-800 px-3 py-1.5 text-sm text-white hover:bg-slate-700 disabled:opacity-40 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-white"
                 >
                   {protocolBusy ? 'Формирование протокола…' : 'Сформировать протокол'}
                 </button>
                 {protocolBusy && (
-                  <span className="animate-pulse text-xs text-slate-500">
+                  <span className="animate-pulse text-xs text-slate-500 dark:text-slate-400">
                     Считается резюме и экспорт — это может занять время
                   </span>
                 )}
                 {protocol && (
                   <span className="flex items-center gap-2 text-sm">
                     <a
-                      className="rounded-md border border-slate-300 bg-white px-3 py-1 hover:bg-slate-100"
+                      className="rounded-md border border-slate-300 bg-white px-3 py-1 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:hover:bg-slate-800"
                       href={`/api/jobs/${activeJobId}/protocol/download?fmt=txt`}
                     >
                       Скачать .txt
                     </a>
                     <a
-                      className="rounded-md border border-slate-300 bg-white px-3 py-1 hover:bg-slate-100"
+                      className="rounded-md border border-slate-300 bg-white px-3 py-1 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:hover:bg-slate-800"
                       href={`/api/jobs/${activeJobId}/protocol/download?fmt=docx`}
                     >
                       Скачать .docx
@@ -616,16 +607,18 @@ function App() {
                 )}
               </div>
               {protocolError && (
-                <p className="mt-2 rounded-md bg-red-50 px-3 py-1.5 text-xs text-red-700">
+                <p className="mt-2 rounded-md bg-red-50 px-3 py-1.5 text-xs text-red-700 dark:bg-red-950/50 dark:text-red-300">
                   {protocolError}
                 </p>
               )}
               {summary && (
                 <div className="mt-3">
-                  <p className="mb-1 text-xs font-medium uppercase text-slate-500">
+                  <p className="mb-1 text-xs font-medium uppercase text-slate-500 dark:text-slate-400">
                     Резюме встречи
                   </p>
-                  <p className="whitespace-pre-wrap text-sm text-slate-700">{summary}</p>
+                  <p className="whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-200">
+                    {summary}
+                  </p>
                 </div>
               )}
             </div>

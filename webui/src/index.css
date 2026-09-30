@@ -1,1 +1,16 @@
 @import "tailwindcss";
+
+/*
+ * Тёмная тема включается классом на <html> (см. inline-скрипт в index.html),
+ * а не только через prefers-color-scheme: это позволяет пользователю выбрать
+ * «Светлая / Тёмная / Авто» и сохранить выбор в localStorage.
+ */
+@custom-variant dark (&:where(.dark, .dark *));
+
+html {
+  background-color: #f8fafc;
+}
+
+html.dark {
+  background-color: #020617;
+}

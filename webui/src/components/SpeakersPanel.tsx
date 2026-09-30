@@ -115,23 +115,25 @@ function SpeakersPanel({
   }
 
   return (
-    <div className="rounded-md border border-slate-200 p-3">
+    <div className="rounded-md border border-slate-200 p-3 dark:border-slate-800">
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <h3 className="font-medium">Говорящие</h3>
-        <span className="text-xs text-slate-400">{result.speakers.length} шт.</span>
+        <span className="text-xs text-slate-400 dark:text-slate-500">
+          {result.speakers.length} шт.
+        </span>
         <div className="ml-auto flex flex-wrap gap-2">
           <button
             type="button"
             onClick={applyNames}
             disabled={busy || result.speakers.length === 0}
-            className="rounded-md bg-slate-800 px-3 py-1.5 text-xs text-white hover:bg-slate-700 disabled:opacity-40"
+            className="rounded-md bg-slate-800 px-3 py-1.5 text-xs text-white hover:bg-slate-700 disabled:opacity-40 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-white"
           >
             Применить имена
           </button>
           <button
             type="button"
             onClick={onOpenVoices}
-            className="rounded-md border border-slate-300 px-3 py-1.5 text-xs hover:bg-slate-100"
+            className="rounded-md border border-slate-300 px-3 py-1.5 text-xs hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
           >
             Библиотека голосов
           </button>
@@ -143,8 +145,8 @@ function SpeakersPanel({
           role="status"
           className={`mb-3 rounded-md px-3 py-1.5 text-xs ${
             status.kind === 'error'
-              ? 'bg-red-50 text-red-700'
-              : 'bg-slate-50 text-slate-600'
+              ? 'bg-red-50 text-red-700 dark:bg-red-950/50 dark:text-red-300'
+              : 'bg-slate-50 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
           }`}
         >
           {status.text}
@@ -159,9 +161,9 @@ function SpeakersPanel({
           return (
             <li
               key={speaker.id}
-              className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-slate-100 bg-slate-50/60 px-3 py-2"
+              className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-slate-100 bg-slate-50/60 px-3 py-2 dark:border-slate-800 dark:bg-slate-800/40"
             >
-              <span className="w-28 shrink-0 font-mono text-xs text-slate-500">
+              <span className="w-28 shrink-0 font-mono text-xs text-slate-500 dark:text-slate-400">
                 {speaker.id}
               </span>
 
@@ -176,19 +178,19 @@ function SpeakersPanel({
                         if (event.key === 'Enter') submitEdit(editing)
                         if (event.key === 'Escape') setEdit(null)
                       }}
-                      className="w-48 rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none"
+                      className="w-48 rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                     />
                     <button
                       type="button"
                       onClick={() => submitEdit(editing)}
-                      className="rounded-md bg-slate-800 px-2 py-1 text-xs text-white hover:bg-slate-700"
+                      className="rounded-md bg-slate-800 px-2 py-1 text-xs text-white hover:bg-slate-700 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-white"
                     >
                       ОК
                     </button>
                     <button
                       type="button"
                       onClick={() => setEdit(null)}
-                      className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100"
+                      className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
                     >
                       Отмена
                     </button>
@@ -202,13 +204,13 @@ function SpeakersPanel({
                       onClick={() =>
                         setEdit({ sid: speaker.id, kind: 'rename', value: speaker.display_name })
                       }
-                      className="text-xs text-slate-400 hover:text-slate-700"
+                      className="text-xs text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-200"
                     >
                       ✎
                     </button>
                   </div>
                 )}
-                <p className="text-xs text-slate-400">
+                <p className="text-xs text-slate-400 dark:text-slate-500">
                   {counts[speaker.id] ?? 0} реплик · Образец {speaker.has_sample ? '✓' : '—'}
                   {speaker.has_sample ? ` · ${formatDuration(duration ?? null)}` : ''}
                 </p>
@@ -234,19 +236,19 @@ function SpeakersPanel({
                         if (event.key === 'Enter') submitEdit(editing)
                         if (event.key === 'Escape') setEdit(null)
                       }}
-                      className="w-40 rounded-md border border-slate-300 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none"
+                      className="w-40 rounded-md border border-slate-300 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                     />
                     <button
                       type="button"
                       onClick={() => submitEdit(editing)}
-                      className="rounded-md bg-slate-800 px-2 py-1 text-xs text-white hover:bg-slate-700"
+                      className="rounded-md bg-slate-800 px-2 py-1 text-xs text-white hover:bg-slate-700 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-white"
                     >
                       Сохранить
                     </button>
                     <button
                       type="button"
                       onClick={() => setEdit(null)}
-                      className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100"
+                      className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
                     >
                       Отмена
                     </button>
@@ -263,7 +265,7 @@ function SpeakersPanel({
                         value: speaker.display_name,
                       })
                     }
-                    className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100 disabled:opacity-40"
+                    className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:hover:bg-slate-800"
                   >
                     В библиотеку
                   </button>
@@ -276,7 +278,7 @@ function SpeakersPanel({
                       onChange={(event) =>
                         setMergeTarget((prev) => ({ ...prev, [speaker.id]: event.target.value }))
                       }
-                      className="rounded-md border border-slate-300 px-2 py-1 text-xs"
+                      className="rounded-md border border-slate-300 px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                     >
                       <option value="">Объединить в…</option>
                       {others.map((item) => (
@@ -289,7 +291,7 @@ function SpeakersPanel({
                       type="button"
                       disabled={!mergeTarget[speaker.id] || busy}
                       onClick={() => merge(speaker.id)}
-                      className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100 disabled:opacity-40"
+                      className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:hover:bg-slate-800"
                     >
                       →
                     </button>

@@ -4,6 +4,23 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AudioTranscriber — веб-интерфейс</title>
+    <script>
+      // Тема применяется до первой отрисовки, чтобы не было мигания.
+      (function () {
+        try {
+          var stored = localStorage.getItem('at-theme')
+          var mode = stored === 'light' || stored === 'dark' ? stored : 'auto'
+          var dark =
+            mode === 'dark' ||
+            (mode === 'auto' &&
+              window.matchMedia('(prefers-color-scheme: dark)').matches)
+          document.documentElement.classList.toggle('dark', dark)
+          document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
+        } catch (e) {
+          // localStorage может быть недоступен — остаётся светлая тема
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

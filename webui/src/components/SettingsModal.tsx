@@ -118,22 +118,22 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 sm:items-center"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 sm:items-center dark:bg-black/60"
       onClick={onClose}
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-label="Настройки"
-        className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg bg-white shadow-xl"
+        className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg bg-white shadow-xl dark:bg-slate-900"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-800">
           <h2 className="font-medium">Настройки</h2>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100"
+            className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
           >
             Закрыть
           </button>
@@ -141,20 +141,27 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
 
         <div className="space-y-4 overflow-y-auto px-4 py-3">
           {error && (
-            <p className="rounded-md bg-red-50 px-3 py-1.5 text-xs text-red-700">{error}</p>
+            <p className="rounded-md bg-red-50 px-3 py-1.5 text-xs text-red-700 dark:bg-red-950/50 dark:text-red-300">
+              {error}
+            </p>
           )}
           {status && (
-            <p role="status" className="rounded-md bg-emerald-50 px-3 py-1.5 text-xs text-emerald-700">
+            <p
+              role="status"
+              className="rounded-md bg-emerald-50 px-3 py-1.5 text-xs text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300"
+            >
               {status}
             </p>
           )}
 
           {loading || !settings ? (
-            <p className="py-6 text-center text-sm text-slate-400">Загрузка…</p>
+            <p className="py-6 text-center text-sm text-slate-400 dark:text-slate-500">Загрузка…</p>
           ) : (
             <>
-              <fieldset className="space-y-2 rounded-md border border-slate-200 p-3">
-                <legend className="px-1 text-xs font-medium text-slate-500">Режимы обработки</legend>
+              <fieldset className="space-y-2 rounded-md border border-slate-200 p-3 dark:border-slate-800">
+                <legend className="px-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+                  Режимы обработки
+                </legend>
                 {TOGGLES.map((toggle) => (
                   <label key={toggle.key} className="flex items-start gap-2 text-sm">
                     <input
@@ -167,14 +174,18 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
                     />
                     <span>
                       {toggle.label}
-                      <span className="block text-xs text-slate-400">{toggle.hint}</span>
+                      <span className="block text-xs text-slate-400 dark:text-slate-500">
+                        {toggle.hint}
+                      </span>
                     </span>
                   </label>
                 ))}
               </fieldset>
 
-              <fieldset className="space-y-2 rounded-md border border-slate-200 p-3">
-                <legend className="px-1 text-xs font-medium text-slate-500">Форматы экспорта</legend>
+              <fieldset className="space-y-2 rounded-md border border-slate-200 p-3 dark:border-slate-800">
+                <legend className="px-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+                  Форматы экспорта
+                </legend>
                 <div className="flex flex-wrap gap-4">
                   {EXPORT_FORMATS.map((format) => (
                     <label key={format} className="flex items-center gap-2 text-sm">
@@ -189,33 +200,37 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
                 </div>
               </fieldset>
 
-              <fieldset className="space-y-3 rounded-md border border-slate-200 p-3">
-                <legend className="px-1 text-xs font-medium text-slate-500">Пути</legend>
+              <fieldset className="space-y-3 rounded-md border border-slate-200 p-3 dark:border-slate-800">
+                <legend className="px-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+                  Пути
+                </legend>
                 <label className="block text-sm">
-                  <span className="text-slate-600">БД глоссария</span>
+                  <span className="text-slate-600 dark:text-slate-300">БД глоссария</span>
                   <input
                     value={settings.glossary_db}
                     onChange={(event) => update({ glossary_db: event.target.value })}
                     placeholder="glossary.db"
-                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none"
+                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                   />
-                  <span className="mt-0.5 block text-xs text-slate-400">
+                  <span className="mt-0.5 block text-xs text-slate-400 dark:text-slate-500">
                     Итог: <code>{settings.glossary_db_path}</code>
                   </span>
                 </label>
                 <label className="block text-sm">
-                  <span className="text-slate-600">Каталог образцов голоса</span>
+                  <span className="text-slate-600 dark:text-slate-300">
+                    Каталог образцов голоса
+                  </span>
                   <input
                     value={settings.voices_dir}
                     onChange={(event) => update({ voices_dir: event.target.value })}
                     placeholder="voices"
-                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none"
+                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                   />
-                  <span className="mt-0.5 block text-xs text-slate-400">
+                  <span className="mt-0.5 block text-xs text-slate-400 dark:text-slate-500">
                     Итог: <code>{settings.voices_dir_resolved}</code>
                   </span>
                 </label>
-                <div className="grid gap-1 text-xs text-slate-400 sm:grid-cols-2">
+                <div className="grid gap-1 text-xs text-slate-400 sm:grid-cols-2 dark:text-slate-500">
                   <span>
                     Загрузки: <code>{settings.input_dir}</code>
                   </span>
@@ -228,11 +243,11 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
           )}
         </div>
 
-        <div className="flex justify-end gap-2 border-t border-slate-200 px-4 py-3">
+        <div className="flex justify-end gap-2 border-t border-slate-200 px-4 py-3 dark:border-slate-800">
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-100"
+            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
           >
             Отмена
           </button>
@@ -240,7 +255,7 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
             type="button"
             onClick={() => void save()}
             disabled={busy || !settings}
-            className="rounded-md bg-slate-800 px-3 py-1.5 text-sm text-white hover:bg-slate-700 disabled:opacity-40"
+            className="rounded-md bg-slate-800 px-3 py-1.5 text-sm text-white hover:bg-slate-700 disabled:opacity-40 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-white"
           >
             Сохранить
           </button>
