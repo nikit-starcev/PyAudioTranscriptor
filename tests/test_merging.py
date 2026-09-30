@@ -7,6 +7,7 @@ import time
 
 from audio_transcriber.domain.models import SpeakerSegment, TranscriptionSegment
 from audio_transcriber.merging.aligner import OverlapSegmentMerger
+from audio_transcriber.merging.sentence_merger import SentenceMerger
 
 
 def _reference_speaker_id(
@@ -122,10 +123,11 @@ def test_assigns_speaker_with_largest_overlap() -> None:
 
     assert entries[0].speaker is not None
     assert entries[0].speaker.id == "SPEAKER_01"
-    # Реплика накрывает смену говорящего: оба участника должны быть указаны.
-    assert [speaker.id for speaker in entries[0].extra_speakers] == ["SPEAKER_00"]
-    assert entries[0].overlap is True
-    assert [speaker.id for speaker in speakers] == ["SPEAKER_01", "SPEAKER_00"]
+    # Смена говорящего внутри реплики (A [0,1] закончил — B [1,3] начал) —
+    # это не одновременная речь: дополнительных говорящих и пометки нет.
+    assert entries[0].extra_speakers == []
+    assert entries[0].overlap is False
+    assert [speaker.id for speaker in speakers] == ["SPEAKER_01"]
 
 
 def test_segment_without_overlap_has_no_speaker() -> None:
@@ -327,11 +329,105 @@ def test_extra_speakers_ordered_by_descending_overlap() -> None:
     assert entry.speaker_confidence == 1.0
 
 
+def test_speaker_change_inside_entry_is_not_overlap() -> None:
+    """Смена говорящего внутри реплики — не одновременная речь."""
+    segments = [TranscriptionSegment(start=0.0, end=3.0, text="реплика")]
+    speaker_segments = [
+        SpeakerSegment(start=0.0, end=1.0, speaker_id="SPEAKER_00"),
+        SpeakerSegment(start=1.0, end=3.0, speaker_id="SPEAKER_01"),
+    ]
+
+    entries, _ = OverlapSegmentMerger().merge(segments, speaker_segments)
+
+    entry = entries[0]
+    assert entry.speaker is not None
+    assert entry.speaker.id == "SPEAKER_01"
+    assert entry.extra_speakers == []
+    assert entry.overlap is False
+
+
+def test_simultaneous_speech_marks_overlap() -> None:
+    """Реальная одновременная речь (непустое пересечение) даёт доп. говорящего."""
+    segments = [TranscriptionSegment(start=0.0, end=3.0, text="одновременно")]
+    speaker_segments = [
+        SpeakerSegment(start=0.0, end=2.0, speaker_id="SPEAKER_00"),
+        SpeakerSegment(start=1.0, end=3.0, speaker_id="SPEAKER_01"),
+    ]
+
+    entries, _ = OverlapSegmentMerger().merge(segments, speaker_segments)
+
+    entry = entries[0]
+    assert entry.speaker is not None
+    assert entry.speaker.id == "SPEAKER_00"  # равное перекрытие, тай-брейк по порядку
+    assert [speaker.id for speaker in entry.extra_speakers] == ["SPEAKER_01"]
+    assert entry.overlap is True
+
+
+def test_three_simultaneous_speakers_listed() -> None:
+    segments = [TranscriptionSegment(start=0.0, end=6.0, text="трое")]
+    speaker_segments = [
+        SpeakerSegment(start=0.0, end=6.0, speaker_id="SPEAKER_00"),
+        SpeakerSegment(start=1.0, end=5.0, speaker_id="SPEAKER_01"),
+        SpeakerSegment(start=2.0, end=4.0, speaker_id="SPEAKER_02"),
+    ]
+
+    entries, _ = OverlapSegmentMerger().merge(segments, speaker_segments)
+
+    entry = entries[0]
+    assert entry.speaker is not None
+    assert entry.speaker.id == "SPEAKER_00"
+    # SPEAKER_01 одновременно активен 4 с, SPEAKER_02 — 2 с.
+    assert [speaker.id for speaker in entry.extra_speakers] == ["SPEAKER_01", "SPEAKER_02"]
+    assert entry.overlap is True
+
+
+def test_short_real_overlap_passes_threshold() -> None:
+    segments = [TranscriptionSegment(start=0.0, end=10.0, text="вставка")]
+    speaker_segments = [
+        SpeakerSegment(start=0.0, end=10.0, speaker_id="SPEAKER_00"),
+        SpeakerSegment(start=3.0, end=3.4, speaker_id="SPEAKER_01"),  # 0.4 с
+    ]
+
+    entries, _ = OverlapSegmentMerger().merge(segments, speaker_segments)
+
+    assert [speaker.id for speaker in entries[0].extra_speakers] == ["SPEAKER_01"]
+    assert entries[0].overlap is True
+
+
+def test_micro_overlap_below_threshold_ignored() -> None:
+    segments = [TranscriptionSegment(start=0.0, end=10.0, text="микро")]
+    speaker_segments = [
+        SpeakerSegment(start=0.0, end=10.0, speaker_id="SPEAKER_00"),
+        SpeakerSegment(start=3.0, end=3.1, speaker_id="SPEAKER_01"),  # 0.1 с
+    ]
+
+    entries, _ = OverlapSegmentMerger().merge(segments, speaker_segments)
+
+    assert entries[0].extra_speakers == []
+    assert entries[0].overlap is False
+
+
+def test_custom_overlap_min_seconds_is_respected() -> None:
+    segments = [TranscriptionSegment(start=0.0, end=10.0, text="настройка порога")]
+    speaker_segments = [
+        SpeakerSegment(start=0.0, end=10.0, speaker_id="SPEAKER_00"),
+        SpeakerSegment(start=3.0, end=3.4, speaker_id="SPEAKER_01"),  # 0.4 с
+    ]
+
+    entries, _ = OverlapSegmentMerger(overlap_min_seconds=0.5).merge(
+        segments, speaker_segments
+    )
+
+    assert entries[0].extra_speakers == []
+    assert entries[0].overlap is False
+
+
 def test_extra_speaker_below_seconds_threshold_ignored() -> None:
     segments = [TranscriptionSegment(start=0.0, end=10.0, text="короткое касание")]
     speaker_segments = [
         SpeakerSegment(start=0.0, end=10.0, speaker_id="SPEAKER_00"),
-        SpeakerSegment(start=0.0, end=0.3, speaker_id="SPEAKER_01"),
+        # Реальная одновременная речь 0.2 с — ниже порога DEFAULT_OVERLAP_MIN_SECONDS.
+        SpeakerSegment(start=0.0, end=0.2, speaker_id="SPEAKER_01"),
     ]
 
     entries, _ = OverlapSegmentMerger().merge(segments, speaker_segments)
@@ -340,17 +436,19 @@ def test_extra_speaker_below_seconds_threshold_ignored() -> None:
     assert entries[0].overlap is False
 
 
-def test_extra_speaker_below_fraction_threshold_ignored() -> None:
+def test_long_simultaneous_overlap_counts_regardless_of_entry_length() -> None:
+    # 4 с реальной одновременной речи внутри 100-секундной реплики — это
+    # настоящее наложение, доля от длины реплики больше не важна.
     segments = [TranscriptionSegment(start=0.0, end=100.0, text="длинная реплика")]
     speaker_segments = [
         SpeakerSegment(start=0.0, end=100.0, speaker_id="SPEAKER_00"),
-        SpeakerSegment(start=0.0, end=4.0, speaker_id="SPEAKER_01"),  # 4 % от 100 с
+        SpeakerSegment(start=0.0, end=4.0, speaker_id="SPEAKER_01"),
     ]
 
     entries, _ = OverlapSegmentMerger().merge(segments, speaker_segments)
 
-    assert entries[0].extra_speakers == []
-    assert entries[0].overlap is False
+    assert [speaker.id for speaker in entries[0].extra_speakers] == ["SPEAKER_01"]
+    assert entries[0].overlap is True
 
 
 def test_speaker_confidence_none_without_diarization() -> None:
@@ -396,3 +494,35 @@ def test_mark_overlap_disabled_skips_extra_speakers() -> None:
     assert entries[0].overlap is False
     # Уверенность привязки считается независимо от режима пометки.
     assert entries[0].speaker_confidence == 0.8
+
+
+def test_sentence_merge_keeps_overlap_semantics() -> None:
+    # Смена говорящего в репликах остаётся без наложения и после склейки,
+    # а реальная одновременная речь сохраняется.
+    change_segments = [
+        TranscriptionSegment(start=0.0, end=2.0, text="первый"),
+        TranscriptionSegment(start=2.0, end=4.0, text="второй"),
+    ]
+    change_speakers = [
+        SpeakerSegment(start=0.0, end=1.0, speaker_id="SPEAKER_00"),
+        SpeakerSegment(start=1.0, end=2.0, speaker_id="SPEAKER_01"),
+        SpeakerSegment(start=2.0, end=4.0, speaker_id="SPEAKER_00"),
+    ]
+
+    entries, _ = OverlapSegmentMerger().merge(change_segments, change_speakers)
+    merged = SentenceMerger().merge(entries)
+
+    assert all(entry.extra_speakers == [] for entry in merged)
+    assert all(entry.overlap is False for entry in merged)
+
+    overlap_segments = [TranscriptionSegment(start=0.0, end=3.0, text="вместе")]
+    overlap_speakers = [
+        SpeakerSegment(start=0.0, end=2.0, speaker_id="SPEAKER_00"),
+        SpeakerSegment(start=1.0, end=3.0, speaker_id="SPEAKER_01"),
+    ]
+
+    overlap_entries, _ = OverlapSegmentMerger().merge(overlap_segments, overlap_speakers)
+    overlap_merged = SentenceMerger().merge(overlap_entries)
+
+    assert [speaker.id for speaker in overlap_merged[0].extra_speakers] == ["SPEAKER_01"]
+    assert overlap_merged[0].overlap is True

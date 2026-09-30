@@ -14,14 +14,13 @@ from audio_transcriber.domain.models import (
 
 _MAX_GAP_DEFAULT = 5.0
 
-# Пороги для дополнительных говорящих реплики. Говорящий попадает в
-# ``extra_speakers``, только если его сегменты диаризации перекрывают интервал
-# реплики не меньше, чем ``DEFAULT_EXTRA_SPEAKER_MIN_SECONDS`` секунд **и**
-# ``DEFAULT_EXTRA_SPEAKER_MIN_FRACTION`` от длительности реплики. Первое
-# отсекает случайные касания границы, второе — короткие «хвосты» в длинной
-# реплике. Оба порога должны выполняться одновременно.
-DEFAULT_EXTRA_SPEAKER_MIN_SECONDS = 0.5
-DEFAULT_EXTRA_SPEAKER_MIN_FRACTION = 0.10
+# Минимальная суммарная длительность (в секундах), в течение которой говорящий
+# должен быть активен **одновременно** с кем-то ещё внутри интервала реплики,
+# чтобы попасть в ``extra_speakers``. Порог намеренно небольшой: настоящие
+# перекрытия речи обычно короткие (доли секунды), и их нельзя «съедать».
+# Смена говорящего («один закончил — другой начал») одновременной речью не
+# считается: интервалы лишь касаются границей, непустого пересечения нет.
+DEFAULT_OVERLAP_MIN_SECONDS = 0.3
 
 # Запись интервала диаризации для оффлайн-обходов:
 # ``(sort_key, coord, original_index, score)``. ``score`` максимизируется
@@ -29,8 +28,11 @@ DEFAULT_EXTRA_SPEAKER_MIN_FRACTION = 0.10
 _Record = tuple[float, float, int, tuple[float, ...]]
 # Запрос: ``(sort_key, coord_bound, query_id)``.
 _Query = tuple[float, float, int]
-# Интервал диаризации для индекса перекрытий: ``(start, end, speaker_id)``.
+# Интервал диаризации для индекса покрытия: ``(start, end, speaker_id)``.
 _CoverageInterval = tuple[float, float, str]
+# Атомарный интервал одновременной речи: ``(start, end, активные_говорящие)``.
+# Существует только там, где одновременно активны >= 2 разных говорящих.
+_SimultaneousInterval = tuple[float, float, frozenset[str]]
 
 
 def _merged_intervals_by_speaker(
@@ -63,7 +65,45 @@ def _merged_intervals_by_speaker(
     return merged
 
 
-class _IntervalIndex:
+def _simultaneous_intervals(
+    merged: Sequence[_CoverageInterval],
+) -> list[_SimultaneousInterval]:
+    """Атомарные интервалы, где одновременно активны >= 2 говорящих.
+
+    Линейное заметание по событиям начала/конца объединённых интервалов
+    говорящих. На промежутке между соседними событиями набор активных
+    говорящих постоянен, поэтому сохраняются только промежутки с >= 2
+    активными. Концы обрабатываются раньше начал (при равном времени), чтобы
+    стык «один закончил — другой начал» не считался наложением.
+    """
+    events: list[tuple[float, int, str]] = []
+    for start, end, speaker_id in merged:
+        events.append((start, 1, speaker_id))
+        events.append((end, -1, speaker_id))
+    if not events:
+        return []
+
+    events.sort(key=lambda event: (event[0], event[1]))
+
+    active: dict[str, int] = {}
+    intervals: list[_SimultaneousInterval] = []
+    previous_time: float | None = None
+    for time, delta, speaker_id in events:
+        if previous_time is not None and time > previous_time and len(active) >= 2:
+            intervals.append((previous_time, time, frozenset(active)))
+        if delta == 1:
+            active[speaker_id] = active.get(speaker_id, 0) + 1
+        else:
+            remaining = active.get(speaker_id, 0) - 1
+            if remaining > 0:
+                active[speaker_id] = remaining
+            else:
+                active.pop(speaker_id, None)
+        previous_time = time
+    return intervals
+
+
+class _IntervalIndex[PayloadT]:
     """Отчёт обо всех интервалах, пересекающих запрос, за ``O(log n + k)``.
 
     Центрированное интервальное дерево: узлы, накрывающие ``center``,
@@ -76,17 +116,17 @@ class _IntervalIndex:
 
     __slots__ = ("_by_end", "_by_start", "_center", "_left", "_right")
 
-    def __init__(self, intervals: Sequence[_CoverageInterval]) -> None:
+    def __init__(self, intervals: Sequence[tuple[float, float, PayloadT]]) -> None:
         self._center: float | None = None
-        self._by_start: list[_CoverageInterval] = []
-        self._by_end: list[_CoverageInterval] = []
-        self._left: _IntervalIndex | None = None
-        self._right: _IntervalIndex | None = None
+        self._by_start: list[tuple[float, float, PayloadT]] = []
+        self._by_end: list[tuple[float, float, PayloadT]] = []
+        self._left: _IntervalIndex[PayloadT] | None = None
+        self._right: _IntervalIndex[PayloadT] | None = None
         if not intervals:
             return
 
         endpoints: list[float] = []
-        for start, end, _speaker_id in intervals:
+        for start, end, _payload in intervals:
             endpoints.append(start)
             endpoints.append(end)
         endpoints.sort()
@@ -96,15 +136,15 @@ class _IntervalIndex:
         center = endpoints[len(endpoints) // 2]
         self._center = center
 
-        left: list[_CoverageInterval] = []
-        right: list[_CoverageInterval] = []
-        for start, end, speaker_id in intervals:
+        left: list[tuple[float, float, PayloadT]] = []
+        right: list[tuple[float, float, PayloadT]] = []
+        for start, end, payload in intervals:
             if end < center:
-                left.append((start, end, speaker_id))
+                left.append((start, end, payload))
             elif start > center:
-                right.append((start, end, speaker_id))
+                right.append((start, end, payload))
             else:
-                self._by_start.append((start, end, speaker_id))
+                self._by_start.append((start, end, payload))
 
         self._by_start.sort(key=lambda item: item[0])
         self._by_end = sorted(self._by_start, key=lambda item: item[1], reverse=True)
@@ -113,7 +153,9 @@ class _IntervalIndex:
         if right:
             self._right = _IntervalIndex(right)
 
-    def query(self, start: float, end: float, out: list[_CoverageInterval]) -> None:
+    def query(
+        self, start: float, end: float, out: list[tuple[float, float, PayloadT]]
+    ) -> None:
         """Добавляет в ``out`` все интервалы, пересекающие ``[start, end]``."""
         if self._center is None:
             return
@@ -152,12 +194,15 @@ class OverlapSegmentMerger:
     иначе говорящий не назначается. Реализует протокол ``SegmentMerger``.
 
     Помимо основного говорящего для каждой реплики собираются
-    ``extra_speakers`` — прочие говорящие, чьи интервалы диаризации покрывают
-    реплику не меньше порогов (см. :data:`DEFAULT_EXTRA_SPEAKER_MIN_SECONDS` и
-    :data:`DEFAULT_EXTRA_SPEAKER_MIN_FRACTION`), и ``speaker_confidence`` —
-    доля интервала реплики, покрытая сегментами основного говорящего. При
-    ``mark_overlap=False`` дополнительные говорящие не добавляются (реплика
-    ведёт себя как раньше), а ``speaker_confidence`` всё равно считается.
+    ``extra_speakers`` — прочие говорящие, которые **одновременно** активны
+    (непустое пересечение) с кем-то ещё внутри интервала реплики не меньше
+    :data:`DEFAULT_OVERLAP_MIN_SECONDS` секунд суммарно, и
+    ``speaker_confidence`` — доля интервала реплики, покрытая сегментами
+    основного говорящего. Смена говорящего внутри реплики (один закончил —
+    другой начал) одновременной речью не считается и в ``extra_speakers`` не
+    попадает. При ``mark_overlap=False`` дополнительные говорящие не
+    добавляются (реплика ведёт себя как раньше), а ``speaker_confidence`` всё
+    равно считается.
     """
 
     def __init__(
@@ -165,13 +210,11 @@ class OverlapSegmentMerger:
         *,
         max_gap: float = _MAX_GAP_DEFAULT,
         mark_overlap: bool = True,
-        extra_speaker_min_seconds: float = DEFAULT_EXTRA_SPEAKER_MIN_SECONDS,
-        extra_speaker_min_fraction: float = DEFAULT_EXTRA_SPEAKER_MIN_FRACTION,
+        overlap_min_seconds: float = DEFAULT_OVERLAP_MIN_SECONDS,
     ) -> None:
         self._max_gap = max_gap
         self._mark_overlap = mark_overlap
-        self._extra_min_seconds = extra_speaker_min_seconds
-        self._extra_min_fraction = extra_speaker_min_fraction
+        self._overlap_min_seconds = overlap_min_seconds
 
     def merge(
         self,
@@ -185,7 +228,14 @@ class OverlapSegmentMerger:
         resolver = _SpeakerResolver(speaker_segments, max_gap=self._max_gap)
         speaker_ids = resolver.best_speaker_ids(transcription_segments)
         has_diarization = bool(speaker_segments)
-        coverage = resolver.overlapping_by_speaker(transcription_segments)
+        coverage = resolver.coverage_by_speaker(transcription_segments)
+        # Собирать одновременных говорящих нужно только в режиме пометки: при
+        # ``mark_overlap=False`` лишний проход по индексу не выполняется.
+        simultaneous: list[dict[str, float]] | None = (
+            resolver.simultaneous_by_speaker(transcription_segments)
+            if self._mark_overlap and has_diarization
+            else None
+        )
 
         def ensure_speaker(speaker_id: str) -> Speaker:
             if speaker_id not in speakers_by_id:
@@ -201,16 +251,16 @@ class OverlapSegmentMerger:
             duration = segment.end - segment.start
             hits = coverage[index]
             extra_speakers: list[Speaker] = []
-            if self._mark_overlap and has_diarization:
+            if simultaneous is not None:
                 candidates: list[tuple[str, float]] = []
-                for other_id, overlap in hits.items():
-                    if other_id == speaker_id or overlap < self._extra_min_seconds:
+                for other_id, simultaneous_seconds in simultaneous[index].items():
+                    if other_id == speaker_id:
                         continue
-                    if duration <= 0 or overlap < self._extra_min_fraction * duration:
+                    if simultaneous_seconds < self._overlap_min_seconds:
                         continue
-                    candidates.append((other_id, overlap))
-                # По убыванию перекрытия; при равенстве — по идентификатору,
-                # чтобы порядок был устойчивым.
+                    candidates.append((other_id, simultaneous_seconds))
+                # По убыванию суммарной одновременной длительности; при
+                # равенстве — по идентификатору, чтобы порядок был устойчивым.
                 candidates.sort(key=lambda item: (-item[1], item[0]))
                 extra_speakers = [ensure_speaker(other_id) for other_id, _ in candidates]
 
@@ -364,20 +414,26 @@ class _SpeakerResolver:
         if self._records and not self._fallback:
             self._coords_e = sorted({end for _, end, _ in self._records})
             self._coords_s = sorted({start for start, _, _ in self._records})
-        # Индекс покрытия (для ``extra_speakers`` и ``speaker_confidence``):
-        # объединённые интервалы каждого говорящего. ``None`` — данных нет.
+        # Индекс покрытия (для ``speaker_confidence``): объединённые интервалы
+        # каждого говорящего. ``None`` — данных нет.
         merged = _merged_intervals_by_speaker(speaker_segments)
-        self._coverage_index: _IntervalIndex | None = (
+        self._coverage_index: _IntervalIndex[str] | None = (
             _IntervalIndex(merged) if merged else None
+        )
+        # Индекс одновременной речи (для ``extra_speakers``): атомарные
+        # подынтервалы, где активны >= 2 говорящих. ``None`` — данных нет.
+        simultaneous = _simultaneous_intervals(merged)
+        self._simultaneous_index: _IntervalIndex[frozenset[str]] | None = (
+            _IntervalIndex(simultaneous) if simultaneous else None
         )
 
     def best_speaker_id(self, segment: TranscriptionSegment) -> str | None:
         return self.best_speaker_ids([segment])[0]
 
-    def overlapping_by_speaker(
+    def coverage_by_speaker(
         self, transcription_segments: Sequence[TranscriptionSegment]
     ) -> list[dict[str, float]]:
-        """Доля пересечения каждой реплики с сегментами каждого говорящего.
+        """Доля покрытия каждой реплики сегментами каждого говорящего.
 
         Возвращает по одному словарю ``{speaker_id: перекрытие_в_секундах}`` на
         реплику. Учитываются только говорящие с положительным перекрытием;
@@ -399,6 +455,35 @@ class _SpeakerResolver:
                 if overlap > 0.0:
                     hits[speaker_id] = hits.get(speaker_id, 0.0) + overlap
             result.append(hits)
+        return result
+
+    def simultaneous_by_speaker(
+        self, transcription_segments: Sequence[TranscriptionSegment]
+    ) -> list[dict[str, float]]:
+        """Суммарная одновременная речь каждого говорящего внутри реплики.
+
+        По каждой реплике возвращает ``{speaker_id: секунд_одновременной_речи}``
+        — сколько времени внутри интервала реплики говорящий был активен
+        **одновременно** хотя бы с одним другим говорящим. Смена говорящего
+        (интервалы лишь касаются границей) не даёт вклада: непустого
+        пересечения нет. Сложность — ``O((N + M) log M + K)`` (интервальное
+        дерево по атомарным интервалам одновременной речи).
+        """
+        count = len(transcription_segments)
+        if self._simultaneous_index is None:
+            return [{} for _ in range(count)]
+
+        result: list[dict[str, float]] = []
+        for segment in transcription_segments:
+            durations: dict[str, float] = {}
+            found: list[_SimultaneousInterval] = []
+            self._simultaneous_index.query(segment.start, segment.end, found)
+            for start, end, active in found:
+                overlap = min(end, segment.end) - max(start, segment.start)
+                if overlap > 0.0:
+                    for speaker_id in active:
+                        durations[speaker_id] = durations.get(speaker_id, 0.0) + overlap
+            result.append(durations)
         return result
 
     def best_speaker_ids(
