@@ -9,6 +9,8 @@ waveform вместо пути к файлу.
 
 from __future__ import annotations
 
+import wave
+from dataclasses import dataclass
 from pathlib import Path
 
 import av
@@ -17,6 +19,59 @@ import numpy as np
 from audio_transcriber.utils.exceptions import AudioFileError
 
 SAMPLE_RATE = 16000
+
+
+@dataclass(frozen=True)
+class AudioProbe:
+    """Параметры первого аудиопотока, полученные без полного декодирования."""
+
+    #: Имя контейнера PyAV (``wav``, ``mov,mp4,...`` и т.п.) или ``None``.
+    format_name: str | None
+    #: Имя кодека потока (``pcm_s16le``, ``aac`` и т.п.) или ``None``.
+    codec: str | None
+    sample_rate: int
+    channels: int
+    #: Длительность потока в секундах, если её удалось определить из заголовка.
+    duration_seconds: float | None
+
+
+def probe_audio(path: Path) -> AudioProbe:
+    """Читает параметры первого аудиопотока, не декодируя сэмплы.
+
+    Нужно, чтобы решить, можно ли отдать файл внешнему инструменту напрямую
+    (whisper-cli читает WAV сам), не перекодируя его во временный WAV.
+    """
+
+    try:
+        container = av.open(str(path))
+    except Exception as exc:
+        raise AudioFileError(f"Не удалось открыть аудиофайл {path}: {exc}") from exc
+
+    try:
+        try:
+            stream = container.streams.audio[0]
+        except IndexError as exc:
+            raise AudioFileError(f"В файле {path} не найдена аудиодорожка") from exc
+
+        codec_context = stream.codec_context
+        # Длительность берём из заголовка (без декодирования): для WAV она
+        # равна числу сэмплов, делённому на частоту, и совпадает с длиной
+        # декодированного waveform.
+        duration: float | None = None
+        if stream.duration is not None and stream.time_base is not None:
+            duration = float(stream.duration * stream.time_base)
+        elif container.duration is not None:
+            duration = container.duration / av.time_base
+
+        return AudioProbe(
+            format_name=container.format.name or None,
+            codec=codec_context.name,
+            sample_rate=int(codec_context.sample_rate or 0),
+            channels=int(codec_context.channels or 0),
+            duration_seconds=duration,
+        )
+    finally:
+        container.close()
 
 
 def load_waveform(path: Path, *, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
@@ -95,12 +150,16 @@ def write_wav(path: Path, waveform: np.ndarray, *, sample_rate: int = SAMPLE_RAT
 
     Используется для передачи аудио внешним инструментам (whisper-cli),
     которые не декодируют все форматы (например, WebM), но принимают WAV.
+
+    Масштаб 32768 и округление к ближайшему дают точный round-trip
+    s16 → float32 → s16: PyAV декодирует s16 делением на 32768, поэтому
+    обратное умножение на то же число восстанавливает исходные сэмплы без
+    ошибки. Масштаб 32767 с усечением вносил бы разницу до 1 LSB, из-за
+    которой whisper.cpp мог «срываться» и терять речь.
     """
 
-    import wave
-
-    samples = np.clip(waveform, -1.0, 1.0)
-    pcm = (samples * 32767.0).astype(np.int16)
+    samples = np.clip(waveform, -1.0, 1.0) * 32768.0
+    pcm = np.clip(np.rint(samples), -32768.0, 32767.0).astype(np.int16)
 
     with wave.open(str(path), "wb") as wf:
         wf.setnchannels(1)

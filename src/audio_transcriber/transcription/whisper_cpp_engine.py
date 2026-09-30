@@ -22,14 +22,45 @@ from pathlib import Path
 
 from audio_transcriber.domain.models import TranscriptionSegment
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
-from audio_transcriber.utils.audio import SAMPLE_RATE, load_waveform, write_wav
+from audio_transcriber.utils.audio import (
+    SAMPLE_RATE,
+    AudioProbe,
+    load_waveform,
+    probe_audio,
+    write_wav,
+)
 from audio_transcriber.utils.env import with_library_path
-from audio_transcriber.utils.exceptions import TranscriptionError
+from audio_transcriber.utils.exceptions import AudioFileError, TranscriptionError
 from audio_transcriber.utils.subprocess_registry import register_process, terminate_process
 
 logger = logging.getLogger(__name__)
 
+#: Версия реализации ASR whisper.cpp. Участвует в ключе кэша (см.
+#: ``pipeline._asr_cache_params``): при изменении логики, влияющей на результат
+#: при тех же параметрах (например, отказ от лишнего перекодирования входа),
+#: старый кэш должен инвалидироваться.
+ASR_IMPL_VERSION = 2
+
 _PROGRESS_RE = re.compile(r"progress\s*=\s*(\d+(?:\.\d+)?)%")
+
+
+def _is_native_wav(probe: AudioProbe) -> bool:
+    """True, если whisper-cli прочитает файл напрямую, без перекодирования.
+
+    Подходят 16-кГц моно PCM WAV — именно такой формат отдаёт шумоподавление.
+    Прочие WAV (другая частота/каналы) и не-WAV (mp4/webm/mp3/…) конвертируются
+    во временный WAV, как и раньше: убирать эту конвертацию шире, чем для
+    «родного» формата, рискованно для качества и совместимости.
+    """
+
+    formats = {part.strip() for part in (probe.format_name or "").split(",")}
+    return (
+        "wav" in formats
+        and probe.sample_rate == SAMPLE_RATE
+        and probe.channels == 1
+        and (probe.codec or "").startswith("pcm_")
+    )
+
 
 # Параметры VAD по умолчанию — как в faster-whisper
 # (``faster_whisper.vad.VadOptions``), чтобы оба движка отсекали тишину/не-речь
@@ -161,6 +192,39 @@ class WhisperCppRecognizer:
             str(VAD_SPEECH_PAD_MS),
         ]
 
+    def _prepare_input(self, audio_path: Path, tmpdir_path: Path) -> tuple[Path, float]:
+        """Готовит вход для whisper-cli и возвращает (путь, длительность, с).
+
+        «Родной» для whisper-cli вход (16-кГц моно PCM WAV, например результат
+        шумоподавления) отдаётся в ``-f`` как есть: лишний round-trip
+        декодирование→запись вносил разницу в 1 LSB, из-за которой whisper.cpp
+        терял речь (~59 с на реальном файле). Остальные форматы, которые
+        miniaudio не декодирует (mp4/webm/mp3/…), а также WAV другой частоты или
+        числа каналов по-прежнему перекодируются во временный 16-кГц WAV.
+
+        Длительность берём из заголовка при passthrough — декодировать сэмплы
+        для этого не нужно; иначе она равна длине декодированного waveform.
+        """
+
+        probe: AudioProbe | None
+        try:
+            probe = probe_audio(audio_path)
+        except AudioFileError:
+            probe = None
+
+        if probe is not None and _is_native_wav(probe):
+            logger.debug("whisper.cpp: вход отдаётся напрямую (%s)", audio_path)
+            duration = probe.duration_seconds or 0.0
+            return audio_path, duration
+
+        wav_path = tmpdir_path / "audio.wav"
+        waveform = load_waveform(audio_path)
+        write_wav(wav_path, waveform)
+        # Реальная длительность аудио (включая хвостовую тишину), а не конец
+        # последнего сегмента — VAD отсекает тишину, из-за чего ``end``
+        # последней реплики систематически занижает длительность.
+        return wav_path, len(waveform) / SAMPLE_RATE
+
     def transcribe(
         self, audio_path: Path, *, language: str | None = None
     ) -> tuple[list[TranscriptionSegment], str, float]:
@@ -171,22 +235,14 @@ class WhisperCppRecognizer:
             tmpdir_path = Path(tmpdir)
             output_base = tmpdir_path / "result"
 
-            # whisper-cli (miniaudio) не декодирует все форматы (например,
-            # WebM), поэтому перекодируем вход в 16-кГц WAV через PyAV.
-            wav_path = tmpdir_path / "audio.wav"
-            waveform = load_waveform(audio_path)
-            write_wav(wav_path, waveform)
-            # Реальная длительность аудио (включая хвостовую тишину), а не конец
-            # последнего сегмента — VAD отсекает тишину, из-за чего ``end``
-            # последней реплики систематически занижает длительность.
-            audio_duration = len(waveform) / SAMPLE_RATE
+            input_path, audio_duration = self._prepare_input(audio_path, tmpdir_path)
 
             cmd = [
                 self._binary,
                 "-m",
                 str(self._model_path),
                 "-f",
-                str(wav_path),
+                str(input_path),
                 "-l",
                 language or "auto",
                 # -ojf (полный JSON) дополнительно отдаёт вероятности токенов,

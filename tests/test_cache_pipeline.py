@@ -13,14 +13,19 @@ from pathlib import Path
 
 import pytest
 
+from audio_transcriber.cache.store import compute_cache_key
 from audio_transcriber.config.settings import AppConfig
-from audio_transcriber.domain.enums import Device, ExportFormat
+from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
 from audio_transcriber.domain.models import (
     SpeakerSegment,
     TranscriptEntry,
     TranscriptionSegment,
 )
-from audio_transcriber.pipeline import run_pipeline
+from audio_transcriber.pipeline import _asr_cache_params, run_pipeline
+from audio_transcriber.transcription.whisper_cpp_engine import (
+    ASR_IMPL_VERSION,
+    WhisperCppRecognizer,
+)
 
 
 class RecordingRecognizer:
@@ -231,3 +236,50 @@ def test_soft_denoise_degradation_is_not_cached(audio_file: Path, tmp_path: Path
 
     assert first.calls == 1
     assert second.calls == 1
+
+
+def _whisper_cpp_config(audio_file: Path, tmp_path: Path) -> AppConfig:
+    return AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+        denoise=False,
+        asr_backend=AsrBackend.WHISPER_CPP,
+        whisper_cpp_model=tmp_path / "model.bin",
+    )
+
+
+def test_asr_cache_params_include_impl_version(audio_file: Path, tmp_path: Path) -> None:
+    config = _whisper_cpp_config(audio_file, tmp_path)
+    recognizer = WhisperCppRecognizer(config.whisper_cpp_model)  # type: ignore[arg-type]
+
+    params = _asr_cache_params(config, Device.CPU, recognizer)
+
+    assert params["asr_impl_version"] == ASR_IMPL_VERSION
+
+
+def test_asr_cache_key_changes_with_impl_version(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _whisper_cpp_config(audio_file, tmp_path)
+    recognizer = WhisperCppRecognizer(config.whisper_cpp_model)  # type: ignore[arg-type]
+
+    before = compute_cache_key(
+        "asr", audio_file, _asr_cache_params(config, Device.CPU, recognizer)
+    )
+    monkeypatch.setattr("audio_transcriber.pipeline.ASR_IMPL_VERSION", ASR_IMPL_VERSION + 1)
+    after = compute_cache_key(
+        "asr", audio_file, _asr_cache_params(config, Device.CPU, recognizer)
+    )
+
+    assert before != after
+
+
+def test_faster_whisper_cache_params_have_no_whisper_cpp_salt(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    config = _config(audio_file, tmp_path)  # бэкенд по умолчанию — faster-whisper
+
+    params = _asr_cache_params(config, Device.CPU, RecordingRecognizer())
+
+    assert "asr_impl_version" not in params

@@ -59,7 +59,10 @@ from audio_transcriber.merging.overlap import mark_overlap_entries
 from audio_transcriber.merging.sentence_merger import SentenceMerger
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.transcription.base import SpeechRecognizer
-from audio_transcriber.transcription.whisper_cpp_engine import WhisperCppRecognizer
+from audio_transcriber.transcription.whisper_cpp_engine import (
+    ASR_IMPL_VERSION,
+    WhisperCppRecognizer,
+)
 from audio_transcriber.transcription.whisper_engine import WhisperSpeechRecognizer
 from audio_transcriber.utils.device import resolve_device
 
@@ -127,6 +130,10 @@ def _asr_cache_params(
         # кэш ASR (иначе включение VAD не даст эффекта на закэшированном файле).
         vad_model = _whisper_cpp_vad_model()
         params["whisper_cpp_vad_model"] = str(vad_model) if vad_model else None
+        # Версия реализации движка: фикс потери текста (отказ от лишнего
+        # перекодирования входа) меняет результат при тех же параметрах, поэтому
+        # старый кэш с потерями должен быть пересчитан ровно один раз.
+        params["asr_impl_version"] = ASR_IMPL_VERSION
     else:
         params["model"] = config.model_name
     return params
