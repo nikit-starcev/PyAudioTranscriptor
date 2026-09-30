@@ -34,6 +34,7 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from audio_transcriber import __version__
 from audio_transcriber.config.defaults import DEFAULT_ENROLLMENT_MIN_SIMILARITY
@@ -43,6 +44,8 @@ from audio_transcriber.diarization.voices import (
     delete_voice_sample,
     save_speaker_sample,
 )
+from audio_transcriber.domain.enums import ExportFormat
+from audio_transcriber.export.factory import create_exporter
 from audio_transcriber.protocol import ProtocolArtifacts, generate_protocol
 from audio_transcriber.utils.audio import load_waveform, write_wav
 from audio_transcriber.utils.playback import amplitude_envelope, read_duration
@@ -144,6 +147,14 @@ MEDIA_EXTENSIONS = {
     ".wmv",
     ".ts",
     ".3gp",
+}
+
+#: MIME-типы прямой выгрузки стенограммы по форматам экспорта.
+_EXPORT_MEDIA_TYPES: dict[str, str] = {
+    "txt": "text/plain; charset=utf-8",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "json": "application/json",
+    "srt": "application/x-subrip",
 }
 
 _PLACEHOLDER_HTML = """<!doctype html>
@@ -738,6 +749,44 @@ def register_api(
             else "text/plain"
         )
         return FileResponse(target, media_type=media_type, filename=target.name)
+
+    @router.get("/jobs/{job_id}/export")
+    def job_export(job_id: str, fmt: str = "txt") -> Response:
+        """Прямая выгрузка стенограммы в выбранном формате (без протокола).
+
+        Переиспользует текущий JSON результата (уже с применёнными именами
+        говорящих) и существующие экспортёры ``export/*``. Резюме **не**
+        вычисляется: отдаётся именно стенограмма, а не протокол. Файл
+        собирается во временном каталоге — результаты задачи не перезаписываются.
+        """
+        job = _require_job(store, job_id)
+        value = fmt.strip().casefold()
+        try:
+            export_format = ExportFormat(value)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="fmt должен быть txt, docx, json или srt"
+            ) from exc
+        payload = _require_result(paths, job)
+        source = Path(job.source_path)
+        result = result_from_payload(payload, source_path=source)
+        # Это выгрузка стенограммы, а не протокол: резюме не добавляем.
+        result.summary = None
+        tmp_dir = Path(tempfile.mkdtemp(prefix="audio-transcriber-export-"))
+        target = tmp_dir / f"{source.stem}.{value}"
+        try:
+            create_exporter(export_format).export(result, target)
+        except Exception as exc:  # сбой экспорта не должен ронять сервер
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=500, detail=f"Не удалось экспортировать стенограмму: {exc}"
+            ) from exc
+        return FileResponse(
+            target,
+            media_type=_EXPORT_MEDIA_TYPES[value],
+            filename=target.name,
+            background=BackgroundTask(shutil.rmtree, tmp_dir, ignore_errors=True),
+        )
 
     @router.get("/jobs/{job_id}/samples/{speaker_id}")
     def job_sample(job_id: str, speaker_id: str) -> Response:

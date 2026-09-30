@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   api,
+  EXPORT_FORMATS,
   errorMessage,
   formatDuration,
   formatSize,
@@ -87,6 +88,8 @@ function App() {
   const [protocol, setProtocol] = useState<ProtocolResponse | null>(null)
   const [protocolBusy, setProtocolBusy] = useState(false)
   const [protocolError, setProtocolError] = useState<string | null>(null)
+  // Формат прямой выгрузки стенограммы; по умолчанию — первый из настроек.
+  const [exportFormat, setExportFormat] = useState('txt')
   const [summary, setSummary] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -101,6 +104,7 @@ function App() {
   const liveStageRef = useRef<string | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const wizardAutoShown = useRef(false)
+  const exportDefaultApplied = useRef(false)
 
   const refreshJobs = useCallback(async () => {
     try {
@@ -226,6 +230,16 @@ function App() {
       setWizardOpen(true)
     }
   }, [doctor])
+
+  useEffect(() => {
+    // Формат выгрузки по умолчанию — первый из настроек; применяем один раз,
+    // чтобы не перезаписывать выбор пользователя при обновлении конфигурации.
+    if (exportDefaultApplied.current) return
+    const first = config?.export_formats?.[0]
+    if (!first) return
+    exportDefaultApplied.current = true
+    setExportFormat(first)
+  }, [config])
 
   useEffect(() => {
     if (!activeJobId) return
@@ -807,6 +821,33 @@ function App() {
                     Считается резюме и экспорт — это может занять время
                   </span>
                 )}
+                <span className="flex items-center gap-2">
+                  <label
+                    htmlFor="export-format"
+                    className="text-xs text-slate-500 dark:text-slate-400"
+                  >
+                    Формат
+                  </label>
+                  <select
+                    id="export-format"
+                    value={exportFormat}
+                    onChange={(event) => setExportFormat(event.target.value)}
+                    className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                  >
+                    {EXPORT_FORMATS.map((fmt) => (
+                      <option key={fmt} value={fmt}>
+                        {fmt.toUpperCase()}
+                      </option>
+                    ))}
+                  </select>
+                  <a
+                    href={`/api/jobs/${activeJobId}/export?fmt=${exportFormat}`}
+                    download
+                    className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:hover:bg-slate-800"
+                  >
+                    Скачать расшифровку
+                  </a>
+                </span>
                 {protocol && (
                   <span className="flex items-center gap-2 text-sm">
                     <a
