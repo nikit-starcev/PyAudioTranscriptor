@@ -2,7 +2,8 @@
 с разделением говорящих (speaker diarization).
 """
 
-from importlib.metadata import PackageNotFoundError, version as _package_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _package_version
 
 # Единственный источник версии — ``pyproject.toml``; здесь читаем метаданные
 # установленного пакета, чтобы версия не дублировалась в двух местах.
