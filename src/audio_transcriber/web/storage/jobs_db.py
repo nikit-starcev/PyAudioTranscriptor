@@ -7,10 +7,14 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+
+from audio_transcriber.web.timings import StageTiming
 
 #: Статусы жизненного цикла задачи.
 STATUS_QUEUED = "queued"
@@ -35,6 +39,8 @@ _UPDATABLE_FIELDS = frozenset(
         "stage",
         "fraction",
         "num_speakers",
+        "stage_started_at",
+        "stage_times",
     }
 )
 
@@ -52,7 +58,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     result_path TEXT,
     stage TEXT,
     fraction REAL,
-    num_speakers INTEGER
+    num_speakers INTEGER,
+    stage_started_at TEXT,
+    stage_times TEXT
 )
 """
 
@@ -60,6 +68,56 @@ CREATE TABLE IF NOT EXISTS jobs (
 def utc_now_iso() -> str:
     """Текущее время UTC в формате ISO-8601 (секунды, без микросекунд)."""
     return datetime.now(UTC).replace(microsecond=0).isoformat()
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    """Разбирает ISO-8601 из БД; ``None`` при пустом/некорректном значении."""
+    if not value:
+        return None
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+
+
+def _serialize_stage_times(value: object) -> str | None:
+    """Приводит тайминги к JSON-строке для колонки ``stage_times``.
+
+    Принимает список :class:`StageTiming` (штатный путь воркера) или список
+    словарей (совместимость); ``None`` очищает колонку.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, (list, tuple)):
+        return None
+    payload: list[dict[str, object]] = []
+    for item in value:
+        if isinstance(item, StageTiming):
+            payload.append(item.as_dict())
+        elif isinstance(item, Mapping):
+            payload.append(dict(item))
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _parse_stage_times(raw: object) -> list[StageTiming]:
+    """Читает тайминги из колонки ``stage_times`` (терпимо к мусору)."""
+    if not isinstance(raw, str) or not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    timings: list[StageTiming] = []
+    for item in data:
+        timing = StageTiming.from_mapping(item)
+        if timing is not None:
+            timings.append(timing)
+    return timings
 
 
 @dataclass(slots=True)
@@ -80,6 +138,10 @@ class Job:
     fraction: float | None = None
     #: Ожидаемое число говорящих; ``None`` — автоопределение (pyannote сам решает).
     num_speakers: int | None = None
+    #: Когда началась текущая стадия (ISO); ``None`` — стадия ещё не сообщалась.
+    stage_started_at: str | None = None
+    #: Длительности завершённых стадий в порядке выполнения.
+    stage_times: list[StageTiming] = field(default_factory=list)
 
     @property
     def name(self) -> str:
@@ -90,6 +152,29 @@ class Job:
     def is_terminal(self) -> bool:
         """Задача в конечном статусе (``done``/``error``/``cancelled``)."""
         return self.status in TERMINAL_STATUSES
+
+    @property
+    def total_seconds(self) -> float | None:
+        """Общее время обработки: ``finished_at − started_at`` или текущее.
+
+        Для незапущенной задачи (нет ``started_at``) — ``None``; для идущей
+        задачи — время с момента старта до текущего момента.
+        """
+        start = _parse_iso(self.started_at)
+        if start is None:
+            return None
+        end = _parse_iso(self.finished_at) or datetime.now(UTC)
+        return round(max((end - start).total_seconds(), 0.0), 3)
+
+    @property
+    def stage_elapsed(self) -> float | None:
+        """Сколько уже длится текущая стадия (для живого таймера); ``None`` — нет."""
+        if self.is_terminal:
+            return None
+        start = _parse_iso(self.stage_started_at)
+        if start is None:
+            return None
+        return round(max((datetime.now(UTC) - start).total_seconds(), 0.0), 3)
 
     def as_dict(self) -> dict[str, object]:
         """Плоское представление для JSON-ответов API."""
@@ -108,6 +193,10 @@ class Job:
             "error": self.error,
             "result_path": self.result_path,
             "num_speakers": self.num_speakers,
+            "stage_started_at": self.stage_started_at,
+            "stage_times": [timing.as_dict() for timing in self.stage_times],
+            "total_seconds": self.total_seconds,
+            "stage_elapsed": self.stage_elapsed,
         }
 
 
@@ -140,11 +229,16 @@ class JobsDB:
         """Добавляет недостающие колонки в уже существующую таблицу.
 
         ``CREATE TABLE IF NOT EXISTS`` не меняет старую схему, поэтому для баз,
-        созданных до появления ``num_speakers``, колонку добавляем отдельно.
+        созданных до появления ``num_speakers``/``stage_started_at``/
+        ``stage_times``, колонки добавляем отдельно.
         """
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
         if "num_speakers" not in columns:
             connection.execute("ALTER TABLE jobs ADD COLUMN num_speakers INTEGER")
+        if "stage_started_at" not in columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN stage_started_at TEXT")
+        if "stage_times" not in columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN stage_times TEXT")
 
     def create(
         self,
@@ -180,7 +274,11 @@ class JobsDB:
 
     def update(self, job_id: str, **fields: object) -> Job | None:
         """Обновляет перечисленные поля задачи; неизвестные поля игнорируются."""
-        allowed = {key: value for key, value in fields.items() if key in _UPDATABLE_FIELDS}
+        allowed = {
+            key: _serialize_stage_times(value) if key == "stage_times" else value
+            for key, value in fields.items()
+            if key in _UPDATABLE_FIELDS
+        }
         if allowed:
             assignments = ", ".join(f"{key} = ?" for key in allowed)
             values = [*allowed.values(), job_id]
@@ -210,4 +308,6 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         stage=row["stage"],
         fraction=row["fraction"],
         num_speakers=row["num_speakers"],
+        stage_started_at=row["stage_started_at"],
+        stage_times=_parse_stage_times(row["stage_times"]),
     )

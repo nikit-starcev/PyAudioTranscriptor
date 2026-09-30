@@ -12,6 +12,7 @@ from audio_transcriber.web.storage.jobs_db import (
     Job,
     JobsDB,
 )
+from audio_transcriber.web.timings import StageTiming
 
 
 def _make_db(tmp_path: Path) -> JobsDB:
@@ -138,3 +139,106 @@ def test_job_helpers_and_dict(tmp_path: Path) -> None:
     assert job.is_terminal is True
     assert job.name == "file.wav"
     assert job.as_dict()["status"] == STATUS_DONE
+
+
+def test_stage_times_roundtrip(tmp_path: Path) -> None:
+    db = _make_db(tmp_path)
+    db.create("job-1", tmp_path / "a.mp3")
+    timings = [
+        StageTiming("denoise", 1.25),
+        StageTiming("asr", 0.2, cached=True),
+        StageTiming("merge", 0.05),
+    ]
+
+    updated = db.update("job-1", stage_times=timings)
+
+    assert updated is not None
+    assert [timing.stage for timing in updated.stage_times] == ["denoise", "asr", "merge"]
+    assert updated.stage_times[1].cached is True
+    fetched = db.get("job-1")
+    assert fetched is not None
+    assert fetched.as_dict()["stage_times"] == [
+        {"stage": "denoise", "seconds": 1.25, "cached": False},
+        {"stage": "asr", "seconds": 0.2, "cached": True},
+        {"stage": "merge", "seconds": 0.05, "cached": False},
+    ]
+
+
+def test_stage_times_accepts_plain_dicts_and_clears(tmp_path: Path) -> None:
+    db = _make_db(tmp_path)
+    db.create("job-1", tmp_path / "a.mp3")
+
+    db.update("job-1", stage_times=[{"stage": "asr", "seconds": 3, "cached": True}])
+    fetched = db.get("job-1")
+    assert fetched is not None
+    assert fetched.stage_times[0].seconds == 3.0
+
+    db.update("job-1", stage_times=[])
+    cleared = db.get("job-1")
+    assert cleared is not None
+    assert cleared.stage_times == []
+
+
+def test_total_seconds_for_finished_and_queued_jobs(tmp_path: Path) -> None:
+    db = _make_db(tmp_path)
+    queued = db.create("queued", tmp_path / "a.mp3")
+    assert queued.total_seconds is None
+    assert queued.as_dict()["total_seconds"] is None
+
+    db.update(
+        "queued",
+        status=STATUS_DONE,
+        started_at="2026-01-01T10:00:00+00:00",
+        finished_at="2026-01-01T10:02:30+00:00",
+    )
+    finished = db.get("queued")
+    assert finished is not None
+    assert finished.total_seconds == 150.0
+    assert finished.as_dict()["total_seconds"] == 150.0
+
+
+def test_garbage_stage_times_are_ignored(tmp_path: Path) -> None:
+    path = tmp_path / "jobs.db"
+    db = _make_db(tmp_path)
+    db.create("job-1", tmp_path / "a.mp3")
+    with sqlite3.connect(path) as connection:
+        connection.execute("UPDATE jobs SET stage_times = ? WHERE id = 'job-1'", ("{broken",))
+
+    fetched = db.get("job-1")
+    assert fetched is not None
+    assert fetched.stage_times == []
+
+
+def test_migration_adds_stage_columns(tmp_path: Path) -> None:
+    """Старая база без колонок таймингов аккуратно мигрируется."""
+    path = tmp_path / "jobs.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE jobs ("
+            "id TEXT PRIMARY KEY, source_path TEXT NOT NULL, status TEXT NOT NULL, "
+            "created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, "
+            "language TEXT, duration REAL, error TEXT, result_path TEXT, "
+            "stage TEXT, fraction REAL, num_speakers INTEGER)"
+        )
+        connection.execute(
+            "INSERT INTO jobs (id, source_path, status, created_at) "
+            "VALUES ('old', '/tmp/old.mp3', 'done', '2020-01-01T00:00:00+00:00')"
+        )
+
+    db = JobsDB(path)
+    db.initialize()
+
+    migrated = db.get("old")
+    assert migrated is not None
+    assert migrated.stage_times == []
+    assert migrated.stage_started_at is None
+
+    db.update("old", stage_started_at="2026-01-01T00:00:00+00:00", stage_times=[StageTiming("asr", 1.0)])
+    again = db.get("old")
+    assert again is not None
+    assert again.stage_started_at == "2026-01-01T00:00:00+00:00"
+    assert again.stage_times[0].stage == "asr"
+
+    with sqlite3.connect(path) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
+    assert {"stage_started_at", "stage_times"} <= columns

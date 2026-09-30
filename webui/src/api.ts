@@ -16,6 +16,12 @@ export type FileItem = {
   duration: number | null
 }
 
+export type StageTime = {
+  stage: string
+  seconds: number
+  cached: boolean
+}
+
 export type Job = {
   id: string
   name: string
@@ -30,6 +36,10 @@ export type Job = {
   duration: number | null
   error: string | null
   num_speakers: number | null
+  stage_started_at: string | null
+  stage_times: StageTime[]
+  total_seconds: number | null
+  stage_elapsed: number | null
 }
 
 export type Summary = {
@@ -87,6 +97,9 @@ export type JobEvent = {
   fraction: number | null
   message: string
   status: string
+  elapsed?: number | null
+  stage_elapsed?: number | null
+  stage_times?: StageTime[]
 }
 
 export type WebSettings = {
@@ -336,6 +349,16 @@ export function formatBytes(bytes: number): string {
 
 export function formatDuration(seconds: number | null): string {
   return seconds == null ? '—' : formatTime(seconds)
+}
+
+// Длительность стадии: миллисекунды, секунды или минуты — по величине.
+export function formatStageTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '—'
+  if (seconds < 1) return `${Math.round(seconds * 1000)} мс`
+  if (seconds < 60) return `${seconds.toFixed(1)} с`
+  const minutes = Math.floor(seconds / 60)
+  const rest = Math.round(seconds - minutes * 60)
+  return rest ? `${minutes} мин ${rest} с` : `${minutes} мин`
 }
 
 export function speakerName(speakers: SpeakerInfo[], id: string | null): string {

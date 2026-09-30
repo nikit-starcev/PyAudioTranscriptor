@@ -652,7 +652,17 @@ def register_api(
         source = Path(job.source_path)
         if not source.is_file():
             raise HTTPException(status_code=400, detail="Исходный файл не найден")
-        store.update(job_id, status=STATUS_QUEUED, stage=STATUS_QUEUED, fraction=0.0, error=None)
+        store.update(
+            job_id,
+            status=STATUS_QUEUED,
+            stage=STATUS_QUEUED,
+            fraction=0.0,
+            error=None,
+            started_at=None,
+            finished_at=None,
+            stage_started_at=None,
+            stage_times=[],
+        )
         if not runner.submit(job_id, source):
             raise HTTPException(status_code=409, detail="Задача уже в очереди")
         updated = store.get(job_id)
@@ -889,6 +899,7 @@ def register_api(
                 "fraction": job.fraction,
                 "message": _terminal_message(job),
                 "status": job.status,
+                "stage_times": [timing.as_dict() for timing in job.stage_times],
             }
 
             async def immediate() -> AsyncIterator[str]:
@@ -905,6 +916,9 @@ def register_api(
                     "fraction": job.fraction,
                     "message": "Подключено",
                     "status": job.status,
+                    "elapsed": job.total_seconds,
+                    "stage_elapsed": job.stage_elapsed,
+                    "stage_times": [timing.as_dict() for timing in job.stage_times],
                 }
             )
             async for event in bus.subscribe(job_id):

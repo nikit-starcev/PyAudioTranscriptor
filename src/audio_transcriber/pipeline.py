@@ -281,6 +281,10 @@ def run_pipeline(
             logger.info("Шумоподавление (DeepFilterNet)...")
             emit(ProgressEvent("denoise", "Шумоподавление", fraction=None))
             audio_path = denoiser.denoise(config.input_file)
+            # Явный сигнал попадания в кэш: веб-слой помечает такие стадии как
+            # «из кэша» (по ``detail``), не полагаясь на эвристику по времени.
+            if getattr(denoiser, "last_hit", False):
+                emit(ProgressEvent("denoise", "Шумоподавление", fraction=None, detail="из кэша"))
 
         asr_key = cache.key("asr", config.input_file, _asr_cache_params(config, device, recognizer))
         cached_asr = cache.load("asr", asr_key)

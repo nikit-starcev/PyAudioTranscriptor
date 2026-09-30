@@ -297,6 +297,67 @@ def test_run_job_and_result(client: TestClient) -> None:
     }
 
 
+def test_run_job_records_stage_times(web_paths: WebPaths, config_builder) -> None:
+    """Раннер сохраняет тайминги стадий и общее время; API их отдаёт."""
+
+    def pipeline(config: AppConfig, *, on_progress=None) -> TranscriptionResult:
+        if on_progress is not None:
+            on_progress(ProgressEvent("denoise", "Шумоподавление"))
+            on_progress(ProgressEvent("asr", "Распознавание речи", detail="из кэша"))
+            on_progress(ProgressEvent("merge", "Объединение сегментов"))
+        return TranscriptionResult(
+            source_path=config.input_file,
+            language="ru",
+            duration=2.5,
+            entries=[],
+            speakers=[],
+            low_confidence_threshold=-1.0,
+        )
+
+    app = create_app(
+        paths=web_paths,
+        pipeline_fn=pipeline,
+        config_builder=config_builder,
+        heartbeat=0.05,
+    )
+    with TestClient(app) as client:
+        uploaded = _upload(client)
+        _job_id, details = _run_job(client, uploaded["name"])
+        listing = client.get("/api/jobs").json()
+
+    assert details["status"] == "done"
+    assert [item["stage"] for item in details["stage_times"]] == ["denoise", "asr", "merge"]
+    assert details["stage_times"][1]["cached"] is True
+    assert all(item["seconds"] >= 0 for item in details["stage_times"])
+    assert details["total_seconds"] is not None
+    assert details["total_seconds"] >= 0
+    assert listing[0]["stage_times"][0]["stage"] == "denoise"
+    assert listing[0]["total_seconds"] is not None
+
+
+def test_run_job_error_records_stage_times(web_paths: WebPaths, config_builder) -> None:
+    """Даже при ошибке уже закрытые стадии сохраняются в таймингах."""
+
+    def pipeline(config: AppConfig, *, on_progress=None) -> TranscriptionResult:
+        if on_progress is not None:
+            on_progress(ProgressEvent("asr", "Распознавание речи"))
+        raise RuntimeError("сбой распознавания")
+
+    app = create_app(
+        paths=web_paths,
+        pipeline_fn=pipeline,
+        config_builder=config_builder,
+        heartbeat=0.05,
+    )
+    with TestClient(app) as client:
+        uploaded = _upload(client)
+        _job_id, details = _run_job(client, uploaded["name"])
+
+    assert details["status"] == "error"
+    assert [item["stage"] for item in details["stage_times"]] == ["asr"]
+    assert details["total_seconds"] is not None
+
+
 def test_jobs_listing(client: TestClient) -> None:
     uploaded = _upload(client)
     client.post("/api/jobs", json={"path": uploaded["name"]})

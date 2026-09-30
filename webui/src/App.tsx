@@ -15,6 +15,7 @@ import {
   type JobEvent,
   type ProtocolResponse,
   type SampleMeta,
+  type StageTime,
   type TranscriptResult,
   type VoiceInfo,
   type WebSettings,
@@ -25,6 +26,7 @@ import ReadinessBanner from './components/ReadinessBanner'
 import SettingsModal from './components/SettingsModal'
 import SetupWizard from './components/SetupWizard'
 import SpeakersPanel from './components/SpeakersPanel'
+import StageTimes from './components/StageTimes'
 import ThemeToggle from './components/ThemeToggle'
 import TranscriptTable from './components/TranscriptTable'
 import VoicesModal from './components/VoicesModal'
@@ -90,6 +92,13 @@ function App() {
   const [error, setError] = useState<string | null>(null)
   // Число говорящих по каждому файлу (пустая строка — авто). Ключ — путь файла.
   const [speakerCounts, setSpeakerCounts] = useState<Record<string, string>>({})
+  // Тайминги стадий активной задачи: завершённые (с сервера) + живой счётчик.
+  const [stageTimes, setStageTimes] = useState<StageTime[]>([])
+  const [finalTotalSeconds, setFinalTotalSeconds] = useState<number | null>(null)
+  const [totalStartedAt, setTotalStartedAt] = useState<number | null>(null)
+  const [liveStage, setLiveStage] = useState<string | null>(null)
+  const [liveStageStartedAt, setLiveStageStartedAt] = useState<number | null>(null)
+  const liveStageRef = useRef<string | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const wizardAutoShown = useRef(false)
 
@@ -144,6 +153,39 @@ function App() {
     }
   }, [])
 
+  const resetTiming = useCallback(() => {
+    setStageTimes([])
+    setFinalTotalSeconds(null)
+    setTotalStartedAt(null)
+    setLiveStage(null)
+    setLiveStageStartedAt(null)
+    liveStageRef.current = null
+  }, [])
+
+  const refreshJobTiming = useCallback(async (jobId: string) => {
+    try {
+      const details = await api<JobDetails>(`/api/jobs/${jobId}`)
+      setStageTimes(details.stage_times ?? [])
+      setFinalTotalSeconds(details.total_seconds)
+      if (details.status === 'running') {
+        setTotalStartedAt(
+          details.total_seconds != null ? Date.now() - details.total_seconds * 1000 : Date.now(),
+        )
+        setLiveStage(details.stage ?? null)
+        setLiveStageStartedAt(
+          details.stage_elapsed != null ? Date.now() - details.stage_elapsed * 1000 : Date.now(),
+        )
+        liveStageRef.current = details.stage ?? null
+      } else {
+        setLiveStage(null)
+        setLiveStageStartedAt(null)
+        liveStageRef.current = null
+      }
+    } catch {
+      // Тайминги не критичны: ошибку не показываем, оставляем прежние значения.
+    }
+  }, [])
+
   const loadResult = useCallback(
     async (jobId: string) => {
       try {
@@ -191,15 +233,32 @@ function App() {
     source.onmessage = (message) => {
       const event = JSON.parse(message.data) as JobEvent
       setProgress(event)
+      if (event.stage_times) setStageTimes(event.stage_times)
       if (isTerminal(event.status)) {
         source.close()
+        setLiveStage(null)
+        setLiveStageStartedAt(null)
+        liveStageRef.current = null
         void refreshJobs()
+        void refreshJobTiming(activeJobId)
         if (event.status === 'done') void loadResult(activeJobId)
+        return
+      }
+      // Живой счётчик текущей стадии: при её смене перезапускаем отсчёт.
+      if (event.stage !== liveStageRef.current) {
+        liveStageRef.current = event.stage
+        setLiveStage(event.stage)
+        setLiveStageStartedAt(Date.now() - (event.stage_elapsed ?? 0) * 1000)
+      } else if (event.stage_elapsed != null) {
+        setLiveStageStartedAt(Date.now() - event.stage_elapsed * 1000)
+      }
+      if (event.elapsed != null) {
+        setTotalStartedAt(Date.now() - event.elapsed * 1000)
       }
     }
     source.onerror = () => source.close()
     return () => source.close()
-  }, [activeJobId, refreshJobs, loadResult])
+  }, [activeJobId, refreshJobs, loadResult, refreshJobTiming])
 
   const enqueue = useCallback(
     async (path: string) => {
@@ -221,12 +280,13 @@ function App() {
         setSummary(null)
         setProtocol(null)
         setSamplesMeta({})
+        resetTiming()
         await refreshJobs()
       } catch (cause) {
         setError(errorMessage(cause))
       }
     },
-    [refreshJobs, speakerCounts],
+    [refreshJobs, resetTiming, speakerCounts],
   )
 
   const runJob = useCallback(
@@ -239,12 +299,13 @@ function App() {
         setSummary(null)
         setProtocol(null)
         setSamplesMeta({})
+        resetTiming()
         await refreshJobs()
       } catch (cause) {
         setError(errorMessage(cause))
       }
     },
-    [refreshJobs],
+    [refreshJobs, resetTiming],
   )
 
   const openJob = useCallback(
@@ -256,6 +317,7 @@ function App() {
       setProtocol(null)
       setSamplesMeta({})
       setProgress(null)
+      resetTiming()
       try {
         const details = await api<JobDetails>(`/api/jobs/${jobId}`)
         setProgress({
@@ -264,12 +326,24 @@ function App() {
           message: '',
           status: details.status,
         })
+        setStageTimes(details.stage_times ?? [])
+        setFinalTotalSeconds(details.total_seconds)
+        if (details.status === 'running') {
+          setTotalStartedAt(
+            details.total_seconds != null ? Date.now() - details.total_seconds * 1000 : Date.now(),
+          )
+          setLiveStage(details.stage ?? null)
+          setLiveStageStartedAt(
+            details.stage_elapsed != null ? Date.now() - details.stage_elapsed * 1000 : Date.now(),
+          )
+          liveStageRef.current = details.stage ?? null
+        }
         if (details.status === 'done') await loadResult(jobId)
       } catch (cause) {
         setError(errorMessage(cause))
       }
     },
-    [loadResult],
+    [loadResult, resetTiming],
   )
 
   const deleteJob = useCallback(
@@ -284,13 +358,14 @@ function App() {
           setProtocol(null)
           setSamplesMeta({})
           setProgress(null)
+          resetTiming()
         }
         await refreshJobs()
       } catch (cause) {
         setError(errorMessage(cause))
       }
     },
-    [activeJobId, refreshJobs],
+    [activeJobId, refreshJobs, resetTiming],
   )
 
   const upload = useCallback(
@@ -660,6 +735,14 @@ function App() {
                 )
               })}
             </ol>
+            <StageTimes
+              times={stageTimes}
+              running={progress != null && !isTerminal(progress.status)}
+              totalStartedAt={totalStartedAt}
+              finalTotalSeconds={finalTotalSeconds}
+              currentStage={liveStage}
+              currentStartedAt={liveStageStartedAt}
+            />
           </section>
         )}
 

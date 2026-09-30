@@ -32,6 +32,7 @@ from audio_transcriber.web.storage.jobs_db import (
     JobsDB,
     utc_now_iso,
 )
+from audio_transcriber.web.timings import StageTimer
 
 logger = logging.getLogger(__name__)
 
@@ -116,13 +117,18 @@ class JobRunner:
 
     def _process(self, request: JobRequest) -> None:
         job_id = request.job_id
+        # Монотонный таймер стадий живёт ровно один прогон задачи.
+        timer = StageTimer()
         self._store.update(
             job_id,
             status=STATUS_RUNNING,
             started_at=utc_now_iso(),
+            finished_at=None,
             error=None,
             stage="queued",
             fraction=0.0,
+            stage_started_at=None,
+            stage_times=[],
         )
         self._bus.publish(
             job_id,
@@ -141,14 +147,18 @@ class JobRunner:
             job = self._store.get(job_id)
             if job is not None:
                 config.num_speakers = job.num_speakers
-            result = self._pipeline_fn(config, on_progress=self._progress_callback(job_id))
+            result = self._pipeline_fn(
+                config, on_progress=self._progress_callback(job_id, timer)
+            )
         except Exception as exc:
             logger.exception("Задача %s завершилась ошибкой", job_id)
+            timer.close()
             self._store.update(
                 job_id,
                 status=STATUS_ERROR,
                 finished_at=utc_now_iso(),
                 error=str(exc),
+                stage_times=timer.timings(),
             )
             self._bus.publish(
                 job_id,
@@ -157,18 +167,40 @@ class JobRunner:
                     "fraction": None,
                     "message": str(exc),
                     "status": STATUS_ERROR,
+                    "stage_times": timer.snapshot(),
                 },
             )
             return
 
-        self._finish_success(job_id, config, result)
+        # Стадия ``export`` закрывается здесь: ``done`` от конвейера воркер
+        # намеренно игнорирует, чтобы не засчитывать запись результата.
+        timer.close()
+        self._finish_success(job_id, config, result, timer)
 
-    def _progress_callback(self, job_id: str) -> Callable[[ProgressEvent], None]:
+    def _progress_callback(
+        self, job_id: str, timer: StageTimer
+    ) -> Callable[[ProgressEvent], None]:
+        current_stage: str | None = None
+
         def callback(event: ProgressEvent) -> None:
+            nonlocal current_stage
             if event.stage == "done":
                 # Финальное событие отправляет сам воркер после записи результата.
                 return
-            self._store.update(job_id, stage=event.stage, fraction=event.fraction)
+            before = len(timer.timings())
+            timer.observe(event)
+            fields: dict[str, object] = {
+                "stage": event.stage,
+                "fraction": event.fraction,
+            }
+            if event.stage != current_stage:
+                # Начало новой стадии — фиксируем её старт для живого таймера.
+                current_stage = event.stage
+                fields["stage_started_at"] = utc_now_iso()
+            if len(timer.timings()) != before:
+                # Стадия закрылась — сохраняем накопленные тайминги.
+                fields["stage_times"] = timer.timings()
+            self._store.update(job_id, **fields)
             self._bus.publish(
                 job_id,
                 {
@@ -176,13 +208,20 @@ class JobRunner:
                     "fraction": event.fraction,
                     "message": event.message,
                     "status": STATUS_RUNNING,
+                    "elapsed": round(timer.elapsed(), 3),
+                    "stage_elapsed": round(timer.current_elapsed(), 3),
+                    "stage_times": timer.snapshot(),
                 },
             )
 
         return callback
 
     def _finish_success(
-        self, job_id: str, config: AppConfig, result: TranscriptionResult
+        self,
+        job_id: str,
+        config: AppConfig,
+        result: TranscriptionResult,
+        timer: StageTimer,
     ) -> None:
         samples = self._collect_samples(config, result)
         payload = serialize_result(result, samples=samples)
@@ -200,6 +239,7 @@ class JobRunner:
                 status=STATUS_ERROR,
                 finished_at=utc_now_iso(),
                 error=f"Не удалось сохранить результат: {exc}",
+                stage_times=timer.timings(),
             )
             self._bus.publish(
                 job_id,
@@ -208,6 +248,7 @@ class JobRunner:
                     "fraction": None,
                     "message": "Не удалось сохранить результат",
                     "status": STATUS_ERROR,
+                    "stage_times": timer.snapshot(),
                 },
             )
             return
@@ -221,6 +262,7 @@ class JobRunner:
             language=result.language,
             duration=result.duration,
             result_path=str(result_path),
+            stage_times=timer.timings(),
         )
         self._bus.publish(
             job_id,
@@ -229,6 +271,7 @@ class JobRunner:
                 "fraction": 1.0,
                 "message": "Готово",
                 "status": STATUS_DONE,
+                "stage_times": timer.snapshot(),
             },
         )
 

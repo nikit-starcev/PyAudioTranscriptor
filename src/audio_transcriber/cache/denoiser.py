@@ -29,6 +29,12 @@ class CachingDenoiser:
         self._inner = inner
         self._cache = cache
         self._source = source
+        self._last_hit = False
+
+    @property
+    def last_hit(self) -> bool:
+        """Был ли последний :meth:`denoise` обслужен из кэша."""
+        return self._last_hit
 
     def _key(self) -> str:
         return self._cache.key(
@@ -42,9 +48,11 @@ class CachingDenoiser:
         cached = self._cache.load_audio("denoise", key)
         if cached is not None:
             logger.info("Кэш шумоподавления: попадание (%s)", key[:12])
+            self._last_hit = True
             return cached
 
         logger.info("Кэш шумоподавления: промах — выполняю денойз")
+        self._last_hit = False
         result = self._inner.denoise(input_path)
         # Копируем результат в кэш для следующих запусков, но текущему потребителю
         # возвращаем исходный путь (поведение без кэша не меняется).
