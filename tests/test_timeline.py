@@ -106,6 +106,38 @@ def test_write_timeline_skips_without_diarization(audio_file: Path, tmp_path: Pa
     assert not output_path.exists()
 
 
+def test_build_tracks_places_extra_speakers_on_their_own_tracks(audio_file: Path) -> None:
+    ivan = Speaker(id="SPEAKER_00", display_name="Иван")
+    maria = Speaker(id="SPEAKER_01", display_name="Мария")
+    result = TranscriptionResult(
+        source_path=audio_file,
+        language="ru",
+        duration=10.0,
+        entries=[
+            TranscriptEntry(
+                start=0.0,
+                end=5.0,
+                text="спор",
+                speaker=ivan,
+                extra_speakers=[maria],
+                overlap=True,
+                speaker_confidence=0.3,
+            ),
+        ],
+        speakers=[ivan, maria],
+    )
+
+    tracks = build_speaker_tracks(result)
+
+    assert [(track.speaker_id, track.intervals) for track in tracks] == [
+        ("SPEAKER_00", ((0.0, 5.0),)),
+        ("SPEAKER_01", ((0.0, 5.0),)),
+    ]
+    text = render_timeline_text(result)
+    assert "Спикер 1 (Иван): 00:00–00:05" in text
+    assert "Спикер 2 (Мария): 00:00–00:05" in text
+
+
 def test_render_timeline_text_uses_long_form_for_hours(audio_file: Path) -> None:
     speaker = Speaker(id="SPEAKER_00", display_name="Спикер 1")
     result = TranscriptionResult(

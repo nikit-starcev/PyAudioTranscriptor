@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from audio_transcriber.domain.models import TranscriptionResult
+from audio_transcriber.domain.models import Speaker, TranscriptionResult
 from audio_transcriber.utils.exceptions import ExportError
 
 # Палитра дорожек: чередуется по кругу, чтобы соседние говорящие различались.
@@ -88,28 +88,39 @@ def build_speaker_tracks(result: TranscriptionResult) -> list[SpeakerTrack]:
 
     Дорожки возвращаются в порядке первого появления говорящего. Реплики без
     говорящего разрывают серию: в таймлайне «кто когда говорил» им места нет.
+    У реплики с дополнительными говорящими (``extra_speakers``) интервал
+    добавляется на дорожки **всех** её участников — так наложение и смена
+    говорящего внутри одной реплики видны каждому из них.
     """
 
     grouped: dict[str, list[tuple[float, float]]] = {}
     names: dict[str, str] = {}
     order: list[str] = []
-    last_id: str | None = None
+    previous_ids: set[str] = set()
 
     for entry in result.entries:
-        speaker = entry.speaker
-        if speaker is None:
-            last_id = None
+        involved: list[Speaker] = []
+        seen_ids: set[str] = set()
+        for candidate in ([entry.speaker] if entry.speaker is not None else []) + list(
+            entry.extra_speakers
+        ):
+            if candidate.id not in seen_ids:
+                involved.append(candidate)
+                seen_ids.add(candidate.id)
+        if not involved:
+            previous_ids = set()
             continue
-        if speaker.id not in names:
-            names[speaker.id] = speaker.display_name
-            grouped[speaker.id] = []
-            order.append(speaker.id)
-        if speaker.id == last_id and grouped[speaker.id]:
-            start = grouped[speaker.id][-1][0]
-            grouped[speaker.id][-1] = (start, entry.end)
-        else:
-            grouped[speaker.id].append((entry.start, entry.end))
-        last_id = speaker.id
+        for speaker in involved:
+            if speaker.id not in names:
+                names[speaker.id] = speaker.display_name
+                grouped[speaker.id] = []
+                order.append(speaker.id)
+            if speaker.id in previous_ids and grouped[speaker.id]:
+                start = grouped[speaker.id][-1][0]
+                grouped[speaker.id][-1] = (start, entry.end)
+            else:
+                grouped[speaker.id].append((entry.start, entry.end))
+        previous_ids = seen_ids
 
     return [
         SpeakerTrack(speaker_id, names[speaker_id], tuple(grouped[speaker_id]))

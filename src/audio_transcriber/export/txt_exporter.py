@@ -30,7 +30,7 @@ class TxtExporter:
         threshold = result.low_confidence_threshold
         lines.extend(
             f"[{format_timestamp(entry.start)}] "
-            f"{entry.speaker.display_name if entry.speaker else '?'}: "
+            f"{entry.speaker_label}: "
             f"{entry.text}{entry_markers(entry, threshold)}"
             for entry in result.entries
         )

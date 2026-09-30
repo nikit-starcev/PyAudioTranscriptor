@@ -122,7 +122,10 @@ def test_assigns_speaker_with_largest_overlap() -> None:
 
     assert entries[0].speaker is not None
     assert entries[0].speaker.id == "SPEAKER_01"
-    assert [speaker.id for speaker in speakers] == ["SPEAKER_01"]
+    # Реплика накрывает смену говорящего: оба участника должны быть указаны.
+    assert [speaker.id for speaker in entries[0].extra_speakers] == ["SPEAKER_00"]
+    assert entries[0].overlap is True
+    assert [speaker.id for speaker in speakers] == ["SPEAKER_01", "SPEAKER_00"]
 
 
 def test_segment_without_overlap_has_no_speaker() -> None:
@@ -284,3 +287,112 @@ def test_large_overlapping_input_is_fast() -> None:
 
     assert len(entries) == 5000
     assert elapsed < 2.0, f"слишком медленно: {elapsed:.3f}s"
+
+
+# --- дополнительные говорящие и уверенность привязки -------------------------
+
+
+def test_extra_speakers_for_two_overlapping_speakers() -> None:
+    segments = [TranscriptionSegment(start=0.0, end=10.0, text="спор")]
+    speaker_segments = [
+        SpeakerSegment(start=0.0, end=8.0, speaker_id="SPEAKER_00"),
+        SpeakerSegment(start=2.0, end=10.0, speaker_id="SPEAKER_01"),
+    ]
+
+    entries, _ = OverlapSegmentMerger().merge(segments, speaker_segments)
+
+    entry = entries[0]
+    assert entry.speaker is not None
+    assert entry.speaker.id == "SPEAKER_00"  # максимальное перекрытие, тай-брейк по порядку
+    assert [speaker.id for speaker in entry.extra_speakers] == ["SPEAKER_01"]
+    assert entry.overlap is True
+    assert entry.speaker_confidence == 0.8
+
+
+def test_extra_speakers_ordered_by_descending_overlap() -> None:
+    segments = [TranscriptionSegment(start=0.0, end=10.0, text="общий разговор")]
+    speaker_segments = [
+        SpeakerSegment(start=0.0, end=10.0, speaker_id="SPEAKER_00"),
+        SpeakerSegment(start=1.0, end=6.0, speaker_id="SPEAKER_01"),
+        SpeakerSegment(start=4.0, end=10.0, speaker_id="SPEAKER_02"),
+    ]
+
+    entries, _ = OverlapSegmentMerger().merge(segments, speaker_segments)
+
+    entry = entries[0]
+    assert entry.speaker is not None
+    assert entry.speaker.id == "SPEAKER_00"
+    # SPEAKER_02 перекрывает 6 с, SPEAKER_01 — 5 с.
+    assert [speaker.id for speaker in entry.extra_speakers] == ["SPEAKER_02", "SPEAKER_01"]
+    assert entry.speaker_confidence == 1.0
+
+
+def test_extra_speaker_below_seconds_threshold_ignored() -> None:
+    segments = [TranscriptionSegment(start=0.0, end=10.0, text="короткое касание")]
+    speaker_segments = [
+        SpeakerSegment(start=0.0, end=10.0, speaker_id="SPEAKER_00"),
+        SpeakerSegment(start=0.0, end=0.3, speaker_id="SPEAKER_01"),
+    ]
+
+    entries, _ = OverlapSegmentMerger().merge(segments, speaker_segments)
+
+    assert entries[0].extra_speakers == []
+    assert entries[0].overlap is False
+
+
+def test_extra_speaker_below_fraction_threshold_ignored() -> None:
+    segments = [TranscriptionSegment(start=0.0, end=100.0, text="длинная реплика")]
+    speaker_segments = [
+        SpeakerSegment(start=0.0, end=100.0, speaker_id="SPEAKER_00"),
+        SpeakerSegment(start=0.0, end=4.0, speaker_id="SPEAKER_01"),  # 4 % от 100 с
+    ]
+
+    entries, _ = OverlapSegmentMerger().merge(segments, speaker_segments)
+
+    assert entries[0].extra_speakers == []
+    assert entries[0].overlap is False
+
+
+def test_speaker_confidence_none_without_diarization() -> None:
+    segments = [TranscriptionSegment(start=0.0, end=1.0, text="текст")]
+
+    entries, _ = OverlapSegmentMerger().merge(segments, [])
+
+    assert entries[0].extra_speakers == []
+    assert entries[0].speaker_confidence is None
+
+
+def test_speaker_confidence_partial_coverage() -> None:
+    segments = [TranscriptionSegment(start=0.0, end=10.0, text="частично")]
+    speaker_segments = [SpeakerSegment(start=0.0, end=6.0, speaker_id="SPEAKER_00")]
+
+    entries, _ = OverlapSegmentMerger().merge(segments, speaker_segments)
+
+    assert entries[0].speaker is not None
+    assert entries[0].extra_speakers == []
+    assert entries[0].speaker_confidence == 0.6
+
+
+def test_speaker_confidence_zero_for_nearest_without_overlap() -> None:
+    segments = [TranscriptionSegment(start=0.0, end=1.0, text="рядом")]
+    speaker_segments = [SpeakerSegment(start=5.0, end=6.0, speaker_id="SPEAKER_00")]
+
+    entries, _ = OverlapSegmentMerger(max_gap=5.0).merge(segments, speaker_segments)
+
+    assert entries[0].speaker is not None
+    assert entries[0].speaker_confidence == 0.0
+
+
+def test_mark_overlap_disabled_skips_extra_speakers() -> None:
+    segments = [TranscriptionSegment(start=0.0, end=10.0, text="спор")]
+    speaker_segments = [
+        SpeakerSegment(start=0.0, end=8.0, speaker_id="SPEAKER_00"),
+        SpeakerSegment(start=2.0, end=10.0, speaker_id="SPEAKER_01"),
+    ]
+
+    entries, _ = OverlapSegmentMerger(mark_overlap=False).merge(segments, speaker_segments)
+
+    assert entries[0].extra_speakers == []
+    assert entries[0].overlap is False
+    # Уверенность привязки считается независимо от режима пометки.
+    assert entries[0].speaker_confidence == 0.8

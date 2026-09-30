@@ -14,12 +14,134 @@ from audio_transcriber.domain.models import (
 
 _MAX_GAP_DEFAULT = 5.0
 
+# Пороги для дополнительных говорящих реплики. Говорящий попадает в
+# ``extra_speakers``, только если его сегменты диаризации перекрывают интервал
+# реплики не меньше, чем ``DEFAULT_EXTRA_SPEAKER_MIN_SECONDS`` секунд **и**
+# ``DEFAULT_EXTRA_SPEAKER_MIN_FRACTION`` от длительности реплики. Первое
+# отсекает случайные касания границы, второе — короткие «хвосты» в длинной
+# реплике. Оба порога должны выполняться одновременно.
+DEFAULT_EXTRA_SPEAKER_MIN_SECONDS = 0.5
+DEFAULT_EXTRA_SPEAKER_MIN_FRACTION = 0.10
+
 # Запись интервала диаризации для оффлайн-обходов:
 # ``(sort_key, coord, original_index, score)``. ``score`` максимизируется
 # (кортежное сравнение), ``coord`` — координата в BIT (end или start).
 _Record = tuple[float, float, int, tuple[float, ...]]
 # Запрос: ``(sort_key, coord_bound, query_id)``.
 _Query = tuple[float, float, int]
+# Интервал диаризации для индекса перекрытий: ``(start, end, speaker_id)``.
+_CoverageInterval = tuple[float, float, str]
+
+
+def _merged_intervals_by_speaker(
+    speaker_segments: Sequence[SpeakerSegment],
+) -> list[_CoverageInterval]:
+    """Объединяет сегменты каждого говорящего в непересекающиеся интервалы.
+
+    Нужно, чтобы доля покрытия реплики и перекрытие с говорящим не считались
+    дважды при наложенных друг на друга сегментах одного говорящего.
+    Нефизичные интервалы (``end <= start``) игнорируются.
+    """
+    grouped: dict[str, list[tuple[float, float]]] = {}
+    for segment in speaker_segments:
+        if segment.end <= segment.start:
+            continue
+        grouped.setdefault(segment.speaker_id, []).append((segment.start, segment.end))
+
+    merged: list[_CoverageInterval] = []
+    for speaker_id, intervals in grouped.items():
+        intervals.sort()
+        current_start, current_end = intervals[0]
+        for start, end in intervals[1:]:
+            if start <= current_end:
+                if end > current_end:
+                    current_end = end
+            else:
+                merged.append((current_start, current_end, speaker_id))
+                current_start, current_end = start, end
+        merged.append((current_start, current_end, speaker_id))
+    return merged
+
+
+class _IntervalIndex:
+    """Отчёт обо всех интервалах, пересекающих запрос, за ``O(log n + k)``.
+
+    Центрированное интервальное дерево: узлы, накрывающие ``center``,
+    хранятся двумя сортированными списками (по началу и по концу), остальные
+    рекурсивно уходят влево/вправо. Запрос интервала ``[qs, qe]`` возвращает
+    все накрывающие его интервалы (включая касающиеся, их отсеивает
+    вызывающий по фактическому перекрытию) суммарно за ``O(log n + k)``, где
+    ``k`` — число найденных интервалов, без полного ``O(n)`` перебора.
+    """
+
+    __slots__ = ("_by_end", "_by_start", "_center", "_left", "_right")
+
+    def __init__(self, intervals: Sequence[_CoverageInterval]) -> None:
+        self._center: float | None = None
+        self._by_start: list[_CoverageInterval] = []
+        self._by_end: list[_CoverageInterval] = []
+        self._left: _IntervalIndex | None = None
+        self._right: _IntervalIndex | None = None
+        if not intervals:
+            return
+
+        endpoints: list[float] = []
+        for start, end, _speaker_id in intervals:
+            endpoints.append(start)
+            endpoints.append(end)
+        endpoints.sort()
+        # Медиана концов всегда принадлежит какому-то интервалу как его начало
+        # или конец, поэтому хотя бы один интервал накрывает центр — рекурсия
+        # не может зациклиться.
+        center = endpoints[len(endpoints) // 2]
+        self._center = center
+
+        left: list[_CoverageInterval] = []
+        right: list[_CoverageInterval] = []
+        for start, end, speaker_id in intervals:
+            if end < center:
+                left.append((start, end, speaker_id))
+            elif start > center:
+                right.append((start, end, speaker_id))
+            else:
+                self._by_start.append((start, end, speaker_id))
+
+        self._by_start.sort(key=lambda item: item[0])
+        self._by_end = sorted(self._by_start, key=lambda item: item[1], reverse=True)
+        if left:
+            self._left = _IntervalIndex(left)
+        if right:
+            self._right = _IntervalIndex(right)
+
+    def query(self, start: float, end: float, out: list[_CoverageInterval]) -> None:
+        """Добавляет в ``out`` все интервалы, пересекающие ``[start, end]``."""
+        if self._center is None:
+            return
+        if end < self._center:
+            # Накрывающие центр интервалы начинаются не позже центра (а значит,
+            # и не позже ``end``) и заканчиваются не раньше ``end >= start`` —
+            # остаётся отсечь те, что начинаются уже после ``end``.
+            for item in self._by_start:
+                if item[0] > end:
+                    break
+                out.append(item)
+            if self._left is not None:
+                self._left.query(start, end, out)
+        elif start > self._center:
+            for item in self._by_end:
+                if item[1] < start:
+                    break
+                out.append(item)
+            if self._right is not None:
+                self._right.query(start, end, out)
+        else:
+            # Центр внутри запроса: все накрывающие его интервалы пересекают
+            # запрос (хотя бы в точке центра).
+            out.extend(self._by_start)
+            if self._left is not None:
+                self._left.query(start, end, out)
+            if self._right is not None:
+                self._right.query(start, end, out)
 
 
 class OverlapSegmentMerger:
@@ -28,10 +150,28 @@ class OverlapSegmentMerger:
     Если перекрытия нет (реплика попала между интервалами диаризации),
     берётся ближайший по времени говорящий — но не далее ``max_gap`` секунд,
     иначе говорящий не назначается. Реализует протокол ``SegmentMerger``.
+
+    Помимо основного говорящего для каждой реплики собираются
+    ``extra_speakers`` — прочие говорящие, чьи интервалы диаризации покрывают
+    реплику не меньше порогов (см. :data:`DEFAULT_EXTRA_SPEAKER_MIN_SECONDS` и
+    :data:`DEFAULT_EXTRA_SPEAKER_MIN_FRACTION`), и ``speaker_confidence`` —
+    доля интервала реплики, покрытая сегментами основного говорящего. При
+    ``mark_overlap=False`` дополнительные говорящие не добавляются (реплика
+    ведёт себя как раньше), а ``speaker_confidence`` всё равно считается.
     """
 
-    def __init__(self, *, max_gap: float = _MAX_GAP_DEFAULT) -> None:
+    def __init__(
+        self,
+        *,
+        max_gap: float = _MAX_GAP_DEFAULT,
+        mark_overlap: bool = True,
+        extra_speaker_min_seconds: float = DEFAULT_EXTRA_SPEAKER_MIN_SECONDS,
+        extra_speaker_min_fraction: float = DEFAULT_EXTRA_SPEAKER_MIN_FRACTION,
+    ) -> None:
         self._max_gap = max_gap
+        self._mark_overlap = mark_overlap
+        self._extra_min_seconds = extra_speaker_min_seconds
+        self._extra_min_fraction = extra_speaker_min_fraction
 
     def merge(
         self,
@@ -44,15 +184,41 @@ class OverlapSegmentMerger:
         entries: list[TranscriptEntry] = []
         resolver = _SpeakerResolver(speaker_segments, max_gap=self._max_gap)
         speaker_ids = resolver.best_speaker_ids(transcription_segments)
+        has_diarization = bool(speaker_segments)
+        coverage = resolver.overlapping_by_speaker(transcription_segments)
 
-        for segment, speaker_id in zip(transcription_segments, speaker_ids, strict=True):
-            speaker = None
-            if speaker_id is not None:
-                if speaker_id not in speakers_by_id:
-                    index = len(speakers_by_id) + 1
-                    display_name = known_speakers.get(speaker_id, f"Спикер {index}")
-                    speakers_by_id[speaker_id] = Speaker(id=speaker_id, display_name=display_name)
-                speaker = speakers_by_id[speaker_id]
+        def ensure_speaker(speaker_id: str) -> Speaker:
+            if speaker_id not in speakers_by_id:
+                index = len(speakers_by_id) + 1
+                display_name = known_speakers.get(speaker_id, f"Спикер {index}")
+                speakers_by_id[speaker_id] = Speaker(id=speaker_id, display_name=display_name)
+            return speakers_by_id[speaker_id]
+
+        for index, (segment, speaker_id) in enumerate(
+            zip(transcription_segments, speaker_ids, strict=True)
+        ):
+            speaker = ensure_speaker(speaker_id) if speaker_id is not None else None
+            duration = segment.end - segment.start
+            hits = coverage[index]
+            extra_speakers: list[Speaker] = []
+            if self._mark_overlap and has_diarization:
+                candidates: list[tuple[str, float]] = []
+                for other_id, overlap in hits.items():
+                    if other_id == speaker_id or overlap < self._extra_min_seconds:
+                        continue
+                    if duration <= 0 or overlap < self._extra_min_fraction * duration:
+                        continue
+                    candidates.append((other_id, overlap))
+                # По убыванию перекрытия; при равенстве — по идентификатору,
+                # чтобы порядок был устойчивым.
+                candidates.sort(key=lambda item: (-item[1], item[0]))
+                extra_speakers = [ensure_speaker(other_id) for other_id, _ in candidates]
+
+            confidence: float | None = None
+            if has_diarization:
+                covered = hits.get(speaker_id, 0.0) if speaker_id is not None else 0.0
+                confidence = 0.0 if duration <= 0 else min(1.0, covered / duration)
+
             entries.append(
                 TranscriptEntry(
                     start=segment.start,
@@ -60,6 +226,9 @@ class OverlapSegmentMerger:
                     text=segment.text,
                     speaker=speaker,
                     avg_logprob=segment.avg_logprob,
+                    overlap=bool(extra_speakers),
+                    extra_speakers=extra_speakers,
+                    speaker_confidence=confidence,
                 )
             )
 
@@ -195,9 +364,42 @@ class _SpeakerResolver:
         if self._records and not self._fallback:
             self._coords_e = sorted({end for _, end, _ in self._records})
             self._coords_s = sorted({start for start, _, _ in self._records})
+        # Индекс покрытия (для ``extra_speakers`` и ``speaker_confidence``):
+        # объединённые интервалы каждого говорящего. ``None`` — данных нет.
+        merged = _merged_intervals_by_speaker(speaker_segments)
+        self._coverage_index: _IntervalIndex | None = (
+            _IntervalIndex(merged) if merged else None
+        )
 
     def best_speaker_id(self, segment: TranscriptionSegment) -> str | None:
         return self.best_speaker_ids([segment])[0]
+
+    def overlapping_by_speaker(
+        self, transcription_segments: Sequence[TranscriptionSegment]
+    ) -> list[dict[str, float]]:
+        """Доля пересечения каждой реплики с сегментами каждого говорящего.
+
+        Возвращает по одному словарю ``{speaker_id: перекрытие_в_секундах}`` на
+        реплику. Учитываются только говорящие с положительным перекрытием;
+        интервалы говорящего объединены, поэтому одно наложение не считается
+        дважды. Сложность — ``O((N + M) log M + K)`` (интервальное дерево), без
+        перебора всех пар ``N * M``.
+        """
+        count = len(transcription_segments)
+        if self._coverage_index is None:
+            return [{} for _ in range(count)]
+
+        result: list[dict[str, float]] = []
+        for segment in transcription_segments:
+            hits: dict[str, float] = {}
+            found: list[_CoverageInterval] = []
+            self._coverage_index.query(segment.start, segment.end, found)
+            for start, end, speaker_id in found:
+                overlap = min(end, segment.end) - max(start, segment.start)
+                if overlap > 0.0:
+                    hits[speaker_id] = hits.get(speaker_id, 0.0) + overlap
+            result.append(hits)
+        return result
 
     def best_speaker_ids(
         self, transcription_segments: Sequence[TranscriptionSegment]

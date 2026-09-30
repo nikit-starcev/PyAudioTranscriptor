@@ -31,6 +31,8 @@ class JsonExporter:
                     "end": entry.end,
                     "text": entry.text,
                     "speaker": entry.speaker.id if entry.speaker else None,
+                    "extra_speakers": [speaker.id for speaker in entry.extra_speakers],
+                    "speaker_confidence": entry.speaker_confidence,
                     "avg_logprob": entry.avg_logprob,
                     "low_confidence": is_low_confidence(entry, threshold),
                     "overlap": entry.overlap,

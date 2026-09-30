@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from audio_transcriber.domain.models import TranscriptEntry
+from audio_transcriber.domain.models import Speaker, TranscriptEntry
 
 # Разумная по умолчанию пауза, разрывающая реплику: если между сегментами
 # одного говорящего прошло больше секунд — начинаем новую реплику.
@@ -28,13 +28,32 @@ def _join_text(left: str, right: str) -> str:
     return _normalize_text(f"{left} {right}")
 
 
-def _min_logprob(left: float | None, right: float | None) -> float | None:
-    """Наихудшая (минимальная) уверенность из двух реплик.
+def _min_optional(left: float | None, right: float | None) -> float | None:
+    """Наихудшее (минимальное) значение из двух необязательных.
 
-    ``None`` (значение отсутствует) игнорируется; если оба ``None`` — ``None``.
+    Используется и для уверенности распознавания (``avg_logprob``), и для
+    уверенности привязки говорящего (``speaker_confidence``). ``None``
+    (значение отсутствует) игнорируется; если оба ``None`` — ``None``.
     """
     values = [value for value in (left, right) if value is not None]
     return min(values) if values else None
+
+
+def _merge_extra_speakers(
+    left: list[Speaker], right: list[Speaker]
+) -> list[Speaker]:
+    """Объединяет дополнительные говорящие без дублей, порядок устойчивый.
+
+    Сначала сохраняются говорящие из ``left`` (в исходном порядке), затем из
+    ``right`` те, чьих идентификаторов ещё нет.
+    """
+    merged = list(left)
+    seen = {speaker.id for speaker in merged}
+    for speaker in right:
+        if speaker.id not in seen:
+            merged.append(speaker)
+            seen.add(speaker.id)
+    return merged
 
 
 class SentenceMerger:
@@ -50,6 +69,9 @@ class SentenceMerger:
     тексты соединяются через пробел. Уверенность распознавания объединённой
     реплики — наихудшая (минимум ``avg_logprob``, ``None`` игнорируется),
     признак наложения речи — логическое ИЛИ по склеенным репликам.
+    Дополнительные говорящие объединяются без дублей с сохранением порядка, а
+    ``speaker_confidence`` берётся как минимум по склеенным репликам — сомнение
+    в атрибуции при склейке не теряется.
     """
 
     def __init__(self, *, max_gap: float = DEFAULT_MAX_GAP) -> None:
@@ -67,8 +89,14 @@ class SentenceMerger:
                     previous,
                     end=entry.end,
                     text=_join_text(previous.text, entry.text),
-                    avg_logprob=_min_logprob(previous.avg_logprob, entry.avg_logprob),
+                    avg_logprob=_min_optional(previous.avg_logprob, entry.avg_logprob),
                     overlap=previous.overlap or entry.overlap,
+                    extra_speakers=_merge_extra_speakers(
+                        previous.extra_speakers, entry.extra_speakers
+                    ),
+                    speaker_confidence=_min_optional(
+                        previous.speaker_confidence, entry.speaker_confidence
+                    ),
                 )
             else:
                 merged.append(entry)

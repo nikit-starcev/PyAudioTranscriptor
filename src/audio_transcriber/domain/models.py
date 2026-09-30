@@ -52,7 +52,14 @@ class SpeakerOverlap:
 
 @dataclass(frozen=True, slots=True)
 class TranscriptEntry:
-    """Финальная реплика стенограммы: текст, привязанный к говорящему."""
+    """Финальная реплика стенограммы: текст, привязанный к говорящему.
+
+    Кроме основного говорящего ``speaker`` реплика может содержать
+    ``extra_speakers`` — прочих участников, чьи интервалы диаризации заметно
+    перекрывают интервал реплики (например, длинный сегмент ASR захватил смену
+    говорящего или одновременную речь). Порядок ``extra_speakers`` —
+    по убыванию перекрытия.
+    """
 
     start: float
     end: float
@@ -63,6 +70,28 @@ class TranscriptEntry:
     avg_logprob: float | None = None
     # Реплика попала в зону наложения речи (одновременно говорят >= 2 человек).
     overlap: bool = False
+    # Прочие говорящие, кроме ``speaker`` (обычно при наложении/смене внутри
+    # одной реплики). Пустой список — данных о дополнительных говорящих нет.
+    extra_speakers: list[Speaker] = field(default_factory=list)
+    # Уверенность привязки основного говорящего: доля интервала реплики,
+    # покрытая сегментами диаризации этого говорящего (0..1). ``None``, если
+    # диаризации не было и оценить нечего.
+    speaker_confidence: float | None = None
+
+    @property
+    def speaker_label(self) -> str:
+        """Человекочитаемая подпись всех говорящих реплики.
+
+        Основной говорящий первый, затем дополнительные в их порядке (по
+        убыванию перекрытия): ``"Имя1 + Имя2"``. Если говорящих нет — ``"?"``,
+        как и раньше в экспортёрах.
+        """
+        speakers = list(self.extra_speakers)
+        if self.speaker is not None:
+            speakers.insert(0, self.speaker)
+        if not speakers:
+            return "?"
+        return " + ".join(speaker.display_name for speaker in speakers)
 
 
 @dataclass(slots=True)

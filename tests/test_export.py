@@ -164,3 +164,95 @@ def test_json_exporter_summary_is_null_without_llm(
 
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["summary"] is None
+
+
+@pytest.fixture
+def overlap_result(tmp_path: Path) -> TranscriptionResult:
+    ivan = Speaker(id="SPEAKER_00", display_name="Иван")
+    maria = Speaker(id="SPEAKER_01", display_name="Мария")
+    return TranscriptionResult(
+        source_path=tmp_path / "call.mp3",
+        language="ru",
+        duration=5.0,
+        entries=[
+            TranscriptEntry(
+                start=0.0,
+                end=3.0,
+                text="Спорная реплика",
+                speaker=ivan,
+                extra_speakers=[maria],
+                overlap=True,
+                speaker_confidence=0.3,
+            ),
+        ],
+        speakers=[ivan, maria],
+    )
+
+
+def test_txt_exporter_shows_all_speakers_and_low_speaker_confidence(
+    overlap_result: TranscriptionResult, tmp_path: Path
+) -> None:
+    output_path = tmp_path / "out.txt"
+
+    TxtExporter().export(overlap_result, output_path)
+
+    content = output_path.read_text(encoding="utf-8")
+    assert "Иван + Мария: Спорная реплика" in content
+    assert "[говорящий под вопросом]" in content
+    assert "[наложение речи]" in content
+
+
+def test_docx_exporter_shows_all_speakers(
+    overlap_result: TranscriptionResult, tmp_path: Path
+) -> None:
+    output_path = tmp_path / "out.docx"
+
+    DocxExporter().export(overlap_result, output_path)
+
+    document = Document(str(output_path))
+    full_text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+    assert "Иван + Мария" in full_text
+    assert "[говорящий под вопросом]" in full_text
+
+
+def test_json_exporter_includes_extra_speakers_and_confidence(
+    overlap_result: TranscriptionResult, tmp_path: Path
+) -> None:
+    output_path = tmp_path / "out.json"
+
+    JsonExporter().export(overlap_result, output_path)
+
+    entry = json.loads(output_path.read_text(encoding="utf-8"))["entries"][0]
+    assert entry["speaker"] == "SPEAKER_00"
+    assert entry["extra_speakers"] == ["SPEAKER_01"]
+    assert entry["speaker_confidence"] == 0.3
+    assert entry["overlap"] is True
+
+
+def test_json_exporter_defaults_for_entries_without_speaker_data(
+    sample_result: TranscriptionResult, tmp_path: Path
+) -> None:
+    output_path = tmp_path / "out.json"
+
+    JsonExporter().export(sample_result, output_path)
+
+    entries = json.loads(output_path.read_text(encoding="utf-8"))["entries"]
+    assert entries[0]["extra_speakers"] == []
+    assert entries[0]["speaker_confidence"] is None
+
+
+def test_high_speaker_confidence_has_no_marker(
+    sample_result: TranscriptionResult, tmp_path: Path
+) -> None:
+    result = replace(
+        sample_result,
+        entries=[
+            replace(sample_result.entries[0], speaker_confidence=0.9),
+            *sample_result.entries[1:],
+        ],
+    )
+    output_path = tmp_path / "out.txt"
+
+    TxtExporter().export(result, output_path)
+
+    assert "[говорящий под вопросом]" not in output_path.read_text(encoding="utf-8")

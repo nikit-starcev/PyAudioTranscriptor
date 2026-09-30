@@ -185,7 +185,10 @@ def run_pipeline(
     device = device or resolve_device(config.device)
     recognizer = recognizer or _build_recognizer(config, device, on_progress=emit)
 
-    merger = merger or OverlapSegmentMerger()
+    # ``mark_overlap`` управляет и пометкой зон наложения, и сбором
+    # ``extra_speakers`` в объединителе: при выключенном режиме реплики остаются
+    # с одним говорящим, как раньше.
+    merger = merger or OverlapSegmentMerger(mark_overlap=config.mark_overlap)
     sentence_merger = sentence_merger or SentenceMerger()
     if artifact_cleaner is None and config.clean_artifacts:
         artifact_cleaner = ArtifactCleaner()

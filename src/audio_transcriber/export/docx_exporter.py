@@ -32,9 +32,10 @@ class DocxExporter:
 
         threshold = result.low_confidence_threshold
         for entry in result.entries:
-            speaker_label = entry.speaker.display_name if entry.speaker else "?"
             paragraph = document.add_paragraph()
-            paragraph.add_run(f"[{format_timestamp(entry.start)}] {speaker_label}: ").bold = True
+            paragraph.add_run(
+                f"[{format_timestamp(entry.start)}] {entry.speaker_label}: "
+            ).bold = True
             paragraph.add_run(entry.text + entry_markers(entry, threshold))
 
         try:

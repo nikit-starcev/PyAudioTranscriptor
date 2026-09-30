@@ -124,3 +124,63 @@ def test_empty_list_returns_empty() -> None:
 def test_negative_max_gap_rejected() -> None:
     with pytest.raises(ValueError):
         SentenceMerger(max_gap=-1.0)
+
+
+_SPEAKER_3 = Speaker(id="SPEAKER_02", display_name="Спикер 3")
+
+
+def test_merge_unions_extra_speakers_without_duplicates() -> None:
+    entries = [
+        TranscriptEntry(
+            start=0.0,
+            end=1.0,
+            text="раз",
+            speaker=_SPEAKER_1,
+            extra_speakers=[_SPEAKER_2],
+            overlap=True,
+            speaker_confidence=0.9,
+        ),
+        TranscriptEntry(
+            start=1.1,
+            end=2.0,
+            text="два",
+            speaker=_SPEAKER_1,
+            extra_speakers=[_SPEAKER_2, _SPEAKER_3],
+            overlap=True,
+            speaker_confidence=0.7,
+        ),
+    ]
+
+    merged = SentenceMerger().merge(entries)
+
+    assert len(merged) == 1
+    assert [speaker.id for speaker in merged[0].extra_speakers] == [
+        "SPEAKER_01",
+        "SPEAKER_02",
+    ]
+    assert merged[0].overlap is True
+
+
+def test_merge_keeps_worst_speaker_confidence() -> None:
+    entries = [
+        TranscriptEntry(start=0.0, end=1.0, text="раз", speaker=_SPEAKER_1, speaker_confidence=0.9),
+        TranscriptEntry(start=1.1, end=2.0, text="два", speaker=_SPEAKER_1, speaker_confidence=0.4),
+    ]
+
+    merged = SentenceMerger().merge(entries)
+
+    # Сомнение не теряется при склейке: берётся минимум уверенности.
+    assert merged[0].speaker_confidence == 0.4
+
+
+def test_merge_confidence_none_is_ignored() -> None:
+    entries = [
+        TranscriptEntry(start=0.0, end=1.0, text="раз", speaker=_SPEAKER_1),
+        TranscriptEntry(
+            start=1.1, end=2.0, text="два", speaker=_SPEAKER_1, speaker_confidence=0.6
+        ),
+    ]
+
+    merged = SentenceMerger().merge(entries)
+
+    assert merged[0].speaker_confidence == 0.6

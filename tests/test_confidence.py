@@ -190,6 +190,8 @@ def test_json_exports_confidence_and_overlap_fields(tmp_path: Path) -> None:
         "end": 1.0,
         "text": "плохо",
         "speaker": None,
+        "extra_speakers": [],
+        "speaker_confidence": None,
         "avg_logprob": -2.0,
         "low_confidence": True,
         "overlap": False,
