@@ -22,6 +22,7 @@ import re
 from dataclasses import replace
 
 from audio_transcriber.config.settings import AppConfig
+from audio_transcriber.domain.editing import relink_entry_speakers
 from audio_transcriber.domain.models import Speaker, TranscriptEntry
 from audio_transcriber.llm.base import LlmClient
 from audio_transcriber.llm.chunking import (
@@ -346,12 +347,9 @@ def apply_participant_names(
         renamed[speaker.id] = replace(speaker, display_name=f"{speaker.display_name} — {name}")
 
     new_speakers = [renamed[speaker.id] for speaker in speakers]
-    new_entries = [
-        replace(entry, speaker=renamed[entry.speaker.id])
-        if entry.speaker is not None and entry.speaker.id in renamed
-        else entry
-        for entry in entries
-    ]
+    # Перепривязывает и основных, и дополнительных говорящих реплик: имена
+    # участников наложения тоже обновляются, а не остаются прежними.
+    new_entries = relink_entry_speakers(entries, new_speakers)
     return new_entries, new_speakers
 
 

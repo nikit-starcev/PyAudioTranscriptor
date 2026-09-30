@@ -189,6 +189,25 @@ def test_apply_participant_names_updates_display_names() -> None:
     assert entries[0].speaker.display_name == "Спикер 1 — Максим"
 
 
+def test_apply_participant_names_updates_extra_speakers() -> None:
+    speakers = _speakers()
+    entry = TranscriptEntry(
+        start=0.0,
+        end=1.0,
+        text="хором",
+        speaker=speakers[0],
+        overlap=True,
+        extra_speakers=[speakers[1]],
+    )
+
+    entries, _ = apply_participant_names(
+        [entry], speakers, {"SPEAKER_00": "Максим", "SPEAKER_01": "Ольга"}
+    )
+
+    # Имена обновляются и у основного, и у дополнительного говорящего.
+    assert entries[0].speaker_label == "Спикер 1 — Максим + Спикер 2 — Ольга"
+
+
 def test_apply_participant_names_without_names_is_identity() -> None:
     entries, speakers = apply_participant_names(_entries(), _speakers(), {})
 

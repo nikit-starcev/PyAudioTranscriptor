@@ -192,7 +192,14 @@ def test_run_job_and_result(client: TestClient) -> None:
     assert entry["text"] == "привет"
     assert entry["low_confidence"] is True
     assert entry["overlap"] is True
-    assert {mark["key"] for mark in body["marks"]} == {"low_confidence", "overlap"}
+    assert entry["extra_speaker_ids"] == []
+    assert entry["speaker_confidence"] is None
+    assert entry["low_speaker_confidence"] is False
+    assert {mark["key"] for mark in body["marks"]} == {
+        "low_confidence",
+        "speaker_uncertain",
+        "overlap",
+    }
 
 
 def test_jobs_listing(client: TestClient) -> None:

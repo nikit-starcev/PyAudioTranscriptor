@@ -1,7 +1,8 @@
 """Приведение результата конвейера к формату, ожидаемому фронтендом.
 
 Формат намеренно плоский и стабильный (контракт API v1): реплики ссылаются на
-говорящих по ``speaker_id``, а легенда меток приходит полем ``marks``.
+говорящих по ``speaker_id`` (основной) и ``extra_speaker_ids`` (дополнительные
+участники наложения), а легенда меток приходит полем ``marks``.
 """
 
 from __future__ import annotations
@@ -10,7 +11,11 @@ import json
 from collections.abc import Mapping
 from pathlib import Path
 
-from audio_transcriber.domain.models import TranscriptEntry, TranscriptionResult
+from audio_transcriber.domain.models import Speaker, TranscriptEntry, TranscriptionResult
+from audio_transcriber.export.annotations import (
+    DEFAULT_SPEAKER_CONFIDENCE_THRESHOLD,
+    is_low_speaker_confidence,
+)
 
 #: Легенда меток реплик: ключ → символ и человекочитаемое описание.
 MARK_LOW_CONFIDENCE: dict[str, str] = {
@@ -18,12 +23,17 @@ MARK_LOW_CONFIDENCE: dict[str, str] = {
     "symbol": "⚠",
     "label": "низкая уверенность",
 }
+MARK_SPEAKER_UNCERTAIN: dict[str, str] = {
+    "key": "speaker_uncertain",
+    "symbol": "?",
+    "label": "говорящий под вопросом",
+}
 MARK_OVERLAP: dict[str, str] = {
     "key": "overlap",
     "symbol": "⇄",
     "label": "наложение речи",
 }
-MARKS: list[dict[str, str]] = [MARK_LOW_CONFIDENCE, MARK_OVERLAP]
+MARKS: list[dict[str, str]] = [MARK_LOW_CONFIDENCE, MARK_SPEAKER_UNCERTAIN, MARK_OVERLAP]
 
 
 def _is_low_confidence(entry: TranscriptEntry, threshold: float | None) -> bool:
@@ -39,10 +49,31 @@ def entry_to_dict(entry: TranscriptEntry, threshold: float | None) -> dict[str, 
         "start": entry.start,
         "end": entry.end,
         "speaker_id": entry.speaker.id if entry.speaker is not None else None,
+        "extra_speaker_ids": [speaker.id for speaker in entry.extra_speakers],
+        "speaker_confidence": entry.speaker_confidence,
+        "low_speaker_confidence": is_low_speaker_confidence(
+            entry, DEFAULT_SPEAKER_CONFIDENCE_THRESHOLD
+        ),
         "text": entry.text,
         "low_confidence": _is_low_confidence(entry, threshold),
         "overlap": entry.overlap,
     }
+
+
+def _result_speakers(result: TranscriptionResult) -> list[Speaker]:
+    """Все говорящие результата, включая упомянутых как дополнительные.
+
+    Гарантирует, что ``extra_speaker_ids`` реплик разрешаются фронтендом по
+    списку ``speakers``, даже если дополнительный участник почему-то не попал в
+    ``result.speakers``. Порядок: основные говорящие, затем недостающие доп.
+    """
+    speakers: dict[str, Speaker] = {}
+    for speaker in result.speakers:
+        speakers.setdefault(speaker.id, speaker)
+    for entry in result.entries:
+        for extra in entry.extra_speakers:
+            speakers.setdefault(extra.id, extra)
+    return list(speakers.values())
 
 
 def serialize_result(
@@ -66,7 +97,7 @@ def serialize_result(
                 "display_name": speaker.display_name,
                 "has_sample": speaker.id in samples,
             }
-            for speaker in result.speakers
+            for speaker in _result_speakers(result)
         ],
         "entries": [entry_to_dict(entry, threshold) for entry in result.entries],
         "marks": [dict(mark) for mark in MARKS],

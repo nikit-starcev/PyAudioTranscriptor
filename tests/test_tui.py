@@ -297,6 +297,49 @@ def test_populate_results_renders_marks_column(
     assert "⚠" in first_row
 
 
+def test_populate_results_shows_all_speakers_and_speaker_uncertainty(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from audio_transcriber.domain.models import Speaker, TranscriptEntry
+
+    monkeypatch.setattr(
+        tui_app, "_load_env_defaults", lambda: {"OUTPUT_DIR": str(tmp_path / "out")}
+    )
+    anya = Speaker(id="SPEAKER_00", display_name="Аня")
+    boris = Speaker(id="SPEAKER_01", display_name="Боря")
+
+    async def _run() -> str:
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            app._populate_results(
+                TranscriptionResult(
+                    source_path=audio_file,
+                    language="ru",
+                    duration=1.0,
+                    entries=[
+                        TranscriptEntry(
+                            start=0.0,
+                            end=1.0,
+                            text="хором",
+                            speaker=anya,
+                            overlap=True,
+                            extra_speakers=[boris],
+                            speaker_confidence=0.2,
+                        )
+                    ],
+                    speakers=[anya, boris],
+                    low_confidence_threshold=-1.0,
+                )
+            )
+            table = app.query_one("#results", tui_app.DataTable)
+            return str(table.get_row_at(0))
+
+    row = asyncio.run(_run())
+
+    assert "Аня + Боря" in row  # основной и доп. говорящий вместе
+    assert "?" in row  # низкая уверенность привязки говорящего
+
+
 def test_stages_start_with_denoise() -> None:
     # Шумоподавление — первый этап конвейера, и он виден в списке стадий TUI.
     assert tui_app.STAGES[0] == ("denoise", "Шумоподавление")

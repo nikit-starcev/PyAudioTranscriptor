@@ -72,6 +72,8 @@ def fake_pipeline():
                 speaker=speaker_b,
                 avg_logprob=-0.5,
                 overlap=True,
+                extra_speakers=[speaker_a],
+                speaker_confidence=0.3,
             ),
             TranscriptEntry(
                 start=2.0, end=3.0, text="ага", speaker=speaker_a, avg_logprob=-2.0
@@ -161,6 +163,60 @@ def test_result_has_samples_and_meta(client: TestClient) -> None:
     meta = client.get(f"/api/jobs/{client.get('/api/jobs').json()[0]['id']}/samples").json()
     assert {item["speaker_id"] for item in meta} == {"SPEAKER_00", "SPEAKER_01"}
     assert all(item["duration"] > 0 for item in meta)
+
+
+def test_result_includes_extra_speakers_and_speaker_confidence(client: TestClient) -> None:
+    _, result = _prepared_job(client)
+
+    entry = result["entries"][1]
+    assert entry["extra_speaker_ids"] == ["SPEAKER_00"]
+    assert entry["speaker_confidence"] == pytest.approx(0.3)
+    assert entry["low_speaker_confidence"] is True
+
+    # Доп. говорящие присутствуют в speakers — id разрешаются во имя фронтендом.
+    speaker_ids = {speaker["id"] for speaker in result["speakers"]}
+    assert set(entry["extra_speaker_ids"]) <= speaker_ids
+    assert {mark["key"] for mark in result["marks"]} == {
+        "low_confidence",
+        "speaker_uncertain",
+        "overlap",
+    }
+
+
+def test_rename_of_extra_speaker_resolves_to_new_name(client: TestClient) -> None:
+    job_id, _ = _prepared_job(client)
+
+    response = client.patch(
+        f"/api/jobs/{job_id}/speakers",
+        json={"renames": {"SPEAKER_00": "Иван Иванов"}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    names = {speaker["id"]: speaker["display_name"] for speaker in body["speakers"]}
+    entry = body["entries"][1]
+    # id доп. говорящего сохранён, а имя разрешается по актуальному speakers.
+    assert entry["extra_speaker_ids"] == ["SPEAKER_00"]
+    assert names[entry["extra_speaker_ids"][0]] == "Иван Иванов"
+    # Оценка уверенности говорящего переживает пересборку payload.
+    assert entry["speaker_confidence"] == pytest.approx(0.3)
+    assert entry["low_speaker_confidence"] is True
+
+
+def test_merge_removes_duplicate_extra_speaker(client: TestClient) -> None:
+    job_id, _ = _prepared_job(client)
+
+    response = client.patch(
+        f"/api/jobs/{job_id}/speakers",
+        json={"merges": [{"source": "SPEAKER_01", "target": "SPEAKER_00"}]},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    # SPEAKER_01 был основным в реплике 2 и источником слияния: после
+    # переназначения на SPEAKER_00 он не дублируется как доп. говорящий.
+    assert body["entries"][1]["speaker_id"] == "SPEAKER_00"
+    assert body["entries"][1]["extra_speaker_ids"] == []
 
 
 def test_patch_rename_updates_result_json_and_sample(

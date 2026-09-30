@@ -10,8 +10,22 @@ type Props = {
 
 type Fragment = { key: string; start: number; end: number }
 
+type SpeakerPiece = { id: string | null; name: string; extra: boolean }
+
 function entryKey(entry: Entry, index: number): string {
   return `${entry.start}-${entry.end}-${index}`
+}
+
+//: Разбивает подпись реплики на основного говорящего и участников наложения.
+//: Для старых результатов без поля `extra_speaker_ids` доп. говорящих нет.
+function speakerPieces(speakers: SpeakerInfo[], entry: Entry): SpeakerPiece[] {
+  const pieces: SpeakerPiece[] = [
+    { id: entry.speaker_id, name: speakerName(speakers, entry.speaker_id), extra: false },
+  ]
+  for (const extraId of entry.extra_speaker_ids ?? []) {
+    pieces.push({ id: extraId, name: speakerName(speakers, extraId), extra: true })
+  }
+  return pieces
 }
 
 //: Иконка воспроизведения/паузы (SVG вместо эмодзи — предсказуемый вид и цвет).
@@ -227,10 +241,29 @@ function TranscriptTable({ jobId, entries, speakers }: Props) {
                     {formatTime(entry.start)}
                   </td>
                   <td className="whitespace-nowrap px-3 py-1.5">
-                    {speakerName(speakers, entry.speaker_id)}
+                    {speakerPieces(speakers, entry).map((piece, pieceIndex) => (
+                      <span key={`${piece.id ?? 'none'}-${pieceIndex}`}>
+                        {pieceIndex > 0 && (
+                          <span className="mx-1 text-slate-400 dark:text-slate-500">+</span>
+                        )}
+                        <span
+                          className={
+                            piece.extra
+                              ? 'text-slate-500 dark:text-slate-400'
+                              : undefined
+                          }
+                          title={piece.extra ? 'дополнительный говорящий (наложение)' : undefined}
+                        >
+                          {piece.name}
+                        </span>
+                      </span>
+                    ))}
                   </td>
                   <td className="whitespace-nowrap px-3 py-1.5 text-base">
                     {entry.low_confidence && <span title="низкая уверенность">⚠</span>}
+                    {entry.low_speaker_confidence && (
+                      <span title="говорящий под вопросом">?</span>
+                    )}
                     {entry.overlap && <span title="наложение речи">⇄</span>}
                   </td>
                   <td className="px-3 py-1.5">

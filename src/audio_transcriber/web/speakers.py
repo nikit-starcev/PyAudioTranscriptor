@@ -57,6 +57,15 @@ def result_from_payload(
         speaker: Speaker | None = None
         if isinstance(speaker_id, str) and speaker_id:
             speaker = by_id.get(speaker_id) or Speaker(id=speaker_id, display_name=speaker_id)
+        extra_speakers: list[Speaker] = []
+        for extra_id in _as_list(item.get("extra_speaker_ids")):
+            if not isinstance(extra_id, str) or not extra_id:
+                continue
+            if speaker is not None and extra_id == speaker.id:
+                continue
+            extra_speakers.append(
+                by_id.get(extra_id) or Speaker(id=extra_id, display_name=extra_id)
+            )
         text = item.get("text")
         entries.append(
             TranscriptEntry(
@@ -65,6 +74,8 @@ def result_from_payload(
                 text=str(text) if text is not None else "",
                 speaker=speaker,
                 overlap=bool(item.get("overlap")),
+                extra_speakers=extra_speakers,
+                speaker_confidence=_as_float(item.get("speaker_confidence")),
             )
         )
 

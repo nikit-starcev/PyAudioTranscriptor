@@ -47,6 +47,9 @@ export type Entry = {
   start: number
   end: number
   speaker_id: string | null
+  extra_speaker_ids: string[]
+  speaker_confidence: number | null
+  low_speaker_confidence: boolean
   text: string
   low_confidence: boolean
   overlap: boolean

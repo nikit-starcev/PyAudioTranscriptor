@@ -513,7 +513,8 @@ class TranscriberApp(App):
                     yield Static("", id="search_status")
                     yield Static(
                         "e — спикеры, v — голоса, Ctrl+P — протокол  ·  "
-                        "⚠ низкая уверенность  ·  ⇄ наложение",
+                        "⚠ низкая уверенность  ·  ⇄ наложение речи  ·  "
+                        "? говорящий под вопросом",
                         id="legend",
                     )
                 yield DataTable(id="results", zebra_stripes=True)
@@ -524,8 +525,8 @@ class TranscriberApp(App):
     def on_mount(self) -> None:
         results = self.query_one("#results", DataTable)
         results.add_column("Время", key="time", width=10)
-        results.add_column("Говорящий", key="speaker", width=16)
-        results.add_column("Метки", key="marks", width=8)
+        results.add_column("Говорящий", key="speaker", width=24)
+        results.add_column("Метки", key="marks", width=10)
         results.add_column("Текст", key="text")
 
         queue = self.query_one("#queue", DataTable)
@@ -886,16 +887,22 @@ class TranscriberApp(App):
         return find_speaker_samples(result, directory)
 
     def _populate_results(self, result: TranscriptionResult) -> None:
-        from audio_transcriber.export.annotations import is_low_confidence
+        from audio_transcriber.export.annotations import (
+            DEFAULT_SPEAKER_CONFIDENCE_THRESHOLD,
+            is_low_confidence,
+            is_low_speaker_confidence,
+        )
         from audio_transcriber.export.timestamps import format_timestamp
 
         threshold = result.low_confidence_threshold
         rows: list[ResultRow] = []
         for entry in result.entries:
-            speaker = entry.speaker.display_name if entry.speaker else "?"
+            speaker = entry.speaker_label
             marks = ""
             if is_low_confidence(entry, threshold):
                 marks += "⚠"
+            if is_low_speaker_confidence(entry, DEFAULT_SPEAKER_CONFIDENCE_THRESHOLD):
+                marks += "?"
             if entry.overlap:
                 marks += "⇄"
             rows.append(ResultRow(format_timestamp(entry.start), speaker, marks, entry.text))
