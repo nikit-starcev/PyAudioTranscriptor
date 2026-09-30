@@ -18,6 +18,9 @@ DEFAULT_DATA_DIR = "web-data"
 #: Переменная окружения для переопределения каталога данных.
 DATA_DIR_ENV = "AUDIO_TRANSCRIBER_WEB_DATA"
 
+#: Переменная окружения для переопределения каталога скачиваемых моделей.
+MODELS_DIR_ENV = "AUDIO_TRANSCRIBER_MODELS_DIR"
+
 #: Каталог собранной статики SPA внутри пакета.
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -27,12 +30,24 @@ class WebPaths:
     """Производные пути внутри каталога данных веб-интерфейса."""
 
     data_dir: Path
+    #: Переопределение каталога моделей; ``None`` — ``<data_dir>/models``
+    #: (или значение ``AUDIO_TRANSCRIBER_MODELS_DIR``). Используется в тестах.
+    models_dir_override: Path | None = None
 
     @classmethod
     def default(cls) -> WebPaths:
         """Каталог данных из окружения или ``./web-data``."""
         raw = os.environ.get(DATA_DIR_ENV, "").strip()
-        return cls(Path(raw) if raw else Path(DEFAULT_DATA_DIR))
+        models_raw = os.environ.get(MODELS_DIR_ENV, "").strip()
+        return cls(
+            Path(raw) if raw else Path(DEFAULT_DATA_DIR),
+            Path(models_raw) if models_raw else None,
+        )
+
+    @property
+    def models_dir(self) -> Path:
+        """Каталог скачанных моделей по умолчанию."""
+        return self.models_dir_override or (self.data_dir / "models")
 
     @property
     def jobs_db(self) -> Path:
@@ -77,5 +92,6 @@ class WebPaths:
             self.results_dir,
             self.samples_dir,
             self.cache_dir,
+            self.models_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)

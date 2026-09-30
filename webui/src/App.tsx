@@ -20,8 +20,10 @@ import {
   type WebSettings,
 } from './api'
 import GlossaryModal from './components/GlossaryModal'
+import ModelsModal from './components/ModelsModal'
 import ReadinessBanner from './components/ReadinessBanner'
 import SettingsModal from './components/SettingsModal'
+import SetupWizard from './components/SetupWizard'
 import SpeakersPanel from './components/SpeakersPanel'
 import ThemeToggle from './components/ThemeToggle'
 import TranscriptTable from './components/TranscriptTable'
@@ -69,6 +71,8 @@ function App() {
   const [voicesOpen, setVoicesOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [glossaryOpen, setGlossaryOpen] = useState(false)
+  const [modelsOpen, setModelsOpen] = useState(false)
+  const [wizardOpen, setWizardOpen] = useState(false)
   const [protocol, setProtocol] = useState<ProtocolResponse | null>(null)
   const [protocolBusy, setProtocolBusy] = useState(false)
   const [protocolError, setProtocolError] = useState<string | null>(null)
@@ -76,6 +80,7 @@ function App() {
   const [query, setQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
+  const wizardAutoShown = useRef(false)
 
   const refreshJobs = useCallback(async () => {
     try {
@@ -160,6 +165,14 @@ function App() {
     void refreshJobs()
     void refreshDoctor()
   }, [refreshFiles, refreshJobs, refreshDoctor])
+
+  useEffect(() => {
+    if (!doctor) return
+    if (doctor.summary.critical_failures > 0 && !wizardAutoShown.current) {
+      wizardAutoShown.current = true
+      setWizardOpen(true)
+    }
+  }, [doctor])
 
   useEffect(() => {
     if (!activeJobId) return
@@ -360,6 +373,18 @@ function App() {
             веб-интерфейс · этап 3
           </span>
           <div className="ml-auto flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => setWizardOpen(true)}
+              className="rounded-md border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
+            >
+              Мастер настройки
+            </button>
+            <button
+              onClick={() => setModelsOpen(true)}
+              className="rounded-md border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
+            >
+              Модели
+            </button>
             <button
               onClick={() => setVoicesOpen(true)}
               className="rounded-md border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
@@ -691,6 +716,21 @@ function App() {
         }}
       />
       <GlossaryModal open={glossaryOpen} onClose={() => setGlossaryOpen(false)} />
+      <ModelsModal
+        open={modelsOpen}
+        onClose={() => setModelsOpen(false)}
+        onChanged={() => {
+          void refreshDoctor()
+          void refreshFiles()
+        }}
+      />
+      <SetupWizard
+        open={wizardOpen}
+        onClose={() => setWizardOpen(false)}
+        report={doctor}
+        onRecheck={() => void recheckDoctor()}
+        onChanged={() => void refreshDoctor()}
+      />
     </div>
   )
 }

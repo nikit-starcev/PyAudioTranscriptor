@@ -54,6 +54,20 @@ from audio_transcriber.web.doctor_api import (
 )
 from audio_transcriber.web.events import JobEventBus
 from audio_transcriber.web.glossary_api import register_glossary_routes
+from audio_transcriber.web.models import (
+    MODEL_CATALOG,
+    DownloadBus,
+    Downloader,
+    HfDownloader,
+    ModelDownloadManager,
+    ModelEntry,
+    delete_model_files,
+    find_model,
+    free_space,
+    local_status,
+    model_payload,
+    resolve_target,
+)
 from audio_transcriber.web.paths import STATIC_DIR, WebPaths
 from audio_transcriber.web.results import load_result_file, result_summary
 from audio_transcriber.web.runner import ConfigBuilder, JobRunner, PipelineFn
@@ -69,6 +83,7 @@ from audio_transcriber.web.settings import (
     settings_from_mapping,
     validate_settings,
 )
+from audio_transcriber.web.setup import build_setup_steps
 from audio_transcriber.web.speakers import (
     apply_names,
     apply_speaker_changes,
@@ -198,6 +213,13 @@ class SettingsUpdate(BaseModel):
     clean_artifacts: bool | None = None
     protocol_auto: bool | None = None
     hf_token: str | None = None
+    asr_backend: str | None = None
+    device: str | None = None
+    whisper_cpp_model: str | None = None
+    whisper_cpp_binary: str | None = None
+    llm_model: str | None = None
+    llm_binary: str | None = None
+    pyannote_local_model: str | None = None
 
 
 class HfCheckRequest(BaseModel):
@@ -216,14 +238,16 @@ def create_app(
     config_builder: ConfigBuilder | None = None,
     protocol_fn: ProtocolFn | None = None,
     voices_dir: Path | None = None,
+    downloader: Downloader | None = None,
     heartbeat: float = 15.0,
 ) -> FastAPI:
     """Собирает приложение FastAPI с изолированным окружением данных.
 
-    ``pipeline_fn``, ``config_builder`` и ``protocol_fn`` подменяются в тестах,
-    чтобы не требовать GPU/моделей и реального ``config.env``. ``voices_dir``
-    позволяет подменить каталог библиотеки голосов (в тестах) вместо
-    ``VOICES_DIR``; в остальных случаях он берётся из сохранённых настроек.
+    ``pipeline_fn``, ``config_builder``, ``protocol_fn`` и ``downloader``
+    подменяются в тестах, чтобы не требовать GPU/моделей, сети и реального
+    ``config.env``. ``voices_dir`` позволяет подменить каталог библиотеки
+    голосов (в тестах) вместо ``VOICES_DIR``; в остальных случаях он берётся
+    из сохранённых настроек.
     """
     resolved_paths = paths or WebPaths.default()
     resolved_paths.ensure()
@@ -232,6 +256,21 @@ def create_app(
     store = JobsDB(resolved_paths.jobs_db)
     store.initialize()
     bus = JobEventBus(heartbeat=heartbeat)
+    download_bus = DownloadBus(heartbeat=heartbeat)
+
+    def resolve_model_target(entry: ModelEntry) -> Path:
+        return resolve_target(
+            entry,
+            models_root=resolved_paths.models_dir,
+            settings=settings_store.load(),
+        )
+
+    downloads = ModelDownloadManager(
+        models_root=resolved_paths.models_dir,
+        downloader=downloader or HfDownloader(),
+        resolve_target=resolve_model_target,
+        bus=download_bus,
+    )
 
     def resolve_voices() -> Path:
         if voices_dir is not None:
@@ -281,6 +320,9 @@ def create_app(
     app.state.settings_store = settings_store
     app.state.secrets_store = secrets_store
     app.state.voices_dir = resolve_voices()
+    app.state.downloads = downloads
+    app.state.download_bus = download_bus
+    app.state.models_dir = resolved_paths.models_dir
     router = APIRouter(prefix="/api")
     register_api(
         router,
@@ -293,6 +335,9 @@ def create_app(
         resolve_voices=resolve_voices,
         config_builder=effective_builder,
         protocol_fn=protocol_fn or generate_protocol,
+        downloads=downloads,
+        download_bus=download_bus,
+        models_root=resolved_paths.models_dir,
     )
     app.include_router(router)
 
@@ -327,6 +372,9 @@ def register_api(
     resolve_voices: VoicesResolver,
     config_builder: ConfigBuilder,
     protocol_fn: ProtocolFn,
+    downloads: ModelDownloadManager,
+    download_bus: DownloadBus,
+    models_root: Path,
 ) -> None:
     """Регистрирует все маршруты API v1 на переданном роутере."""
 
@@ -407,6 +455,119 @@ def register_api(
         if token is None:
             token = _effective_token()
         return check_hf_access(token).as_dict()
+
+    @router.get("/setup")
+    def get_setup() -> dict[str, object]:
+        """План мастера первого запуска: шаги, варианты железа, нужные модели."""
+        settings = settings_store.load()
+        config_path, env = build_doctor_env(settings_store, secrets_store, paths)
+        report = doctor_report(config_path, env)
+        models = [
+            model_payload(
+                entry,
+                models_root=models_root,
+                settings=settings,
+                state=downloads.state(entry.id),
+            )
+            for entry in MODEL_CATALOG
+        ]
+        return build_setup_steps(
+            settings=settings,
+            report=report,
+            models=models,
+            hf_token_set=_effective_token() is not None,
+        )
+
+    @router.get("/models")
+    def list_models() -> dict[str, object]:
+        """Каталог моделей с локальным статусом, прогрессом и свободным местом."""
+        settings = settings_store.load()
+        entries = [
+            model_payload(
+                entry,
+                models_root=models_root,
+                settings=settings,
+                state=downloads.state(entry.id),
+            )
+            for entry in MODEL_CATALOG
+        ]
+        return {
+            "models": entries,
+            "disk": {"free": free_space(models_root), "models_dir": str(models_root)},
+        }
+
+    @router.get("/models/events")
+    async def models_events() -> StreamingResponse:
+        """SSE-поток прогресса скачивания (сначала история, затем живой поток)."""
+
+        async def stream() -> AsyncIterator[str]:
+            for event in download_bus.history():
+                yield _sse(event)
+            async for update in download_bus.subscribe():
+                yield ": ping\n\n" if update is None else _sse(update)
+
+        return StreamingResponse(
+            stream(), media_type="text/event-stream", headers=dict(SSE_HEADERS)
+        )
+
+    @router.post("/models/{model_id}/download", status_code=202)
+    def start_model_download(model_id: str) -> dict[str, object]:
+        """Запускает фоновое скачивание модели (прогресс — ``/api/models/events``)."""
+        entry = find_model(model_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="Модель не найдена")
+        if downloads.is_running(model_id):
+            raise HTTPException(status_code=409, detail="Модель уже скачивается")
+        token = _effective_token()
+        if entry.gated and not token:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Для этой модели нужен токен Hugging Face — получите его и "
+                    "сохраните в настройках."
+                ),
+            )
+        target = resolve_target(
+            entry, models_root=models_root, settings=settings_store.load()
+        )
+        remaining = max(entry.approx_size - local_status(entry, target).size, 0)
+        available = free_space(models_root)
+        if available and remaining and available < remaining:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Недостаточно места на диске: нужно ещё ~{_format_size(remaining)}, "
+                    f"свободно ~{_format_size(available)}."
+                ),
+            )
+        if not downloads.start(entry, token=token):
+            raise HTTPException(status_code=409, detail="Модель уже скачивается")
+        return {"id": model_id, "status": "downloading", "fraction": 0.0}
+
+    @router.post("/models/{model_id}/cancel")
+    def cancel_model_download(model_id: str) -> dict[str, object]:
+        """Просит прервать активное скачивание модели."""
+        if find_model(model_id) is None:
+            raise HTTPException(status_code=404, detail="Модель не найдена")
+        if not downloads.cancel(model_id):
+            raise HTTPException(status_code=409, detail="Модель не скачивается")
+        return {"id": model_id, "status": "cancelled"}
+
+    @router.delete("/models/{model_id}")
+    def remove_model(model_id: str) -> dict[str, object]:
+        """Удаляет локальные файлы модели (нельзя во время скачивания)."""
+        entry = find_model(model_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="Модель не найдена")
+        if downloads.is_running(model_id):
+            raise HTTPException(
+                status_code=409, detail="Нельзя удалить модель во время скачивания"
+            )
+        target = resolve_target(
+            entry, models_root=models_root, settings=settings_store.load()
+        )
+        removed = delete_model_files(entry, target)
+        return {"deleted": model_id, "removed": removed}
 
     @router.get("/files")
     def list_files() -> list[dict[str, object]]:
@@ -772,6 +933,16 @@ def register_api(
         if not delete_voice_sample(sample.path, resolve_voices()):
             raise HTTPException(status_code=404, detail="Образец не найден")
         return {"deleted": sample.name}
+
+
+def _format_size(num_bytes: int) -> str:
+    """Человекочитаемый размер (Б/КБ/МБ/ГБ) для текстов ошибок."""
+    value = float(num_bytes)
+    for unit in ("Б", "КБ", "МБ", "ГБ", "ТБ"):
+        if value < 1024 or unit == "ТБ":
+            return f"{value:.1f} {unit}" if unit != "Б" else f"{int(value)} Б"
+        value /= 1024
+    return f"{int(num_bytes)} Б"
 
 
 def _terminal_message(job: Job) -> str:

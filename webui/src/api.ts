@@ -97,12 +97,115 @@ export type WebSettings = {
   normalize_text: boolean
   clean_artifacts: boolean
   protocol_auto: boolean
+  asr_backend: string
+  device: string
+  whisper_cpp_model: string
+  whisper_cpp_binary: string
+  llm_model: string
+  llm_binary: string
+  pyannote_local_model: string
   input_dir: string
   output_dir: string
   glossary_db_path: string
   voices_dir_resolved: string
   hf_token_set: boolean
   hf_token_masked: string | null
+}
+
+export const ASR_BACKENDS = ['faster-whisper', 'whisper-cpp'] as const
+export const DEVICES = ['auto', 'cpu', 'cuda'] as const
+
+export type ModelKind = 'whisper-cpp' | 'llm' | 'pyannote'
+export type ModelDownloadStatus = 'idle' | 'downloading' | 'done' | 'error' | 'cancelled'
+
+export type ModelLocalStatus = {
+  present: boolean
+  size: number
+  expected_size: number
+  missing_files: string[]
+  path: string
+  partial: boolean
+}
+
+export type ModelDownloadState = {
+  status: ModelDownloadStatus
+  fraction: number | null
+  bytes_done: number
+  total: number
+  message: string
+  error: string | null
+}
+
+export type ModelInfo = {
+  id: string
+  kind: ModelKind
+  title: string
+  repo: string
+  files: string[]
+  approx_size: number
+  note: string
+  gated: boolean
+  setting_key: string
+  target_dir: string
+  target_path: string
+  primary_path: string
+  status: ModelLocalStatus
+  download: ModelDownloadState
+}
+
+export type ModelsResponse = {
+  models: ModelInfo[]
+  disk: { free: number; models_dir: string }
+}
+
+export type ModelEvent = {
+  id: string
+  status: ModelDownloadStatus
+  fraction: number | null
+  bytes_done: number
+  total: number
+  message: string
+}
+
+export type HardwareOption = {
+  id: string
+  label: string
+  asr_backend: string
+  device: string
+  note: string
+}
+
+export type SetupStepStatus = 'ok' | 'todo' | 'warn'
+
+export type SetupStep = {
+  id: string
+  title: string
+  description: string
+  status: SetupStepStatus
+  action: string
+  required?: string[] | boolean
+  missing?: string[]
+  set?: boolean
+}
+
+export type BinaryRequirement = {
+  key: string
+  label: string
+  needed: boolean
+  available: boolean
+  status: 'ok' | 'fail'
+  instructions: string
+  links: string[]
+}
+
+export type SetupPlan = {
+  hardware: { options: HardwareOption[]; current: string }
+  steps: SetupStep[]
+  required_models: string[]
+  missing_models: string[]
+  binaries: BinaryRequirement[]
+  hf_token: { required: boolean; set: boolean }
+  summary: Record<string, number>
 }
 
 export type DoctorStatus = 'ok' | 'warn' | 'fail'
@@ -213,6 +316,18 @@ export function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} Б`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КБ`
   return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`
+}
+
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 Б'
+  const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ']
+  let value = bytes
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit += 1
+  }
+  return unit === 0 ? `${value} Б` : `${value.toFixed(1)} ${units[unit]}`
 }
 
 export function formatDuration(seconds: number | null): string {

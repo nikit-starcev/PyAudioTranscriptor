@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 
 import {
   api,
+  ASR_BACKENDS,
+  DEVICES,
   errorMessage,
   EXPORT_FORMATS,
   HF_TOKEN_URL,
@@ -115,6 +117,13 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
         normalize_text: settings.normalize_text,
         clean_artifacts: settings.clean_artifacts,
         protocol_auto: settings.protocol_auto,
+        asr_backend: settings.asr_backend,
+        device: settings.device,
+        whisper_cpp_model: settings.whisper_cpp_model,
+        whisper_cpp_binary: settings.whisper_cpp_binary,
+        llm_model: settings.llm_model,
+        llm_binary: settings.llm_binary,
+        pyannote_local_model: settings.pyannote_local_model,
         ...(hfTokenTouched ? { hf_token: hfToken } : {}),
       }
       const saved = await api<WebSettings>('/api/settings', {
@@ -285,6 +294,94 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
                     Результаты: <code>{settings.output_dir}</code>
                   </span>
                 </div>
+              </fieldset>
+
+              <fieldset className="space-y-3 rounded-md border border-slate-200 p-3 dark:border-slate-800">
+                <legend className="px-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+                  Распознавание: бэкенд и модели
+                </legend>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="block text-sm">
+                    <span className="text-slate-600 dark:text-slate-300">Бэкенд (ASR_BACKEND)</span>
+                    <select
+                      value={settings.asr_backend}
+                      onChange={(event) => update({ asr_backend: event.target.value })}
+                      className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                    >
+                      {ASR_BACKENDS.map((backend) => (
+                        <option key={backend} value={backend}>
+                          {backend}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block text-sm">
+                    <span className="text-slate-600 dark:text-slate-300">Устройство (DEVICE)</span>
+                    <select
+                      value={settings.device}
+                      onChange={(event) => update({ device: event.target.value })}
+                      className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                    >
+                      {DEVICES.map((device) => (
+                        <option key={device} value={device}>
+                          {device}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <label className="block text-sm">
+                  <span className="text-slate-600 dark:text-slate-300">
+                    Модель whisper.cpp (ggml)
+                  </span>
+                  <input
+                    value={settings.whisper_cpp_model}
+                    onChange={(event) => update({ whisper_cpp_model: event.target.value })}
+                    placeholder="whisper-models/ggml-large-v3-turbo.bin"
+                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                  />
+                </label>
+                <label className="block text-sm">
+                  <span className="text-slate-600 dark:text-slate-300">Бинарник whisper-cli</span>
+                  <input
+                    value={settings.whisper_cpp_binary}
+                    onChange={(event) => update({ whisper_cpp_binary: event.target.value })}
+                    placeholder="whisper-cli"
+                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                  />
+                </label>
+                <label className="block text-sm">
+                  <span className="text-slate-600 dark:text-slate-300">Модель LLM (GGUF)</span>
+                  <input
+                    value={settings.llm_model}
+                    onChange={(event) => update({ llm_model: event.target.value })}
+                    placeholder="llama-models/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"
+                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                  />
+                </label>
+                <label className="block text-sm">
+                  <span className="text-slate-600 dark:text-slate-300">Бинарник llama-server</span>
+                  <input
+                    value={settings.llm_binary}
+                    onChange={(event) => update({ llm_binary: event.target.value })}
+                    placeholder="llama-server"
+                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                  />
+                </label>
+                <label className="block text-sm">
+                  <span className="text-slate-600 dark:text-slate-300">
+                    Локальная модель диаризации (pyannote)
+                  </span>
+                  <input
+                    value={settings.pyannote_local_model}
+                    onChange={(event) => update({ pyannote_local_model: event.target.value })}
+                    placeholder="pyannote-models/speaker-diarization-community-1"
+                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                  />
+                  <span className="mt-0.5 block text-xs text-slate-400 dark:text-slate-500">
+                    Если указан существующий каталог — pyannote грузится офлайн, токен HF не нужен.
+                  </span>
+                </label>
               </fieldset>
 
               <fieldset className="space-y-3 rounded-md border border-slate-200 p-3 dark:border-slate-800">

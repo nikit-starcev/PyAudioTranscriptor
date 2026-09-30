@@ -17,13 +17,19 @@ from pathlib import Path
 
 from audio_transcriber.config import defaults as config_defaults
 from audio_transcriber.config.defaults import DEFAULT_VOICES_DIR
-from audio_transcriber.domain.enums import ExportFormat
+from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
 from audio_transcriber.web.config import _as_bool, _env_export_formats, env_defaults
 
 logger = logging.getLogger(__name__)
 
 #: Допустимые форматы экспорта (нижний регистр).
 VALID_FORMATS: tuple[str, ...] = tuple(export_format.value for export_format in ExportFormat)
+
+#: Допустимые бэкенды распознавания.
+VALID_ASR_BACKENDS: tuple[str, ...] = tuple(backend.value for backend in AsrBackend)
+
+#: Допустимые устройства вычислений.
+VALID_DEVICES: tuple[str, ...] = tuple(device.value for device in Device)
 
 
 class SettingsError(ValueError):
@@ -45,6 +51,16 @@ class WebSettings:
     normalize_text: bool = True
     clean_artifacts: bool = True
     protocol_auto: bool = False
+    #: Бэкенд распознавания (``faster-whisper`` или ``whisper-cpp``).
+    asr_backend: str = "faster-whisper"
+    #: Устройство вычислений (``auto`` / ``cpu`` / ``cuda``).
+    device: str = "auto"
+    #: Пути к локальным моделям и бинарникам (совпадают с ключами ``config.env``).
+    whisper_cpp_model: str = ""
+    whisper_cpp_binary: str = "whisper-cli"
+    llm_model: str = ""
+    llm_binary: str = "llama-server"
+    pyannote_local_model: str = ""
 
     def as_dict(self) -> dict[str, object]:
         """Плоское представление для JSON-ответа API."""
@@ -64,6 +80,13 @@ class WebSettings:
             "NORMALIZE_TEXT": _format_bool(self.normalize_text),
             "CLEAN_ARTIFACTS": _format_bool(self.clean_artifacts),
             "PROTOCOL_AUTO": _format_bool(self.protocol_auto),
+            "ASR_BACKEND": self.asr_backend,
+            "DEVICE": self.device,
+            "WHISPER_CPP_MODEL": self.whisper_cpp_model,
+            "WHISPER_CPP_BINARY": self.whisper_cpp_binary,
+            "LLM_MODEL": self.llm_model,
+            "LLM_BINARY": self.llm_binary,
+            "PYANNOTE_LOCAL_MODEL": self.pyannote_local_model,
         }
 
     def resolved_glossary_db(self) -> Path:
@@ -92,6 +115,13 @@ def default_settings(defaults: Mapping[str, str] | None = None) -> WebSettings:
         normalize_text=_as_bool(source.get("NORMALIZE_TEXT"), default=True),
         clean_artifacts=_as_bool(source.get("CLEAN_ARTIFACTS"), default=True),
         protocol_auto=_as_bool(source.get("PROTOCOL_AUTO")),
+        asr_backend=source.get("ASR_BACKEND", "").strip() or "faster-whisper",
+        device=source.get("DEVICE", "").strip() or "auto",
+        whisper_cpp_model=source.get("WHISPER_CPP_MODEL", "").strip(),
+        whisper_cpp_binary=source.get("WHISPER_CPP_BINARY", "").strip() or "whisper-cli",
+        llm_model=source.get("LLM_MODEL", "").strip(),
+        llm_binary=source.get("LLM_BINARY", "").strip() or "llama-server",
+        pyannote_local_model=source.get("PYANNOTE_LOCAL_MODEL", "").strip(),
     )
 
 
@@ -109,6 +139,12 @@ def settings_from_mapping(
         value = raw.get(key, fallback)
         return value.strip() if isinstance(value, str) else fallback
 
+    def pick_nonempty(key: str, fallback: str) -> str:
+        value = raw.get(key, fallback)
+        if isinstance(value, str):
+            return value.strip() or fallback
+        return fallback
+
     return replace(
         current,
         glossary_enabled=pick_bool("glossary_enabled", current.glossary_enabled),
@@ -122,6 +158,13 @@ def settings_from_mapping(
         normalize_text=pick_bool("normalize_text", current.normalize_text),
         clean_artifacts=pick_bool("clean_artifacts", current.clean_artifacts),
         protocol_auto=pick_bool("protocol_auto", current.protocol_auto),
+        asr_backend=pick_nonempty("asr_backend", current.asr_backend),
+        device=pick_nonempty("device", current.device),
+        whisper_cpp_model=pick_str("whisper_cpp_model", current.whisper_cpp_model),
+        whisper_cpp_binary=pick_nonempty("whisper_cpp_binary", current.whisper_cpp_binary),
+        llm_model=pick_str("llm_model", current.llm_model),
+        llm_binary=pick_nonempty("llm_binary", current.llm_binary),
+        pyannote_local_model=pick_str("pyannote_local_model", current.pyannote_local_model),
     )
 
 
@@ -139,7 +182,24 @@ def validate_settings(settings: WebSettings) -> None:
         raise SettingsError(f"Неизвестные форматы экспорта: {', '.join(sorted(set(unknown)))}")
     settings.export_formats = list(dict.fromkeys(formats))
 
-    for label, value in (("glossary_db", settings.glossary_db), ("voices_dir", settings.voices_dir)):
+    if settings.asr_backend not in VALID_ASR_BACKENDS:
+        raise SettingsError(
+            f"Неизвестный бэкенд распознавания: {settings.asr_backend!r} "
+            f"(допустимо: {', '.join(VALID_ASR_BACKENDS)})"
+        )
+    if settings.device not in VALID_DEVICES:
+        raise SettingsError(
+            f"Неизвестное устройство: {settings.device!r} (допустимо: {', '.join(VALID_DEVICES)})"
+        )
+
+    paths = (
+        ("glossary_db", settings.glossary_db),
+        ("voices_dir", settings.voices_dir),
+        ("whisper_cpp_model", settings.whisper_cpp_model),
+        ("llm_model", settings.llm_model),
+        ("pyannote_local_model", settings.pyannote_local_model),
+    )
+    for label, value in paths:
         if not value.strip():
             continue
         _validate_path(label, value)
