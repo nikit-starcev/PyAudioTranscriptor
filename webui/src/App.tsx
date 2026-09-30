@@ -56,6 +56,15 @@ const STATUS_STYLES: Record<string, string> = {
   cancelled: 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
 }
 
+// «Говорящих»: пусто — авто (null); иначе целое >= 1. `undefined` — ошибка ввода.
+function parseSpeakerCount(raw: string | undefined): number | null | undefined {
+  const trimmed = (raw ?? '').trim()
+  if (trimmed === '') return null
+  const value = Number(trimmed)
+  if (!Number.isInteger(value) || value < 1) return undefined
+  return value
+}
+
 function App() {
   const [version, setVersion] = useState<string>('')
   const [config, setConfig] = useState<ConfigInfo | null>(null)
@@ -79,6 +88,8 @@ function App() {
   const [summary, setSummary] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
+  // Число говорящих по каждому файлу (пустая строка — авто). Ключ — путь файла.
+  const [speakerCounts, setSpeakerCounts] = useState<Record<string, string>>({})
   const fileInput = useRef<HTMLInputElement>(null)
   const wizardAutoShown = useRef(false)
 
@@ -193,11 +204,16 @@ function App() {
   const enqueue = useCallback(
     async (path: string) => {
       setError(null)
+      const numSpeakers = parseSpeakerCount(speakerCounts[path])
+      if (numSpeakers === undefined) {
+        setError('Число говорящих должно быть целым числом не меньше 1 или пустым (авто)')
+        return
+      }
       try {
         const job = await api<Job>('/api/jobs', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path }),
+          body: JSON.stringify({ path, num_speakers: numSpeakers }),
         })
         setActiveJobId(job.id)
         setProgress({ stage: 'queued', fraction: 0, message: 'В очереди', status: 'queued' })
@@ -210,7 +226,7 @@ function App() {
         setError(errorMessage(cause))
       }
     },
-    [refreshJobs],
+    [refreshJobs, speakerCounts],
   )
 
   const runJob = useCallback(
@@ -471,8 +487,32 @@ function App() {
                         {formatSize(file.size)} · {formatDuration(file.duration)}
                       </p>
                     </div>
+                    <div className="flex items-center gap-1">
+                      <label
+                        htmlFor={`speakers-${file.path}`}
+                        className="whitespace-nowrap text-xs text-slate-400 dark:text-slate-500"
+                      >
+                        Говорящих
+                      </label>
+                      <input
+                        id={`speakers-${file.path}`}
+                        type="number"
+                        min={1}
+                        step={1}
+                        placeholder="авто"
+                        title="Число говорящих: пусто — автоопределение"
+                        value={speakerCounts[file.path] ?? ''}
+                        onChange={(event) =>
+                          setSpeakerCounts((prev) => ({
+                            ...prev,
+                            [file.path]: event.target.value,
+                          }))
+                        }
+                        className="w-16 rounded-md border border-slate-300 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder-slate-500"
+                      />
+                    </div>
                     <button
-                      onClick={() => void enqueue(file.name)}
+                      onClick={() => void enqueue(file.path)}
                       disabled={readinessBlocked}
                       title={blockedHint}
                       className="rounded-md border border-slate-300 px-3 py-1 text-xs hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:hover:bg-slate-800"
@@ -511,6 +551,8 @@ function App() {
                       <p className="text-xs text-slate-400 dark:text-slate-500">
                         {job.stage ? `${job.stage} · ` : ''}
                         {job.fraction != null ? `${Math.round(job.fraction * 100)}%` : '—'}
+                        {' · говорящих: '}
+                        {job.num_speakers != null ? job.num_speakers : 'авто'}
                       </p>
                     </button>
                     <span

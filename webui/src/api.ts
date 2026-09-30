@@ -29,6 +29,7 @@ export type Job = {
   language: string | null
   duration: number | null
   error: string | null
+  num_speakers: number | null
 }
 
 export type Summary = {

@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import glob
+import json
 import random
 import time
+from pathlib import Path
+
+import pytest
 
 from audio_transcriber.domain.models import SpeakerSegment, TranscriptionSegment
-from audio_transcriber.merging.aligner import OverlapSegmentMerger
+from audio_transcriber.merging.aligner import (
+    MAX_NEAREST_GAP_SECONDS,
+    OverlapSegmentMerger,
+)
 from audio_transcriber.merging.sentence_merger import SentenceMerger
 
 
@@ -158,6 +166,89 @@ def test_far_speaker_not_assigned_beyond_gap() -> None:
     entries, _ = OverlapSegmentMerger(max_gap=5.0).merge(segments, speaker_segments)
 
     assert entries[0].speaker is None
+
+
+def test_nearest_speaker_assigned_at_two_second_gap() -> None:
+    """Зазор ровно на границе порога (2.0 с) — ближайший ещё подставляется."""
+    assert MAX_NEAREST_GAP_SECONDS == 2.0
+    segments = [TranscriptionSegment(start=3.0, end=4.0, text="короткая пауза")]
+    speaker_segments = [SpeakerSegment(start=0.0, end=1.0, speaker_id="SPEAKER_00")]
+
+    entries, _ = OverlapSegmentMerger().merge(segments, speaker_segments)
+
+    assert entries[0].speaker is not None
+    assert entries[0].speaker.id == "SPEAKER_00"
+
+
+def test_nearest_speaker_not_assigned_above_two_second_gap() -> None:
+    """Зазор больше порога — говорящий не угадывается, остаётся ``None``."""
+    segments = [TranscriptionSegment(start=3.5, end=4.5, text="дырка в разметке")]
+    speaker_segments = [SpeakerSegment(start=0.0, end=1.0, speaker_id="SPEAKER_00")]
+
+    entries, _ = OverlapSegmentMerger().merge(segments, speaker_segments)
+
+    assert entries[0].speaker is None
+    assert entries[0].speaker_confidence == 0.0
+
+
+def test_nearest_threshold_also_applies_to_brute_force_path() -> None:
+    """Запасной перебор (обратные интервалы) использует тот же порог."""
+    segments = [TranscriptionSegment(start=3.5, end=4.5, text="дырка")]
+    # Обратный интервал (end < start) форсирует запасной путь ``_brute_*``.
+    speaker_segments = [SpeakerSegment(start=1.0, end=0.0, speaker_id="SPEAKER_00")]
+
+    entries, _ = OverlapSegmentMerger().merge(segments, speaker_segments)
+
+    assert entries[0].speaker is None
+
+
+def _real_diarization_segments() -> list[SpeakerSegment] | None:
+    """Сегменты из реального кэша диаризации ``web-data/cache`` (если есть)."""
+    cache_dir = Path(__file__).resolve().parents[1] / "web-data" / "cache"
+    matches = sorted(glob.glob(str(cache_dir / "diarization-*.json")))
+    if not matches:
+        return None
+    payload = json.loads(Path(matches[0]).read_text(encoding="utf-8"))
+    raw = payload.get("data", {}).get("segments")
+    if not isinstance(raw, list) or not raw:
+        return None
+    return [
+        SpeakerSegment(
+            start=float(item["start"]),
+            end=float(item["end"]),
+            speaker_id=str(item["speaker_id"]),
+        )
+        for item in raw
+    ]
+
+
+def test_real_cache_hole_no_longer_assigns_nearest_speaker() -> None:
+    """Реплика внутри дырки реальной разметки (865.9→876.5 с) — без говорящего.
+
+    Опора на реальный кэш ``web-data/cache`` (он может отсутствовать в
+    окружении — тогда тест пропускается). До правки порог был 5 с, и реплика,
+    целиком лежавшая в дырке (зазоры ~3–5 с до соседних сегментов с обеих
+    сторон), получала «ближайшую» догадку. Теперь оба зазора > 2 с —
+    говорящего нет.
+
+    Примечание: реальный ASR-сегмент 869.9–883.0 сюда не подходит — он
+    перекрывает разметку (876.5 с), поэтому говорящий назначается честно по
+    перекрытию, а не по «ближайшему».
+    """
+    speaker_segments = _real_diarization_segments()
+    if speaker_segments is None:
+        pytest.skip("реальный кэш диаризации недоступен")
+
+    # Реплика целиком внутри дырки: следующий сегмент разметки начинается на
+    # 876.54 с, предыдущий заканчивается на 865.89 с — оба зазора > 2 с.
+    segment = TranscriptionSegment(start=869.0, end=872.0, text="реплика в дырке")
+
+    old, _ = OverlapSegmentMerger(max_gap=5.0).merge([segment], speaker_segments)
+    new, _ = OverlapSegmentMerger().merge([segment], speaker_segments)
+
+    assert old[0].speaker is not None  # прежнее поведение: ближайшая догадка
+    assert new[0].speaker is None
+    assert new[0].speaker_confidence == 0.0
 
 
 def test_known_speaker_names_are_applied() -> None:

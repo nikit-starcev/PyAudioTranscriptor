@@ -211,6 +211,87 @@ def test_jobs_listing(client: TestClient) -> None:
     assert len(jobs) == 1
     assert jobs[0]["name"] == "sample.mp3"
     assert jobs[0]["status"] == "queued"
+    assert jobs[0]["num_speakers"] is None
+
+
+def test_create_job_with_num_speakers_reaches_config(
+    web_paths: WebPaths, config_builder
+) -> None:
+    """``num_speakers`` задачи сохраняется и попадает в ``AppConfig`` задачи."""
+    captured: list[int | None] = []
+
+    def pipeline(config: AppConfig, *, on_progress=None) -> TranscriptionResult:
+        captured.append(config.num_speakers)
+        return TranscriptionResult(
+            source_path=config.input_file,
+            language="ru",
+            duration=1.0,
+            entries=[],
+            speakers=[],
+            low_confidence_threshold=-1.0,
+        )
+
+    app = create_app(
+        paths=web_paths,
+        pipeline_fn=pipeline,
+        config_builder=config_builder,
+        heartbeat=0.05,
+    )
+    with TestClient(app) as test_client:
+        uploaded = _upload(test_client)
+        created = test_client.post(
+            "/api/jobs", json={"path": uploaded["name"], "num_speakers": 3}
+        )
+        assert created.status_code == 201
+        job_id = created.json()["id"]
+        assert created.json()["num_speakers"] == 3
+        assert test_client.get("/api/jobs").json()[0]["num_speakers"] == 3
+        assert test_client.get(f"/api/jobs/{job_id}").json()["num_speakers"] == 3
+
+        assert test_client.post(f"/api/jobs/{job_id}/run").status_code == 200
+
+        # Авто-режим: поле не задано — конфиг получает ``None``.
+        auto = test_client.post("/api/jobs", json={"path": uploaded["name"]})
+        assert auto.status_code == 201
+        auto_id = auto.json()["id"]
+        assert auto.json()["num_speakers"] is None
+        assert test_client.post(f"/api/jobs/{auto_id}/run").status_code == 200
+
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            if test_client.get(f"/api/jobs/{auto_id}").json()["status"] in {"done", "error"}:
+                break
+            time.sleep(0.02)
+
+    assert captured == [3, None]
+
+
+def test_create_job_rejects_invalid_num_speakers(client: TestClient) -> None:
+    uploaded = _upload(client)
+
+    response = client.post("/api/jobs", json={"path": uploaded["name"], "num_speakers": 0})
+
+    assert response.status_code == 422
+
+
+def test_patch_job_num_speakers(client: TestClient) -> None:
+    uploaded = _upload(client)
+    job_id = client.post("/api/jobs", json={"path": uploaded["name"]}).json()["id"]
+
+    updated = client.patch(f"/api/jobs/{job_id}", json={"num_speakers": 2})
+    assert updated.status_code == 200
+    assert updated.json()["num_speakers"] == 2
+
+    reset = client.patch(f"/api/jobs/{job_id}", json={"num_speakers": None})
+    assert reset.status_code == 200
+    assert reset.json()["num_speakers"] is None
+
+    # Пустое тело — обновлять нечего.
+    assert client.patch(f"/api/jobs/{job_id}", json={}).status_code == 400
+    # Невалидное значение.
+    assert client.patch(f"/api/jobs/{job_id}", json={"num_speakers": 0}).status_code == 422
+    # Неизвестная задача.
+    assert client.patch("/api/jobs/unknown", json={"num_speakers": 2}).status_code == 404
 
 
 def test_events_stream_terminates_after_done(client: TestClient) -> None:

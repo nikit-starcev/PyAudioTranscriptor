@@ -162,9 +162,20 @@ npm run build</pre>
 
 
 class CreateJobRequest(BaseModel):
-    """Тело ``POST /api/jobs``."""
+    """Тело ``POST /api/jobs``.
+
+    ``num_speakers`` — необязательное ожидаемое число говорящих; ``None``
+    (по умолчанию) — автоопределение диаризатором.
+    """
 
     path: str
+    num_speakers: int | None = Field(default=None, ge=1)
+
+
+class UpdateJobRequest(BaseModel):
+    """Тело ``PATCH /api/jobs/{id}``: правка числа говорящих до/после запуска."""
+
+    num_speakers: int | None = Field(default=None, ge=1)
 
 
 class MergeSpec(BaseModel):
@@ -584,8 +595,21 @@ def register_api(
     @router.post("/jobs", status_code=201)
     def create_job(payload: CreateJobRequest) -> dict[str, object]:
         source = _resolve_input_path(paths, payload.path)
-        job = store.create(uuid.uuid4().hex, source)
+        job = store.create(
+            uuid.uuid4().hex, source, num_speakers=payload.num_speakers
+        )
         return job.as_dict()
+
+    @router.patch("/jobs/{job_id}")
+    def update_job(job_id: str, payload: UpdateJobRequest) -> dict[str, object]:
+        """Меняет число говорящих задачи (``null`` — авто) до/после запуска."""
+        job = _require_job(store, job_id)
+        if job.status == STATUS_RUNNING:
+            raise HTTPException(status_code=409, detail="Задача уже выполняется")
+        if "num_speakers" not in payload.model_fields_set:
+            raise HTTPException(status_code=400, detail="Нет полей для обновления")
+        updated = store.update(job_id, num_speakers=payload.num_speakers)
+        return updated.as_dict() if updated is not None else job.as_dict()
 
     @router.get("/jobs/{job_id}")
     def job_details(job_id: str) -> dict[str, object]:

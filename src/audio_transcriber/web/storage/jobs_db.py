@@ -34,6 +34,7 @@ _UPDATABLE_FIELDS = frozenset(
         "result_path",
         "stage",
         "fraction",
+        "num_speakers",
     }
 )
 
@@ -50,7 +51,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     error TEXT,
     result_path TEXT,
     stage TEXT,
-    fraction REAL
+    fraction REAL,
+    num_speakers INTEGER
 )
 """
 
@@ -76,6 +78,8 @@ class Job:
     result_path: str | None = None
     stage: str | None = None
     fraction: float | None = None
+    #: Ожидаемое число говорящих; ``None`` — автоопределение (pyannote сам решает).
+    num_speakers: int | None = None
 
     @property
     def name(self) -> str:
@@ -103,6 +107,7 @@ class Job:
             "duration": self.duration,
             "error": self.error,
             "result_path": self.result_path,
+            "num_speakers": self.num_speakers,
         }
 
 
@@ -128,17 +133,34 @@ class JobsDB:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.execute(_SCHEMA)
+            self._migrate(connection)
+
+    @staticmethod
+    def _migrate(connection: sqlite3.Connection) -> None:
+        """Добавляет недостающие колонки в уже существующую таблицу.
+
+        ``CREATE TABLE IF NOT EXISTS`` не меняет старую схему, поэтому для баз,
+        созданных до появления ``num_speakers``, колонку добавляем отдельно.
+        """
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
+        if "num_speakers" not in columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN num_speakers INTEGER")
 
     def create(
-        self, job_id: str, source_path: str | Path, *, language: str | None = None
+        self,
+        job_id: str,
+        source_path: str | Path,
+        *,
+        language: str | None = None,
+        num_speakers: int | None = None,
     ) -> Job:
         """Создаёт задачу в статусе ``queued`` и возвращает её."""
         created_at = utc_now_iso()
         with self._connect() as connection:
             connection.execute(
-                "INSERT INTO jobs (id, source_path, status, created_at, language) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (job_id, str(source_path), STATUS_QUEUED, created_at, language),
+                "INSERT INTO jobs (id, source_path, status, created_at, language, num_speakers) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (job_id, str(source_path), STATUS_QUEUED, created_at, language, num_speakers),
             )
         job = self.get(job_id)
         assert job is not None  # только что вставили
@@ -187,4 +209,5 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         result_path=row["result_path"],
         stage=row["stage"],
         fraction=row["fraction"],
+        num_speakers=row["num_speakers"],
     )

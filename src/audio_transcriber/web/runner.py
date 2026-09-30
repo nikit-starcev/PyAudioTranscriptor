@@ -136,6 +136,11 @@ class JobRunner:
 
         try:
             config = self._config_builder(job_id, request.source_path)
+            # Число говорящих задаётся на уровне задачи и переопределяет дефолт
+            # из настроек: ``None`` — автоопределение (pyannote сам решает).
+            job = self._store.get(job_id)
+            if job is not None:
+                config.num_speakers = job.num_speakers
             result = self._pipeline_fn(config, on_progress=self._progress_callback(job_id))
         except Exception as exc:
             logger.exception("Задача %s завершилась ошибкой", job_id)
