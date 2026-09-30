@@ -101,7 +101,45 @@ export type WebSettings = {
   output_dir: string
   glossary_db_path: string
   voices_dir_resolved: string
+  hf_token_set: boolean
+  hf_token_masked: string | null
 }
+
+export type DoctorStatus = 'ok' | 'warn' | 'fail'
+
+export type DoctorCheck = {
+  id: string
+  label: string
+  status: DoctorStatus
+  critical: boolean
+  detail: string
+  hint: string
+  links: string[]
+}
+
+export type DoctorSummary = {
+  ok: number
+  warn: number
+  fail: number
+  critical_failures: number
+}
+
+export type DoctorReport = {
+  checks: DoctorCheck[]
+  summary: DoctorSummary
+}
+
+export type HfCheckStatus = 'ok' | 'no_token' | 'no_access' | 'error'
+
+export type HfCheckResult = {
+  status: HfCheckStatus
+  message: string
+  account: string | null
+}
+
+export const HF_TOKEN_URL = 'https://huggingface.co/settings/tokens'
+export const PYANNOTE_MODEL_URL =
+  'https://huggingface.co/pyannote/speaker-diarization-community-1'
 
 export type GlossarySource = {
   name: string

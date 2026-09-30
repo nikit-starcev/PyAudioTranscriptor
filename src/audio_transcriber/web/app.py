@@ -47,11 +47,22 @@ from audio_transcriber.utils.audio import load_waveform, write_wav
 from audio_transcriber.utils.playback import amplitude_envelope, read_duration
 from audio_transcriber.utils.text import sanitize_filename
 from audio_transcriber.web.config import build_job_config, env_defaults, public_config
+from audio_transcriber.web.doctor_api import (
+    build_doctor_env,
+    check_hf_access,
+    doctor_report,
+)
 from audio_transcriber.web.events import JobEventBus
 from audio_transcriber.web.glossary_api import register_glossary_routes
 from audio_transcriber.web.paths import STATIC_DIR, WebPaths
 from audio_transcriber.web.results import load_result_file, result_summary
 from audio_transcriber.web.runner import ConfigBuilder, JobRunner, PipelineFn
+from audio_transcriber.web.secrets import (
+    SecretsError,
+    SecretsStore,
+    effective_hf_token,
+    mask_hf_token,
+)
 from audio_transcriber.web.settings import (
     SettingsError,
     SettingsStore,
@@ -169,7 +180,11 @@ class ApplyNamesRequest(BaseModel):
 
 
 class SettingsUpdate(BaseModel):
-    """Тело ``PUT /api/settings``: частичное обновление (``None`` — не менять)."""
+    """Тело ``PUT /api/settings``: частичное обновление (``None`` — не менять).
+
+    ``hf_token`` — отдельный секрет: он сохраняется не в ``settings.json``, а в
+    ``web-data/secrets.json`` с правами ``0600``. Пустая строка удаляет токен.
+    """
 
     glossary_enabled: bool | None = None
     glossary_db: str | None = None
@@ -182,6 +197,16 @@ class SettingsUpdate(BaseModel):
     normalize_text: bool | None = None
     clean_artifacts: bool | None = None
     protocol_auto: bool | None = None
+    hf_token: str | None = None
+
+
+class HfCheckRequest(BaseModel):
+    """Тело ``POST /api/doctor/hf-check``: необязательный токен для проверки.
+
+    Если токен не передан, проверяется сохранённый (или из ``config.env``).
+    """
+
+    token: str | None = None
 
 
 def create_app(
@@ -203,6 +228,7 @@ def create_app(
     resolved_paths = paths or WebPaths.default()
     resolved_paths.ensure()
     settings_store = SettingsStore(resolved_paths.settings_json)
+    secrets_store = SecretsStore(resolved_paths.secrets_json)
     store = JobsDB(resolved_paths.jobs_db)
     store.initialize()
     bus = JobEventBus(heartbeat=heartbeat)
@@ -213,11 +239,15 @@ def create_app(
         return settings_store.load().resolved_voices_dir()
 
     def default_config_builder(job_id: str, source_path: Path) -> AppConfig:
+        overrides = settings_store.load().env_overrides()
+        token = effective_hf_token(secrets_store, env_defaults())
+        if token:
+            overrides["HF_TOKEN"] = token
         return build_job_config(
             source_path,
             output_dir=resolved_paths.results_dir / job_id,
             data_dir=resolved_paths.data_dir,
-            overrides=settings_store.load().env_overrides(),
+            overrides=overrides,
         )
 
     effective_builder = config_builder or default_config_builder
@@ -249,6 +279,7 @@ def create_app(
     app.state.bus = bus
     app.state.runner = runner
     app.state.settings_store = settings_store
+    app.state.secrets_store = secrets_store
     app.state.voices_dir = resolve_voices()
     router = APIRouter(prefix="/api")
     register_api(
@@ -258,6 +289,7 @@ def create_app(
         runner=runner,
         paths=resolved_paths,
         settings_store=settings_store,
+        secrets_store=secrets_store,
         resolve_voices=resolve_voices,
         config_builder=effective_builder,
         protocol_fn=protocol_fn or generate_protocol,
@@ -291,6 +323,7 @@ def register_api(
     runner: JobRunner,
     paths: WebPaths,
     settings_store: SettingsStore,
+    secrets_store: SecretsStore,
     resolve_voices: VoicesResolver,
     config_builder: ConfigBuilder,
     protocol_fn: ProtocolFn,
@@ -299,6 +332,9 @@ def register_api(
 
     def _glossary_db_path() -> Path:
         return settings_store.load().resolved_glossary_db()
+
+    def _effective_token() -> str | None:
+        return effective_hf_token(secrets_store, env_defaults())
 
     register_glossary_routes(router, db_path=_glossary_db_path)
 
@@ -318,24 +354,59 @@ def register_api(
         payload["output_dir"] = str(paths.results_dir)
         payload["glossary_db_path"] = str(settings.resolved_glossary_db())
         payload["voices_dir_resolved"] = str(resolve_voices())
+        token = _effective_token()
+        payload["hf_token_set"] = token is not None
+        payload["hf_token_masked"] = mask_hf_token(token)
         return payload
 
     @router.put("/settings")
     def put_settings(payload: SettingsUpdate) -> dict[str, object]:
         current = settings_store.load()
         updates = payload.model_dump(exclude_none=True)
+        token_requested = "hf_token" in updates
+        raw_token = updates.pop("hf_token", None)
         try:
             merged = settings_from_mapping(updates, base=current)
             validate_settings(merged)
             saved = settings_store.save(merged)
-        except SettingsError as exc:
+            if token_requested:
+                secrets_store.set_hf_token(raw_token)
+        except (SettingsError, SecretsError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         result = saved.as_dict()
         result["input_dir"] = str(paths.input_dir)
         result["output_dir"] = str(paths.results_dir)
         result["glossary_db_path"] = str(saved.resolved_glossary_db())
         result["voices_dir_resolved"] = str(resolve_voices())
+        token = _effective_token()
+        result["hf_token_set"] = token is not None
+        result["hf_token_masked"] = mask_hf_token(token)
         return result
+
+    @router.get("/doctor")
+    def get_doctor() -> dict[str, object]:
+        """Отчёт о готовности (те же проверки, что у CLI ``doctor``)."""
+        config_path, env = build_doctor_env(settings_store, secrets_store, paths)
+        return doctor_report(config_path, env)
+
+    @router.post("/doctor/recheck")
+    def recheck_doctor() -> dict[str, object]:
+        """Повторная диагностика готовности («Проверить снова»)."""
+        config_path, env = build_doctor_env(settings_store, secrets_store, paths)
+        return doctor_report(config_path, env)
+
+    @router.post("/doctor/hf-check")
+    def hf_check(payload: HfCheckRequest | None = None) -> dict[str, object]:
+        """Мягкая проверка HF-токена: ``ok`` / ``no_access`` / ``no_token``.
+
+        Если в теле передан токен, проверяется именно он (для проверки до
+        сохранения); иначе — сохранённый секрет или значение из ``config.env``.
+        """
+        requested = payload.token if payload is not None else None
+        token = requested.strip() if isinstance(requested, str) and requested.strip() else None
+        if token is None:
+            token = _effective_token()
+        return check_hf_access(token).as_dict()
 
     @router.get("/files")
     def list_files() -> list[dict[str, object]]:

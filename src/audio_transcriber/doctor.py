@@ -46,6 +46,13 @@ DEFAULT_OUTPUT_DIR = "output"
 DEFAULT_WHISPER_BINARY = "whisper-cli"
 DEFAULT_LLM_BINARY = "llama-server"
 
+#: Ссылки, помогающие устранить проблему (используются веб-интерфейсом).
+LINK_WHISPER_CPP = "https://github.com/ggml-org/whisper.cpp"
+LINK_LLAMA_CPP = "https://github.com/ggml-org/llama.cpp"
+LINK_GGML_MODELS = "https://huggingface.co/ggerganov/whisper.cpp"
+LINK_PYANNOTE_MODEL = "https://huggingface.co/pyannote/speaker-diarization-community-1"
+LINK_HF_TOKENS = "https://huggingface.co/settings/tokens"
+
 
 @dataclass(frozen=True, slots=True)
 class DoctorCheck:
@@ -57,6 +64,7 @@ class DoctorCheck:
     critical: bool
     detail: str = ""
     hint: str = ""
+    links: tuple[str, ...] = ()
 
 
 def _truthy(value: str | None, default: bool = False) -> bool:
@@ -218,6 +226,7 @@ def _check_binaries(env: Mapping[str, str]) -> list[DoctorCheck]:
                 critical=True,
                 detail=f"{binary or 'не задан'}{lib_note}",
                 hint="" if available else "Задайте WHISPER_CPP_BINARY/--whisper-cpp-binary.",
+                links=() if available else (LINK_WHISPER_CPP,),
             )
         )
     else:
@@ -242,6 +251,7 @@ def _check_binaries(env: Mapping[str, str]) -> list[DoctorCheck]:
                 critical=True,
                 detail=binary or "не задан",
                 hint="" if available else "Задайте LLM_BINARY/--llm-binary.",
+                links=() if available else (LINK_LLAMA_CPP,),
             )
         )
     else:
@@ -275,6 +285,7 @@ def _check_models(env: Mapping[str, str]) -> list[DoctorCheck]:
                 critical=True,
                 detail=raw or "не задана",
                 hint="" if ok else "Задайте WHISPER_CPP_MODEL/--whisper-cpp-model.",
+                links=() if ok else (LINK_GGML_MODELS,),
             )
         )
 
@@ -290,6 +301,7 @@ def _check_models(env: Mapping[str, str]) -> list[DoctorCheck]:
                 critical=True,
                 detail=raw or "не задана",
                 hint="" if ok else "Задайте LLM_MODEL/--llm-model.",
+                links=() if ok else (LINK_LLAMA_CPP,),
             )
         )
 
@@ -306,6 +318,7 @@ def _check_models(env: Mapping[str, str]) -> list[DoctorCheck]:
                     critical=True,
                     detail=raw,
                     hint="" if ok else "Путь PYANNOTE_LOCAL_MODEL не найден.",
+                    links=() if ok else (LINK_PYANNOTE_MODEL,),
                 )
             )
         else:
@@ -417,6 +430,7 @@ def _check_hf_token(env: Mapping[str, str]) -> DoctorCheck:
         critical=True,
         detail="задан" if token else "не задан",
         hint="" if token else "Задайте HF_TOKEN в config.env или --hf-token (значение не выводится).",
+        links=() if token else (LINK_HF_TOKENS, LINK_PYANNOTE_MODEL),
     )
 
 

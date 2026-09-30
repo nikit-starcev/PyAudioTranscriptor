@@ -8,6 +8,7 @@ import {
   isTerminal,
   type ApplyNamesResponse,
   type ConfigInfo,
+  type DoctorReport,
   type FileItem,
   type Job,
   type JobDetails,
@@ -19,6 +20,7 @@ import {
   type WebSettings,
 } from './api'
 import GlossaryModal from './components/GlossaryModal'
+import ReadinessBanner from './components/ReadinessBanner'
 import SettingsModal from './components/SettingsModal'
 import SpeakersPanel from './components/SpeakersPanel'
 import ThemeToggle from './components/ThemeToggle'
@@ -55,6 +57,9 @@ const STATUS_STYLES: Record<string, string> = {
 function App() {
   const [version, setVersion] = useState<string>('')
   const [config, setConfig] = useState<ConfigInfo | null>(null)
+  const [doctor, setDoctor] = useState<DoctorReport | null>(null)
+  const [doctorLoading, setDoctorLoading] = useState(false)
+  const [doctorError, setDoctorError] = useState<string | null>(null)
   const [files, setFiles] = useState<FileItem[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
   const [activeJobId, setActiveJobId] = useState<string | null>(null)
@@ -85,6 +90,30 @@ function App() {
       setFiles(await api<FileItem[]>('/api/files'))
     } catch (cause) {
       setError(errorMessage(cause))
+    }
+  }, [])
+
+  const refreshDoctor = useCallback(async () => {
+    setDoctorLoading(true)
+    try {
+      setDoctor(await api<DoctorReport>('/api/doctor'))
+      setDoctorError(null)
+    } catch (cause) {
+      setDoctorError(errorMessage(cause))
+    } finally {
+      setDoctorLoading(false)
+    }
+  }, [])
+
+  const recheckDoctor = useCallback(async () => {
+    setDoctorLoading(true)
+    try {
+      setDoctor(await api<DoctorReport>('/api/doctor/recheck', { method: 'POST' }))
+      setDoctorError(null)
+    } catch (cause) {
+      setDoctorError(errorMessage(cause))
+    } finally {
+      setDoctorLoading(false)
     }
   }, [])
 
@@ -129,7 +158,8 @@ function App() {
     })()
     void refreshFiles()
     void refreshJobs()
-  }, [refreshFiles, refreshJobs])
+    void refreshDoctor()
+  }, [refreshFiles, refreshJobs, refreshDoctor])
 
   useEffect(() => {
     if (!activeJobId) return
@@ -316,6 +346,10 @@ function App() {
   }, [result, query])
 
   const activeJob = jobs.find((job) => job.id === activeJobId) ?? null
+  const readinessBlocked = (doctor?.summary.critical_failures ?? 0) > 0
+  const blockedHint = readinessBlocked
+    ? 'Запуск заблокирован: сначала устраните критичные проблемы Готовности'
+    : undefined
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 dark:bg-slate-950 dark:text-slate-100">
@@ -358,6 +392,13 @@ function App() {
             {error}
           </div>
         )}
+
+        <ReadinessBanner
+          report={doctor}
+          loading={doctorLoading}
+          error={doctorError}
+          onRecheck={() => void recheckDoctor()}
+        />
 
         {config && (
           <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -407,7 +448,9 @@ function App() {
                     </div>
                     <button
                       onClick={() => void enqueue(file.name)}
-                      className="rounded-md border border-slate-300 px-3 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
+                      disabled={readinessBlocked}
+                      title={blockedHint}
+                      className="rounded-md border border-slate-300 px-3 py-1 text-xs hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:hover:bg-slate-800"
                     >
                       В очередь
                     </button>
@@ -456,7 +499,9 @@ function App() {
                     {(job.status === 'queued' || job.status === 'done' || job.status === 'error') && (
                       <button
                         onClick={() => void runJob(job.id)}
-                        className="rounded-md bg-emerald-600 px-3 py-1 text-xs text-white hover:bg-emerald-500"
+                        disabled={readinessBlocked}
+                        title={blockedHint}
+                        className="rounded-md bg-emerald-600 px-3 py-1 text-xs text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         Запустить
                       </button>
@@ -630,7 +675,7 @@ function App() {
       <SettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}
-        onSaved={(saved: WebSettings) =>
+        onSaved={(saved: WebSettings) => {
           setConfig((current) =>
             current
               ? {
@@ -642,7 +687,8 @@ function App() {
                 }
               : current,
           )
-        }
+          void refreshDoctor()
+        }}
       />
       <GlossaryModal open={glossaryOpen} onClose={() => setGlossaryOpen(false)} />
     </div>

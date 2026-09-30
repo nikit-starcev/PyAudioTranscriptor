@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
 
-import { api, errorMessage, EXPORT_FORMATS, type WebSettings } from '../api'
+import {
+  api,
+  errorMessage,
+  EXPORT_FORMATS,
+  HF_TOKEN_URL,
+  PYANNOTE_MODEL_URL,
+  type HfCheckResult,
+  type WebSettings,
+} from '../api'
 
 type Props = {
   open: boolean
@@ -43,11 +51,18 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
+  const [hfToken, setHfToken] = useState('')
+  const [hfTokenTouched, setHfTokenTouched] = useState(false)
+  const [hfCheck, setHfCheck] = useState<HfCheckResult | null>(null)
+  const [hfChecking, setHfChecking] = useState(false)
 
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
       setSettings(await api<WebSettings>('/api/settings'))
+      setHfToken('')
+      setHfTokenTouched(false)
+      setHfCheck(null)
       setError(null)
     } catch (cause) {
       setError(errorMessage(cause))
@@ -100,6 +115,7 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
         normalize_text: settings.normalize_text,
         clean_artifacts: settings.clean_artifacts,
         protocol_auto: settings.protocol_auto,
+        ...(hfTokenTouched ? { hf_token: hfToken } : {}),
       }
       const saved = await api<WebSettings>('/api/settings', {
         method: 'PUT',
@@ -107,6 +123,9 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
         body: JSON.stringify(payload),
       })
       setSettings(saved)
+      setHfToken('')
+      setHfTokenTouched(false)
+      setHfCheck(null)
       setStatus('Настройки сохранены')
       onSaved?.(saved)
     } catch (cause) {
@@ -114,6 +133,34 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
     } finally {
       setBusy(false)
     }
+  }
+
+  const checkAccess = async () => {
+    setHfChecking(true)
+    setHfCheck(null)
+    try {
+      const token = hfToken.trim()
+      const result = await api<HfCheckResult>('/api/doctor/hf-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(token ? { token } : {}),
+      })
+      setHfCheck(result)
+    } catch (cause) {
+      setHfCheck({ status: 'error', message: errorMessage(cause), account: null })
+    } finally {
+      setHfChecking(false)
+    }
+  }
+
+  const hfResultStyle = (status: HfCheckResult['status']): string => {
+    if (status === 'ok') {
+      return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300'
+    }
+    if (status === 'error') {
+      return 'bg-red-50 text-red-700 dark:bg-red-950/50 dark:text-red-300'
+    }
+    return 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
   }
 
   return (
@@ -238,6 +285,68 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
                     Результаты: <code>{settings.output_dir}</code>
                   </span>
                 </div>
+              </fieldset>
+
+              <fieldset className="space-y-3 rounded-md border border-slate-200 p-3 dark:border-slate-800">
+                <legend className="px-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+                  Hugging Face (диаризация)
+                </legend>
+                <label className="block text-sm">
+                  <span className="text-slate-600 dark:text-slate-300">Токен доступа (HF)</span>
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    value={hfToken}
+                    onChange={(event) => {
+                      setHfToken(event.target.value)
+                      setHfTokenTouched(true)
+                      setHfCheck(null)
+                    }}
+                    placeholder={settings.hf_token_set ? 'сохранён' : 'hf_...'}
+                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                  />
+                  <span className="mt-0.5 block text-xs text-slate-400 dark:text-slate-500">
+                    {settings.hf_token_set
+                      ? `Токен сохранён (${settings.hf_token_masked ?? '…'}). Введите новый, чтобы заменить, или очистите поле и сохраните, чтобы удалить.`
+                      : 'Токен ещё не сохранён. Он хранится локально в отдельном файле с правами 0600.'}
+                  </span>
+                </label>
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void checkAccess()}
+                    disabled={hfChecking}
+                    className="rounded-md border border-slate-300 px-3 py-1 text-xs hover:bg-slate-100 disabled:opacity-40 dark:border-slate-600 dark:hover:bg-slate-800"
+                  >
+                    {hfChecking ? 'Проверка…' : 'Проверить доступ'}
+                  </button>
+                  <span className="flex flex-wrap gap-x-3 text-xs">
+                    <a
+                      href={HF_TOKEN_URL}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className="text-blue-600 underline hover:text-blue-500 dark:text-blue-400 dark:hover:text-blue-300"
+                    >
+                      получить токен
+                    </a>
+                    <a
+                      href={PYANNOTE_MODEL_URL}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className="text-blue-600 underline hover:text-blue-500 dark:text-blue-400 dark:hover:text-blue-300"
+                    >
+                      принять условия модели pyannote
+                    </a>
+                  </span>
+                </div>
+                {hfCheck && (
+                  <p
+                    role="status"
+                    className={`rounded-md px-3 py-1.5 text-xs ${hfResultStyle(hfCheck.status)}`}
+                  >
+                    {hfCheck.message}
+                  </p>
+                )}
               </fieldset>
             </>
           )}

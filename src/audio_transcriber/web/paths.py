@@ -45,6 +45,11 @@ class WebPaths:
         return self.data_dir / "settings.json"
 
     @property
+    def secrets_json(self) -> Path:
+        """Секреты (токен Hugging Face) с правами доступа только владельцу."""
+        return self.data_dir / "secrets.json"
+
+    @property
     def input_dir(self) -> Path:
         """Каталог загруженных/выбираемых аудиофайлов."""
         return self.data_dir / "uploads"
