@@ -6,16 +6,28 @@ Whisper (и faster-whisper, и whisper.cpp) на музыке, тишине ил
 ``[BLANK_AUDIO]``, музыкальные символы ``♪ ♫ ♬ ♩`` и т.п. Такие пометки не
 несут смысла и засоряют стенограмму.
 
+Отдельно встречается случай, когда тот же шум распознан **без скобок** —
+whisper.cpp после фикса потери кусков речи выдаёт «голые» шумовые слова,
+часто целыми сериями: ``АПЛОДИСМЕНТЫ АПЛОДИСМЕНТЫ АПЛОДИСМЕНТЫ …`` или
+хвостом у осмысленной фразы: ``112 без изменений. АИ тоже. АПЛОДИСМЕНТЫ``.
+
 Модуль удаляет:
 
 * скобочные пометки ``[...]``, ``(...)``, ``{...}``, если внутри **только**
   «шумовые» слова (список :data:`NOISE_WORD_STEMS` расширяем);
 * музыкальные символы;
+* «голые» серии шумовых слов: реплику, состоящую только из шумовых слов
+  **с повтором** (одна основа ≥ 2 раз или ≥ 2 шумовых слова), — целиком;
+* одиночные шумовые слова-хвосты/заголовки у осмысленной фразы, если они
+  отделены знаком конца предложения (``.``/``!``/``?``/``…``) или идут
+  серией из двух и более слов;
 * нормализует пробелы и пунктуацию, оставшиеся после удаления;
 * реплики, ставшие пустыми, исключаются целиком.
 
-Обычный текст не изменяется: если в реплике не было артефактов, она
-возвращается как есть.
+Одиночное «голое» шумовое слово сохраняется: оно может быть настоящей
+короткой репликой («Тишина.», «Звонок.», «Сигнал.», «Шум.», «Стук.»).
+Поэтому срабатывают только серии/повторы. Обычный текст не изменяется: если
+в реплике не было артефактов, она возвращается как есть.
 """
 
 from __future__ import annotations
@@ -113,6 +125,9 @@ _MUSIC_PATTERN = re.compile(r"[♪♫♬♩♭♮♯🎵🎶🎼]+")
 # Признак осмысленного текста: есть хотя бы одна буква или цифра.
 _MEANINGFUL_PATTERN = re.compile(r"[^\W_]", re.UNICODE)
 
+# Знаки конца предложения: «голый» шум отделяется ими от настоящей речи.
+_SENTENCE_ENDINGS: frozenset[str] = frozenset(".!?…")
+
 _WHITESPACE_PATTERN = re.compile(r"\s+")
 _SPACE_BEFORE_PUNCT = re.compile(r"\s+([,.;:!?…])")
 _DUPLICATE_PUNCT = re.compile(r"([,;:!?])\1+")
@@ -128,6 +143,21 @@ def _is_noise_word(word: str) -> bool:
     return any(folded.startswith(stem) for stem in NOISE_WORD_STEMS)
 
 
+def _is_noise_stem_word(word: str) -> bool:
+    """Является ли слово именно «шумовым» (не связкой/единицей длительности)."""
+    folded = word.casefold()
+    return any(folded.startswith(stem) for stem in NOISE_WORD_STEMS)
+
+
+def _noise_stem(word: str) -> str | None:
+    """Возвращает основу шумового слова (или ``None``)."""
+    folded = word.casefold()
+    for stem in NOISE_WORD_STEMS:
+        if folded.startswith(stem):
+            return stem
+    return None
+
+
 def _is_noise_only(text: str) -> bool:
     """Состоит ли текст только из шумовых слов (и связок).
 
@@ -135,6 +165,43 @@ def _is_noise_only(text: str) -> bool:
     """
     words = WORD_PATTERN.findall(text)
     return bool(words) and all(_is_noise_word(word) for word in words)
+
+
+def _noise_word_count(text: str) -> int:
+    """Сколько в тексте собственно шумовых слов (связки не считаются)."""
+    return sum(1 for word in WORD_PATTERN.findall(text) if _is_noise_stem_word(word))
+
+
+def _is_repeated_noise(text: str) -> bool:
+    """«Голый» шум с повтором: только шумовые слова и их ≥ 2.
+
+    Учитываются только настоящие шумовые слова: текст «И И» (одни связки)
+    повтором не считается — иначе легко удалить короткую осмысленную реплику.
+    """
+    if not _is_noise_only(text):
+        return False
+    return _noise_word_count(text) >= 2
+
+
+def _has_repeated_stem(text: str) -> bool:
+    """Встречается ли одна и та же шумовая основа ≥ 2 раз (для серии реплик).
+
+    Осторожный критерий для подряд идущих «голых» шумовых реплик: удаляем
+    серию только при явном повторе одной основы (например, десятки
+    «АПЛОДИСМЕНТЫ»), а разные одиночные шумовые слова («Тишина.», «Звонок.»)
+    сохраняем.
+    """
+    if not _is_noise_only(text):
+        return False
+    seen: set[str] = set()
+    for word in WORD_PATTERN.findall(text):
+        stem = _noise_stem(word)
+        if stem is None:
+            continue
+        if stem in seen:
+            return True
+        seen.add(stem)
+    return False
 
 
 def _has_meaningful(text: str) -> bool:
@@ -153,6 +220,66 @@ def _normalize(text: str) -> str:
     return text.strip()
 
 
+def _has_sentence_ending(text: str, start: int, end: int) -> bool:
+    """Есть ли между позициями ``start`` и ``end`` знак конца предложения."""
+    return any(char in _SENTENCE_ENDINGS for char in text[start:end])
+
+
+def _trim_noise_edges(text: str) -> tuple[str, list[str]]:
+    """Обрезает серии «голых» шумовых слов в начале/конце реплики.
+
+    Возвращает (текст, список удалённых слов). Реплика с осмысленным словом
+    внутри сохраняется: удаляется только шумовая «рамка». Одиночное шумовое
+    слово в начале/конце без знака конца предложения не трогается — оно может
+    быть частью настоящей фразы («Проверим сигнал»).
+    """
+    matches = list(WORD_PATTERN.finditer(text))
+    if len(matches) < 2:
+        return text, []
+    words = [match.group(0) for match in matches]
+    noise = [_is_noise_word(word) for word in words]
+    if all(noise):
+        # Полностью шумовая реплика — её судьбу решает `_is_repeated_noise`.
+        return text, []
+
+    leading = 0
+    while leading < len(words) and noise[leading]:
+        leading += 1
+
+    trailing = 0
+    while trailing < len(words) - leading and noise[len(words) - 1 - trailing]:
+        trailing += 1
+
+    trim_start = 0
+    if leading and (
+        leading >= 2
+        or _has_sentence_ending(text, matches[leading - 1].end(), matches[leading].start())
+    ):
+        trim_start = leading
+
+    trim_end = 0
+    if trailing and (
+        trailing >= 2
+        or _has_sentence_ending(
+            text,
+            matches[len(words) - trailing - 1].end(),
+            matches[len(words) - trailing].start(),
+        )
+    ):
+        trim_end = trailing
+
+    if not trim_start and not trim_end:
+        return text, []
+
+    removed = (
+        words[:trim_start] + words[len(words) - trim_end :] if trim_end else words[:trim_start]
+    )
+
+    start = matches[trim_start].start() if trim_start else 0
+    end = matches[len(words) - trim_end].start() if trim_end else len(text)
+    return text[start:end], removed
+
+
 class ArtifactCleaner:
     """Удаляет из реплик неречевые пометки Whisper.
 
@@ -160,9 +287,9 @@ class ArtifactCleaner:
     """
 
     def _clean_text(self, text: str) -> tuple[str, list[str]]:
-        """Возвращает очищенный текст и список удалённых пометок.
+        """Возвращает очищенный текст и список удалённых артефактов.
 
-        Если пометок не найдено, текст возвращается без изменений — обычная
+        Если артефактов не найдено, текст возвращается без изменений — обычная
         речь не нормализуется и не трогается.
         """
         removed: list[str] = []
@@ -181,16 +308,41 @@ class ArtifactCleaner:
             return " "
 
         cleaned = _MUSIC_PATTERN.sub(replace_music, cleaned)
+        if removed:
+            cleaned = _normalize(cleaned)
+
+        # «Голые» шумовые слова-рамка: 'Текст. СМЕХ СМЕХ' → 'Текст.'.
+        cleaned, trimmed = _trim_noise_edges(cleaned)
+        if trimmed:
+            cleaned = _normalize(cleaned)
+            removed.extend(trimmed)
 
         if not removed:
-            return text, removed
+            return text, []
 
-        return _normalize(cleaned), removed
+        return cleaned, removed
 
     def clean(self, entries: list[TranscriptEntry]) -> list[TranscriptEntry]:
         cleaned_entries: list[TranscriptEntry] = []
         removed_markers = 0
         dropped_entries = 0
+        # Буфер подряд идущих «голых» шумовых реплик: одиночную сохраняем
+        # (может быть реальной короткой фразой), серию из двух и более — нет.
+        pending_noise: list[TranscriptEntry] = []
+
+        def flush_pending() -> None:
+            nonlocal dropped_entries
+            if not pending_noise:
+                return
+            combined = " ".join(entry.text for entry in pending_noise)
+            single_repeat = len(pending_noise) == 1 and _is_repeated_noise(combined)
+            series_repeat = len(pending_noise) >= 2 and _has_repeated_stem(combined)
+            if single_repeat or series_repeat:
+                dropped_entries += len(pending_noise)
+                logger.debug("Очистка артефактов: шумовая серия удалена — «%s»", combined)
+            else:
+                cleaned_entries.extend(pending_noise)
+            pending_noise.clear()
 
         for entry in entries:
             new_text, removed = self._clean_text(entry.text)
@@ -198,13 +350,14 @@ class ArtifactCleaner:
 
             # Реплика исчезает, если после удаления пометок не осталось
             # осмысленного текста, либо если она и была только шумовой пометкой
-            # (например, «♪♪ музыка ♪» без скобок). Реплики, в которых пометок
-            # не было, не трогаются вовсе — даже состоящие из пунктуации.
+            # (например, «♪♪ музыка ♪» без скобок).
             if removed and not _has_meaningful(new_text):
+                flush_pending()
                 dropped_entries += 1
                 logger.debug("Очистка артефактов: реплика удалена — «%s»", entry.text)
                 continue
             if removed and _is_noise_only(new_text):
+                flush_pending()
                 dropped_entries += 1
                 logger.debug(
                     "Очистка артефактов: шумовая реплика удалена — «%s» → «%s»",
@@ -213,6 +366,14 @@ class ArtifactCleaner:
                 )
                 continue
 
+            # «Голое» шумовое слово без пометок — копим серию для проверки.
+            if _is_noise_only(new_text):
+                pending_noise.append(
+                    replace(entry, text=new_text) if new_text != entry.text else entry
+                )
+                continue
+
+            flush_pending()
             if new_text != entry.text:
                 logger.debug(
                     "Очистка артефактов: «%s» → «%s» (удалено: %s)",
@@ -223,6 +384,8 @@ class ArtifactCleaner:
                 cleaned_entries.append(replace(entry, text=new_text))
             else:
                 cleaned_entries.append(entry)
+
+        flush_pending()
 
         if removed_markers or dropped_entries:
             logger.info(

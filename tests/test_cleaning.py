@@ -112,3 +112,101 @@ def test_metadata_is_preserved_when_marker_removed() -> None:
     assert result[0].start == 1.5
     assert result[0].end == 3.0
     assert result[0].speaker is speaker
+
+
+# --- «голые» шумовые слова без скобок --------------------------------------
+
+
+def test_bare_repeated_noise_entry_is_removed() -> None:
+    cleaner = ArtifactCleaner()
+    entry = _entry("АПЛОДИСМЕНТЫ " * 15)
+
+    assert cleaner.clean([entry]) == []
+
+
+def test_bare_trailing_noise_is_trimmed_from_speech() -> None:
+    cleaner = ArtifactCleaner()
+    entry = _entry("112 без изменений. АИ тоже. АПЛОДИСМЕНТЫ")
+
+    result = cleaner.clean([entry])
+
+    assert len(result) == 1
+    assert result[0].text == "112 без изменений. АИ тоже."
+    assert result[0].start == entry.start
+    assert result[0].end == entry.end
+
+
+def test_bare_repeated_noise_tail_is_trimmed() -> None:
+    cleaner = ArtifactCleaner()
+
+    result = cleaner.clean([_entry("Спасибо. СМЕХ СМЕХ")])
+
+    assert [entry.text for entry in result] == ["Спасибо."]
+
+
+def test_bare_leading_noise_is_trimmed_from_speech() -> None:
+    cleaner = ArtifactCleaner()
+
+    result = cleaner.clean([_entry("Шум. Мы начали работу")])
+
+    assert [entry.text for entry in result] == ["Мы начали работу"]
+
+
+def test_noise_word_inside_speech_is_kept() -> None:
+    cleaner = ArtifactCleaner()
+    entries = [_entry("Мы обсудили шум в записи"), _entry("Проверим сигнал")]
+
+    result = cleaner.clean(entries)
+
+    assert result == entries
+
+
+def test_single_bare_noise_word_is_kept() -> None:
+    cleaner = ArtifactCleaner()
+    entries = [_entry("Тишина."), _entry("Звонок."), _entry("Шум."), _entry("Стук.")]
+
+    result = cleaner.clean(entries)
+
+    assert result == entries
+
+
+def test_consecutive_bare_noise_entries_are_removed() -> None:
+    cleaner = ArtifactCleaner()
+    entries = [_entry("АПЛОДИСМЕНТЫ") for _ in range(5)]
+
+    assert cleaner.clean(entries) == []
+
+
+def test_single_noise_entry_between_speech_is_kept() -> None:
+    cleaner = ArtifactCleaner()
+    entries = [_entry("Первый тезис."), _entry("Тишина."), _entry("Второй тезис.")]
+
+    result = cleaner.clean(entries)
+
+    assert [entry.text for entry in result] == [
+        "Первый тезис.",
+        "Тишина.",
+        "Второй тезис.",
+    ]
+
+
+def test_bare_noise_cleaning_is_idempotent() -> None:
+    cleaner = ArtifactCleaner()
+    samples = [
+        "112 без изменений. АИ тоже. АПЛОДИСМЕНТЫ",
+        "Спасибо. СМЕХ СМЕХ",
+        "АПЛОДИСМЕНТЫ " * 10,
+        "Мы обсудили шум в записи",
+    ]
+
+    for text in samples:
+        cleaned_once = cleaner.clean([_entry(text)])
+        cleaned_twice = cleaner.clean(cleaned_once)
+        assert [entry.text for entry in cleaned_once] == [entry.text for entry in cleaned_twice]
+
+
+def test_bare_noise_entry_with_different_stems_is_removed_when_repeated() -> None:
+    cleaner = ArtifactCleaner()
+
+    # Разные шумовые основы, но серия из двух слов — тоже артефакт.
+    assert cleaner.clean([_entry("СМЕХ АПЛОДИСМЕНТЫ")]) == []
