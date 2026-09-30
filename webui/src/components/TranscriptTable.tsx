@@ -212,6 +212,7 @@ function TranscriptTable({ jobId, entries, speakers }: Props) {
               const percent = playing
                 ? Math.min(100, Math.max(0, (position / span) * 100))
                 : 0
+              const pieces = speakerPieces(speakers, entry)
               return (
                 <tr
                   key={key}
@@ -240,24 +241,29 @@ function TranscriptTable({ jobId, entries, speakers }: Props) {
                   <td className="whitespace-nowrap px-3 py-1.5 font-mono text-xs text-slate-500 dark:text-slate-400">
                     {formatTime(entry.start)}
                   </td>
-                  <td className="whitespace-nowrap px-3 py-1.5">
-                    {speakerPieces(speakers, entry).map((piece, pieceIndex) => (
-                      <span key={`${piece.id ?? 'none'}-${pieceIndex}`}>
-                        {pieceIndex > 0 && (
-                          <span className="mx-1 text-slate-400 dark:text-slate-500">+</span>
-                        )}
-                        <span
-                          className={
-                            piece.extra
-                              ? 'text-slate-500 dark:text-slate-400'
-                              : undefined
-                          }
-                          title={piece.extra ? 'дополнительный говорящий (наложение)' : undefined}
-                        >
-                          {piece.name}
+                  <td className="px-3 py-1.5">
+                    <div
+                      className="max-w-[16rem] truncate"
+                      title={pieces.map((piece) => piece.name).join(' + ')}
+                    >
+                      {pieces.map((piece, pieceIndex) => (
+                        <span key={`${piece.id ?? 'none'}-${pieceIndex}`}>
+                          {pieceIndex > 0 && (
+                            <span className="mx-1 text-slate-400 dark:text-slate-500">+</span>
+                          )}
+                          <span
+                            className={
+                              piece.extra
+                                ? 'text-slate-500 dark:text-slate-400'
+                                : undefined
+                            }
+                            title={piece.extra ? 'дополнительный говорящий (наложение)' : undefined}
+                          >
+                            {piece.name}
+                          </span>
                         </span>
-                      </span>
-                    ))}
+                      ))}
+                    </div>
                   </td>
                   <td className="whitespace-nowrap px-3 py-1.5 text-base">
                     {entry.low_confidence && <span title="низкая уверенность">⚠</span>}

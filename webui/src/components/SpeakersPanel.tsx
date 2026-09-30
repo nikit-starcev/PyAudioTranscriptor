@@ -161,15 +161,18 @@ function SpeakersPanel({
           return (
             <li
               key={speaker.id}
-              className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-slate-100 bg-slate-50/60 px-3 py-2 dark:border-slate-800 dark:bg-slate-800/40"
+              className="flex flex-col gap-2 rounded-md border border-slate-100 bg-slate-50/60 px-3 py-2 dark:border-slate-800 dark:bg-slate-800/40 sm:grid sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-x-3 sm:gap-y-2"
             >
-              <span className="w-28 shrink-0 font-mono text-xs text-slate-500 dark:text-slate-400">
-                {speaker.id}
-              </span>
+              <div className="flex min-w-0 items-center gap-2 sm:col-start-1 sm:row-start-1">
+                <span
+                  className="shrink-0 rounded bg-slate-200 px-1.5 py-0.5 font-mono text-[10px] text-slate-500 dark:bg-slate-700 dark:text-slate-300"
+                  title={speaker.id}
+                >
+                  {speaker.id}
+                </span>
 
-              <div className="min-w-[12rem] flex-1">
                 {editing?.kind === 'rename' ? (
-                  <div className="flex items-center gap-1">
+                  <div className="flex flex-wrap items-center gap-1">
                     <input
                       autoFocus
                       value={editing.value}
@@ -178,7 +181,7 @@ function SpeakersPanel({
                         if (event.key === 'Enter') submitEdit(editing)
                         if (event.key === 'Escape') setEdit(null)
                       }}
-                      className="w-48 rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                      className="w-48 min-w-0 max-w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                     />
                     <button
                       type="button"
@@ -196,38 +199,39 @@ function SpeakersPanel({
                     </button>
                   </div>
                 ) : (
-                  <div className="flex items-center gap-2">
-                    <span className="truncate text-sm font-medium">{speaker.display_name}</span>
+                  <>
+                    <span className="min-w-0 truncate text-sm font-medium" title={speaker.display_name}>
+                      {speaker.display_name}
+                    </span>
                     <button
                       type="button"
                       title="Переименовать"
                       onClick={() =>
                         setEdit({ sid: speaker.id, kind: 'rename', value: speaker.display_name })
                       }
-                      className="text-xs text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-200"
+                      className="shrink-0 text-xs text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-200"
                     >
                       ✎
                     </button>
-                  </div>
+                  </>
                 )}
-                <p className="text-xs text-slate-400 dark:text-slate-500">
-                  {counts[speaker.id] ?? 0} реплик · Образец {speaker.has_sample ? '✓' : '—'}
-                  {speaker.has_sample ? ` · ${formatDuration(duration ?? null)}` : ''}
-                </p>
               </div>
 
-              {speaker.has_sample && (
-                <audio
-                  controls
-                  preload="none"
-                  className="h-8"
-                  src={`/api/jobs/${jobId}/samples/${encodeURIComponent(speaker.id)}`}
-                />
-              )}
+              {/* Служебная строка: реплики · образец · длительность — фиксированные слоты,
+                  чтобы значения не «прыгали» при разной длине имени. */}
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-400 dark:text-slate-500 sm:col-span-2 sm:row-start-2">
+                <span className="tabular-nums">{counts[speaker.id] ?? 0} реплик</span>
+                <span>Образец {speaker.has_sample ? '✓' : '—'}</span>
+                {speaker.has_sample && (
+                  <span className="tabular-nums" title="Длительность образца">
+                    {formatDuration(duration ?? null)}
+                  </span>
+                )}
+              </div>
 
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2 sm:col-start-2 sm:row-start-1 sm:justify-self-end sm:flex-nowrap">
                 {editing?.kind === 'library' ? (
-                  <div className="flex items-center gap-1">
+                  <div className="flex flex-wrap items-center gap-1">
                     <input
                       autoFocus
                       value={editing.value}
@@ -236,7 +240,7 @@ function SpeakersPanel({
                         if (event.key === 'Enter') submitEdit(editing)
                         if (event.key === 'Escape') setEdit(null)
                       }}
-                      className="w-40 rounded-md border border-slate-300 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                      className="w-40 min-w-0 max-w-full rounded-md border border-slate-300 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                     />
                     <button
                       type="button"
@@ -278,7 +282,7 @@ function SpeakersPanel({
                       onChange={(event) =>
                         setMergeTarget((prev) => ({ ...prev, [speaker.id]: event.target.value }))
                       }
-                      className="rounded-md border border-slate-300 px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                      className="max-w-[12rem] rounded-md border border-slate-300 px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                     >
                       <option value="">Объединить в…</option>
                       {others.map((item) => (
@@ -298,6 +302,15 @@ function SpeakersPanel({
                   </div>
                 )}
               </div>
+
+              {speaker.has_sample && (
+                <audio
+                  controls
+                  preload="none"
+                  className="h-8 w-full sm:col-span-2 sm:row-start-3 sm:max-w-md"
+                  src={`/api/jobs/${jobId}/samples/${encodeURIComponent(speaker.id)}`}
+                />
+              )}
             </li>
           )
         })}

@@ -204,10 +204,13 @@ function VoicesModal({ open, onClose }: Props) {
           ) : (
             <ul className="divide-y divide-slate-100 dark:divide-slate-800">
               {voices.map((voice) => (
-                <li key={voice.name} className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2">
-                  <div className="min-w-[10rem] flex-1">
+                <li
+                  key={voice.name}
+                  className="flex flex-col gap-2 py-2 sm:grid sm:grid-cols-[minmax(0,1fr)_4rem_5rem_auto] sm:items-center sm:gap-x-3 sm:gap-y-2"
+                >
+                  <div className="min-w-0 sm:col-start-1 sm:row-start-1">
                     {edit?.name === voice.name ? (
-                      <div className="flex items-center gap-1">
+                      <div className="flex flex-wrap items-center gap-1">
                         <input
                           autoFocus
                           value={edit.value}
@@ -216,7 +219,7 @@ function VoicesModal({ open, onClose }: Props) {
                             if (event.key === 'Enter') void rename(edit)
                             if (event.key === 'Escape') setEdit(null)
                           }}
-                          className="w-40 rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                          className="w-40 min-w-0 max-w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                         />
                         <button
                           type="button"
@@ -234,16 +237,30 @@ function VoicesModal({ open, onClose }: Props) {
                         </button>
                       </div>
                     ) : (
-                      <p className="truncate text-sm">{voice.name}</p>
+                      <p className="truncate text-sm" title={voice.name}>
+                        {voice.name}
+                      </p>
                     )}
-                    <p className="text-xs text-slate-400 dark:text-slate-500">
-                      {formatDuration(voice.duration)} · {formatSize(voice.size)}
-                    </p>
                   </div>
 
-                  <audio controls preload="none" className="h-8" src={voiceAudioUrl(voice.name)} />
+                  {/* На узких экранах длительность и размер — одна строка под именем;
+                      на широких «разворачиваются» в отдельные колонки сетки. */}
+                  <div className="flex items-center gap-3 text-xs text-slate-400 dark:text-slate-500 sm:contents">
+                    <span
+                      className="tabular-nums sm:col-start-2 sm:row-start-1 sm:text-right"
+                      title="Длительность"
+                    >
+                      {formatDuration(voice.duration)}
+                    </span>
+                    <span
+                      className="tabular-nums sm:col-start-3 sm:row-start-1 sm:text-right"
+                      title="Размер файла"
+                    >
+                      {formatSize(voice.size)}
+                    </span>
+                  </div>
 
-                  <div className="flex items-center gap-1">
+                  <div className="flex flex-wrap items-center gap-1 sm:col-start-4 sm:row-start-1 sm:flex-nowrap sm:justify-self-end">
                     <button
                       type="button"
                       onClick={() => setEdit({ name: voice.name, value: voice.name })}
@@ -260,6 +277,13 @@ function VoicesModal({ open, onClose }: Props) {
                       Удалить
                     </button>
                   </div>
+
+                  <audio
+                    controls
+                    preload="none"
+                    className="h-8 w-full sm:col-span-4 sm:row-start-2 sm:max-w-md"
+                    src={voiceAudioUrl(voice.name)}
+                  />
                 </li>
               ))}
             </ul>
