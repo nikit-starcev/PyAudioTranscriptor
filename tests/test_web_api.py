@@ -798,3 +798,40 @@ def test_spa_index_served(client: TestClient) -> None:
 
 def test_unknown_api_path_returns_404(client: TestClient) -> None:
     assert client.get("/api/does-not-exist").status_code == 404
+
+
+def test_rerun_clears_stale_sse_history(
+    web_paths: WebPaths, config_builder, fake_pipeline
+) -> None:
+    """Повторный прогон не должен реиграть события прошлого запуска (ошибку)."""
+    web_paths.ensure()
+    store = JobsDB(web_paths.jobs_db)
+    store.initialize()
+    bus = JobEventBus(heartbeat=0.05)
+    runner = JobRunner(store, bus, web_paths, config_builder, pipeline_fn=fake_pipeline)
+
+    source = web_paths.input_dir / "rerun.mp3"
+    source.write_bytes(b"x")
+    store.create("rerun-job", source)
+    # Событие прошлого прогона — как после реконсиляции осиротевшей задачи.
+    bus.publish(
+        "rerun-job",
+        {"stage": "error", "message": ORPHAN_ERROR_MESSAGE, "status": STATUS_ERROR},
+    )
+    assert any(e.get("message") == ORPHAN_ERROR_MESSAGE for e in bus.history("rerun-job"))
+
+    runner.start()
+    try:
+        assert runner.submit("rerun-job", source) is True
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            current = store.get("rerun-job")
+            if current is not None and current.is_terminal:
+                break
+            time.sleep(0.05)
+    finally:
+        runner.stop()
+
+    history = bus.history("rerun-job")
+    assert not any(e.get("message") == ORPHAN_ERROR_MESSAGE for e in history), history
+    assert not any(e.get("status") == STATUS_ERROR for e in history), history

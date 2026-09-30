@@ -187,6 +187,9 @@ class JobRunner:
             stage_started_at=None,
             stage_times=[],
         )
+        # Новая попытка — чистим историю SSE, чтобы клиентам не реигрались
+        # события прошлого прогона (например, «Прервано: сервер был перезапущен»).
+        self._bus.clear(job_id)
         self._bus.publish(
             job_id,
             {
