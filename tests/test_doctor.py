@@ -35,6 +35,21 @@ def _find(checks: list[doctor.DoctorCheck], key: str) -> doctor.DoctorCheck:
     return next(check for check in checks if check.key == key)
 
 
+def _patch_vulkan(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    devices: list[str] | None = None,
+    library: bool = False,
+    help_text: str | None = None,
+    info: list[str] | None = None,
+) -> None:
+    """Подменяет все пробы Vulkan, чтобы не запускать реальные бинарники."""
+    monkeypatch.setattr(doctor, "_vulkan_devices", lambda _binary, _lib: devices)
+    monkeypatch.setattr(doctor, "_vulkan_library_present", lambda _lib, _binary: library)
+    monkeypatch.setattr(doctor, "_whisper_help", lambda _binary, _lib: help_text)
+    monkeypatch.setattr(doctor, "_vulkaninfo_devices", lambda: info)
+
+
 def test_all_good_env_has_no_critical_failures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -101,9 +116,7 @@ def test_vulkan_device_reported_when_found(
     _patch_modules(monkeypatch)
     _patch_writable(monkeypatch)
     monkeypatch.setattr(doctor, "_binary_available", lambda _binary: True)
-    monkeypatch.setattr(
-        doctor, "_vulkan_devices", lambda _binary, _lib: ["Vulkan0: AMD Radeon (b)"]
-    )
+    _patch_vulkan(monkeypatch, devices=["Vulkan0: AMD Radeon (b)"])
 
     env = _base_env(tmp_path, ASR_BACKEND="whisper-cpp", WHISPER_CPP_BINARY="whisper-cli")
     checks = doctor.run_doctor(None, env)
@@ -113,13 +126,42 @@ def test_vulkan_device_reported_when_found(
     assert "Vulkan0" in vulkan.detail
 
 
-def test_vulkan_undetermined_is_not_critical(
+def test_vulkan_detected_via_vulkaninfo_when_list_devices_unsupported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Сценарий (а): --list-devices не поддержан, устройства дал vulkaninfo."""
     _patch_modules(monkeypatch)
     _patch_writable(monkeypatch)
     monkeypatch.setattr(doctor, "_binary_available", lambda _binary: True)
-    monkeypatch.setattr(doctor, "_vulkan_devices", lambda _binary, _lib: None)
+    _patch_vulkan(
+        monkeypatch,
+        devices=None,
+        library=True,
+        info=["AMD Radeon RX 590 Series (RADV POLARIS10)"],
+    )
+
+    env = _base_env(tmp_path, ASR_BACKEND="whisper-cpp", WHISPER_CPP_BINARY="whisper-cli")
+    checks = doctor.run_doctor(None, env)
+
+    vulkan = _find(checks, "vulkan")
+    assert vulkan.ok
+    assert not vulkan.critical
+    assert "AMD Radeon RX 590 Series" in vulkan.detail
+
+
+def test_vulkan_absent_warns_with_cpu_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Сценарий (б): нет libggml-vulkan и билд без GPU-флагов → warn + CPU-hint."""
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+    monkeypatch.setattr(doctor, "_binary_available", lambda _binary: True)
+    _patch_vulkan(
+        monkeypatch,
+        devices=None,
+        library=False,
+        help_text="usage: whisper-cli\n  -t N  --threads N\n",
+    )
 
     env = _base_env(tmp_path, ASR_BACKEND="whisper-cpp", WHISPER_CPP_BINARY="whisper-cli")
     checks = doctor.run_doctor(None, env)
@@ -127,6 +169,99 @@ def test_vulkan_undetermined_is_not_critical(
     vulkan = _find(checks, "vulkan")
     assert not vulkan.ok
     assert not vulkan.critical
+    assert "CPU" in vulkan.hint
+
+
+def test_vulkan_built_but_device_undetermined_is_ok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Сценарий (в): Vulkan собран, устройства определить не удалось → ok."""
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+    monkeypatch.setattr(doctor, "_binary_available", lambda _binary: True)
+    _patch_vulkan(monkeypatch, devices=None, library=True, info=None)
+
+    env = _base_env(tmp_path, ASR_BACKEND="whisper-cpp", WHISPER_CPP_BINARY="whisper-cli")
+    checks = doctor.run_doctor(None, env)
+
+    vulkan = _find(checks, "vulkan")
+    assert vulkan.ok
+    assert not vulkan.critical
+    assert "Vulkan собран" in vulkan.detail
+
+
+def test_vulkan_gpu_flags_in_help_count_as_support(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GPU-флаги в --help достаточно, чтобы считать Vulkan собранным."""
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+    monkeypatch.setattr(doctor, "_binary_available", lambda _binary: True)
+    _patch_vulkan(
+        monkeypatch,
+        devices=None,
+        library=False,
+        help_text="  -ng, --no-gpu    disable GPU\n  -dev N, --device N   GPU device ID\n",
+        info=None,
+    )
+
+    env = _base_env(tmp_path, ASR_BACKEND="whisper-cpp", WHISPER_CPP_BINARY="whisper-cli")
+    checks = doctor.run_doctor(None, env)
+
+    vulkan = _find(checks, "vulkan")
+    assert vulkan.ok
+    assert not vulkan.critical
+
+
+def test_vulkan_binary_not_set_degrades_softly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Сценарий (г): бинарник не задан/не найден → мягко, без исключений."""
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+    monkeypatch.setattr(doctor, "_binary_available", lambda _binary: False)
+    _patch_vulkan(monkeypatch)
+
+    env = _base_env(
+        tmp_path,
+        ASR_BACKEND="whisper-cpp",
+        WHISPER_CPP_BINARY="",
+        WHISPER_CPP_LIB_PATH="",
+    )
+    checks = doctor.run_doctor(None, env)
+
+    vulkan = _find(checks, "vulkan")
+    assert not vulkan.ok
+    assert not vulkan.critical
+    assert "не найден" in vulkan.detail
+
+
+def test_vulkan_library_probe_handles_missing_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Хелпер ``_vulkan_library_present`` не падает на пустых/битых путях."""
+    assert doctor._vulkan_library_present(None, "") is False
+    assert doctor._vulkan_library_present("/no/such/dir", "no-such-binary") is False
+
+
+def test_vulkaninfo_parser_reads_device_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(doctor.shutil, "which", lambda _name: "/usr/bin/vulkaninfo")
+
+    class _Proc:
+        returncode = 0
+        stdout = (
+            "Devices:\n========\nGPU0:\n"
+            "\tapiVersion = 1.4.354\n"
+            "\tdeviceName = AMD Radeon RX 590 Series (RADV POLARIS10)\n"
+            "\tdriverName = radv\n"
+        )
+        stderr = ""
+
+    monkeypatch.setattr(doctor, "_run_command", lambda *_args, **_kwargs: _Proc())
+
+    assert doctor._vulkaninfo_devices() == ["AMD Radeon RX 590 Series (RADV POLARIS10)"]
 
 
 def test_missing_hf_token_is_critical_and_value_never_printed(
@@ -209,6 +344,9 @@ def _patch_cli(monkeypatch: pytest.MonkeyPatch, env: dict[str, str], *, modules:
     monkeypatch.setattr(doctor, "_is_file", lambda _path: False)
     monkeypatch.setattr(doctor, "_is_dir", lambda _path: False)
     monkeypatch.setattr(doctor, "_vulkan_devices", lambda _binary, _lib: None)
+    monkeypatch.setattr(doctor, "_vulkan_library_present", lambda _lib, _binary: False)
+    monkeypatch.setattr(doctor, "_whisper_help", lambda _binary, _lib: None)
+    monkeypatch.setattr(doctor, "_vulkaninfo_devices", lambda: None)
 
 
 def test_doctor_cli_exit_zero_when_critical_ok(

@@ -120,6 +120,45 @@ def _dir_writable(path: Path) -> bool:
         return False
 
 
+def _subprocess_env(library_path: str | None) -> dict[str, str]:
+    """Окружение для запуска бинарника с учётом каталога библиотек.
+
+    На Linux ``WHISPER_CPP_LIB_PATH`` добавляется в ``LD_LIBRARY_PATH``, чтобы
+    динамический загрузчик нашёл ``libwhisper``/``libggml*`` (включая Vulkan).
+    На macOS используется ``DYLD_LIBRARY_PATH``, на Windows — ``PATH``. Пустой
+    путь ничего не меняет и не приводит к ошибке.
+    """
+    env = dict(os.environ)
+    if not library_path:
+        return env
+    if sys.platform == "darwin":
+        variable = "DYLD_LIBRARY_PATH"
+    elif sys.platform.startswith("win"):
+        variable = "PATH"
+    else:
+        variable = "LD_LIBRARY_PATH"
+    existing = env.get(variable)
+    env[variable] = library_path + (os.pathsep + existing if existing else "")
+    return env
+
+
+def _run_command(
+    command: list[str], library_path: str | None = None, *, timeout: int = 10
+) -> subprocess.CompletedProcess[str] | None:
+    """Запускает бинарник, возвращая результат или ``None`` при сбое запуска."""
+    try:
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=_subprocess_env(library_path),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def _vulkan_devices(binary: str, library_path: str | None) -> list[str] | None:
     """Список Vulkan-устройств из ``whisper-cli --list-devices``.
 
@@ -127,26 +166,83 @@ def _vulkan_devices(binary: str, library_path: str | None) -> list[str] | None:
     такой аргумент или его запуск завершился ошибкой. Пустой список означает,
     что проверка выполнилась, но устройств не нашлось.
     """
-    command = [binary, "--list-devices"]
-    env = dict(os.environ)
-    if library_path:
-        existing = env.get("LD_LIBRARY_PATH")
-        env["LD_LIBRARY_PATH"] = library_path + (":" + existing if existing else "")
-    try:
-        proc = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            env=env,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
+    proc = _run_command([binary, "--list-devices"], library_path)
+    if proc is None:
         return None
     output = (proc.stdout or "") + (proc.stderr or "")
     if proc.returncode != 0 or "unknown argument" in output.lower():
         return None
-    return [line.strip() for line in output.splitlines() if "Vulkan" in line]
+    return [
+        line.strip() for line in output.splitlines() if "vulkan" in line.lower()
+    ]
+
+
+def _library_names_present(directory: Path) -> bool:
+    """Есть ли в каталоге ``libggml-vulkan.*`` (собранный Vulkan-бэкенд ggml)."""
+    if not _is_dir(directory):
+        return False
+    try:
+        entries = os.listdir(directory)
+    except OSError:
+        return False
+    return any(
+        name.startswith("libggml-vulkan") or name.startswith("ggml-vulkan")
+        for name in entries
+    )
+
+
+def _vulkan_library_present(library_path: str | None, binary: str) -> bool:
+    """Найден ли ``libggml-vulkan`` в каталоге библиотек или рядом с бинарником."""
+    candidates: list[Path] = []
+    if library_path:
+        candidates.append(Path(library_path).expanduser())
+    resolved = Path(binary).expanduser()
+    if not resolved.is_file():
+        found = shutil.which(binary)
+        if found:
+            resolved = Path(found)
+    if resolved.is_file():
+        candidates.append(resolved.parent)
+    return any(_library_names_present(directory) for directory in candidates)
+
+
+#: GPU-флаги, которые поддерживает билд whisper.cpp с включённым ускорением.
+_GPU_FLAG_TOKENS = ("-dev", "--device", "-ng", "--no-gpu")
+
+
+def _supports_gpu_flags(help_text: str | None) -> bool:
+    """Поддерживает ли билд GPU-флаги (``-dev/--device``, ``-ng/--no-gpu``)."""
+    if not help_text:
+        return False
+    lowered = help_text.lower()
+    return any(token in lowered for token in _GPU_FLAG_TOKENS)
+
+
+def _whisper_help(binary: str, library_path: str | None) -> str | None:
+    """Вывод ``whisper-cli --help`` (или ``None``, если запустить не удалось)."""
+    proc = _run_command([binary, "--help"], library_path)
+    if proc is None:
+        return None
+    return (proc.stdout or "") + (proc.stderr or "")
+
+
+def _vulkaninfo_devices() -> list[str] | None:
+    """Имена устройств из ``vulkaninfo --summary`` (``None``, если недоступно)."""
+    if shutil.which("vulkaninfo") is None:
+        return None
+    proc = _run_command(["vulkaninfo", "--summary"])
+    if proc is None:
+        return None
+    output = (proc.stdout or "") + (proc.stderr or "")
+    devices: list[str] = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("devicename"):
+            _, _, value = stripped.partition("=")
+            value = value.strip()
+            if value and value not in devices:
+                devices.append(value)
+    return devices
 
 
 # --- проверки --------------------------------------------------------------
@@ -355,31 +451,53 @@ def _check_vulkan(env: Mapping[str, str]) -> DoctorCheck:
             hint="Сначала установите/укажите whisper-cli.",
         )
     lib_path = env.get("WHISPER_CPP_LIB_PATH", "").strip() or None
+
+    # 1. Устройства, если билд поддерживает --list-devices.
     devices = _vulkan_devices(binary, lib_path)
-    if devices is None:
+    if devices:
         return DoctorCheck(
             key="vulkan",
             label="GPU Vulkan",
-            ok=False,
+            ok=True,
             critical=False,
-            detail="не удалось определить (whisper-cli не поддержал --list-devices)",
-            hint="Проверьте вручную: whisper-cli --list-devices. Без Vulkan ASR пойдёт на CPU.",
+            detail="Vulkan: " + "; ".join(devices[:3]),
         )
-    if not devices:
+
+    # 2. Собран ли Vulkan вообще: libggml-vulkan рядом с бинарником/в lib
+    #    либо GPU-флаги в --help (дешёвая проверка, модель не грузим).
+    vulkan_built = _vulkan_library_present(lib_path, binary) or _supports_gpu_flags(
+        _whisper_help(binary, lib_path)
+    )
+    if not vulkan_built:
         return DoctorCheck(
             key="vulkan",
             label="GPU Vulkan",
             ok=False,
             critical=False,
-            detail="устройства не обнаружены",
-            hint="GPU-Vulkan недоступен — whisper.cpp пойдёт на CPU (медленнее).",
+            detail="Vulkan не обнаружен (нет libggml-vulkan и билд без GPU-флагов)",
+            hint=(
+                "Соберите whisper.cpp с Vulkan. "
+                "Без Vulkan ASR пойдёт на CPU (медленнее)."
+            ),
+            links=(LINK_WHISPER_CPP,),
+        )
+
+    # 3. Vulkan собран, но whisper-device не перечислил — пробуем vulkaninfo.
+    info_devices = _vulkaninfo_devices()
+    if info_devices:
+        return DoctorCheck(
+            key="vulkan",
+            label="GPU Vulkan",
+            ok=True,
+            critical=False,
+            detail="Vulkan: " + "; ".join(info_devices[:3]),
         )
     return DoctorCheck(
         key="vulkan",
         label="GPU Vulkan",
         ok=True,
         critical=False,
-        detail="; ".join(devices[:3]),
+        detail="Vulkan собран (libggml-vulkan), устройство не определено",
     )
 
 
