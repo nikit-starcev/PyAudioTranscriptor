@@ -115,13 +115,19 @@ class _FakeRecognizer:
         return ([TranscriptionSegment(start=0.0, end=1.0, text="привет")], "ru", 1.0)
 
 
+#: Нейтральная повторяющаяся фраза (не шаблонная галлюцинация): ArtifactCleaner
+#: вырезает известные фразы-заглушки (в т.ч. «Продолжение следует»), поэтому для
+#: проверки именно схлопывания повторов берём обычную реплику.
+_REPEATED_PHRASE = "Повторяющаяся реплика"
+
+
 class _DuplicateMerger:
     """Возвращает две подряд одинаковые реплики одного говорящего."""
 
     def merge(self, transcription_segments, speaker_segments, known_speakers=None):
         return [
-            _entry("Продолжение следует", 0.0, 1.0),
-            _entry("Продолжение следует", 1.0, 2.0),
+            _entry(_REPEATED_PHRASE, 0.0, 1.0),
+            _entry(_REPEATED_PHRASE, 1.0, 2.0),
         ], []
 
 
@@ -141,7 +147,7 @@ def test_pipeline_collapses_repeats_by_default(audio_file: Path, tmp_path: Path)
         merger=_DuplicateMerger(),
     )
 
-    assert [entry.text for entry in result.entries] == ["Продолжение следует"]
+    assert [entry.text for entry in result.entries] == [_REPEATED_PHRASE]
 
 
 def test_pipeline_keeps_repeats_when_disabled(audio_file: Path, tmp_path: Path) -> None:
@@ -162,4 +168,4 @@ def test_pipeline_keeps_repeats_when_disabled(audio_file: Path, tmp_path: Path) 
     )
 
     # Реплики не схлопнуты и затем склеены SentenceMerger'ом в один текст.
-    assert result.entries[0].text.count("Продолжение следует") == 2
+    assert result.entries[0].text.count(_REPEATED_PHRASE) == 2

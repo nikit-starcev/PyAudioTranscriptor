@@ -62,6 +62,8 @@ from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.transcription.base import SpeechRecognizer
 from audio_transcriber.transcription.whisper_cpp_engine import (
     ASR_IMPL_VERSION,
+    DEFAULT_CHUNK_OVERLAP,
+    DEFAULT_CHUNK_SECONDS,
     WhisperCppRecognizer,
 )
 from audio_transcriber.transcription.whisper_engine import WhisperSpeechRecognizer
@@ -76,6 +78,48 @@ def _whisper_cpp_vad_model() -> Path | None:
     return Path(raw) if raw else None
 
 
+def _parse_env_float(name: str, default: float) -> float:
+    """Разбирает необязательное число из окружения; при мусоре — значение по умолчанию."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "%s=%r — не число, использую значение по умолчанию %.1f", name, raw, default
+        )
+        return default
+    if value < 0.0:
+        logger.warning(
+            "%s=%.1f не может быть отрицательным, использую %.1f", name, value, default
+        )
+        return default
+    return value
+
+
+def _whisper_cpp_chunk_settings() -> tuple[float, float]:
+    """Настройки чанкинга длинных файлов whisper.cpp из окружения.
+
+    ``WHISPER_CPP_CHUNK_SECONDS`` — целевая длина куска (0 — чанкинг выключен,
+    прежнее поведение), ``WHISPER_CPP_CHUNK_OVERLAP`` — перекрытие кусков.
+    Значения по умолчанию — :data:`DEFAULT_CHUNK_SECONDS` и
+    :data:`DEFAULT_CHUNK_OVERLAP`. Некорректные значения мягко заменяются
+    значениями по умолчанию, чтобы не ронять распознавание.
+    """
+    chunk_seconds = _parse_env_float("WHISPER_CPP_CHUNK_SECONDS", DEFAULT_CHUNK_SECONDS)
+    chunk_overlap = _parse_env_float("WHISPER_CPP_CHUNK_OVERLAP", DEFAULT_CHUNK_OVERLAP)
+    if chunk_seconds > 0.0 and chunk_overlap >= chunk_seconds:
+        logger.warning(
+            "WHISPER_CPP_CHUNK_OVERLAP=%.1f >= WHISPER_CPP_CHUNK_SECONDS=%.1f — "
+            "ограничиваю перекрытие половиной куска",
+            chunk_overlap,
+            chunk_seconds,
+        )
+        chunk_overlap = chunk_seconds / 2.0
+    return chunk_seconds, chunk_overlap
+
+
 def _build_recognizer(
     config: AppConfig, device: Device, on_progress: ProgressCallback | None = None
 ) -> SpeechRecognizer:
@@ -84,6 +128,7 @@ def _build_recognizer(
         # Silero-VAD-модель для whisper.cpp (необязательно). Если путь задан,
         # VAD выравнивается с faster-whisper (vad_filter=True) — те же условия
         # отсечения тишины/не-речи.
+        chunk_seconds, chunk_overlap = _whisper_cpp_chunk_settings()
         return WhisperCppRecognizer(
             config.whisper_cpp_model,  # type: ignore[arg-type]
             binary=config.whisper_cpp_binary,
@@ -94,6 +139,8 @@ def _build_recognizer(
             on_progress=on_progress,
             vad_filter=True,
             vad_model=_whisper_cpp_vad_model(),
+            chunk_seconds=chunk_seconds,
+            chunk_overlap=chunk_overlap,
         )
     return WhisperSpeechRecognizer(
         config.model_name,
@@ -131,9 +178,14 @@ def _asr_cache_params(
         # кэш ASR (иначе включение VAD не даст эффекта на закэшированном файле).
         vad_model = _whisper_cpp_vad_model()
         params["whisper_cpp_vad_model"] = str(vad_model) if vad_model else None
-        # Версия реализации движка: фикс потери текста (отказ от лишнего
-        # перекодирования входа) меняет результат при тех же параметрах, поэтому
-        # старый кэш с потерями должен быть пересчитан ровно один раз.
+        # Параметры чанкинга влияют на сегменты: их смена должна сбрасывать кэш
+        # (иначе изменение длины куска/перекрытия не подействует на закэшированном
+        # файле). Значения берём у самого движка — единственного источника истины.
+        if isinstance(recognizer, WhisperCppRecognizer):
+            params["whisper_cpp_chunk_seconds"] = recognizer.chunk_seconds
+            params["whisper_cpp_chunk_overlap"] = recognizer.chunk_overlap
+        # Версия реализации движка: чанкинг длинных файлов меняет результат при
+        # тех же параметрах, поэтому старый кэш должен быть пересчитан ровно раз.
         params["asr_impl_version"] = ASR_IMPL_VERSION
     else:
         params["model"] = config.model_name

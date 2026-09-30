@@ -21,6 +21,13 @@ whisper.cpp после фикса потери кусков речи выдаё�
 * одиночные шумовые слова-хвосты/заголовки у осмысленной фразы, если они
   отделены знаком конца предложения (``.``/``!``/``?``/``…``) или идут
   серией из двух и более слов;
+* шаблонные галлюцинации Whisper (субтитровые заглушки/концовки вроде
+  «Продолжение следует», «Добро пожаловать в Казахстан», «Редактор субтитров
+  …») — по спискам :data:`HALLUCINATION_PHRASES` и
+  :data:`HALLUCINATION_PREFIXES`;
+* «совсем пустые» длинные реплики по эвристике :data:`SPARSE_LONG_SECONDS` /
+  :data:`SPARSE_MAX_WORDS` / :data:`SPARSE_MAX_CHARS` (спорные случаи
+  сохраняются и только помечаются в логе);
 * нормализует пробелы и пунктуацию, оставшиеся после удаления;
 * реплики, ставшие пустыми, исключаются целиком.
 
@@ -114,6 +121,56 @@ NOISE_EXACT_WORDS: frozenset[str] = frozenset(
         "секунды",
     }
 )
+
+# Шаблонные галлюцинации Whisper: субтитровые заглушки/концовки, которые модель
+# выдаёт на тишине, музыке или неразборчивом звуке. Значения нормализованы
+# (нижний регистр, без пунктуации); совпадение — по целой реплике.
+HALLUCINATION_PHRASES: frozenset[str] = frozenset(
+    {
+        "продолжение следует",
+        "продолжение в следующей части",
+        "добро пожаловать в казахстан",
+        "спасибо за просмотр",
+        "спасибо за внимание",
+        "подписывайтесь на канал",
+        "подпишитесь на канал",
+        "ставьте лайки",
+        "до новых встреч",
+        "всем спасибо",
+        "всем пока",
+        "конец фильма",
+        "thanks for watching",
+        "thank you for watching",
+        "subscribe to my channel",
+        "please subscribe",
+    }
+)
+
+# Заглушки-«титры» с изменяемым хвостом (автор, сайт): совпадение по началу
+# фразы. Ограничение на длину не позволяет вырезать осмысленное предложение,
+# случайно начинающееся с этих слов.
+HALLUCINATION_PREFIXES: tuple[str, ...] = (
+    "субтитры",
+    "редактор субтитров",
+    "корректор субтитров",
+    "перевод субтитров",
+    "субтитры сделал",
+    "субтитры создал",
+    "субтитры подогнал",
+    "subtitles by",
+    "subtitles created by",
+    "translated by",
+    "amara.org",
+)
+HALLUCINATION_PREFIX_MAX_WORDS = 12
+
+# Эвристика «аномально мало текста на длинном интервале». Пороги — константы.
+# Срабатывание по «или» помечает реплику как подозрительную, по «и» (совсем
+# мало и слов, и символов) — удаляет: спорные случаи сохраняем, чтобы не терять
+# реальную короткую реплику, растянутую на длинный интервал.
+SPARSE_LONG_SECONDS = 20.0
+SPARSE_MAX_WORDS = 4
+SPARSE_MAX_CHARS = 14
 
 # Скобочные пометки: (...) [] {...}. Группы с внутренним содержимым, парные
 # скобки не смешиваются (открывающая определяет закрывающую).
@@ -209,6 +266,63 @@ def _has_meaningful(text: str) -> bool:
     return _MEANINGFUL_PATTERN.search(text) is not None
 
 
+# Нормализация текста для сверки с шаблонными галлюцинациями: нижний регистр,
+# пунктуация и лишние пробелы не важны.
+_MATCH_NON_WORD = re.compile(r"[^\w\s]+", re.UNICODE)
+_MATCH_WHITESPACE = re.compile(r"\s+", re.UNICODE)
+
+
+def _normalize_for_match(text: str) -> str:
+    """Нижний регистр без пунктуации — ключ для сверки с фразами-шаблонами."""
+    folded = _MATCH_NON_WORD.sub(" ", text.casefold())
+    return _MATCH_WHITESPACE.sub(" ", folded).strip()
+
+
+def _word_count(text: str) -> int:
+    """Число слов (буквенных токенов) в тексте."""
+    return len(WORD_PATTERN.findall(text))
+
+
+def _is_hallucination(text: str) -> bool:
+    """Шаблонная галлюцинация Whisper (субтитровая заглушка/концовка)?
+
+    Совпадение — по целой реплике: точное (регистр и пунктуация не важны) для
+    :data:`HALLUCINATION_PHRASES` либо по началу фразы (с ограничением длины)
+    для «титров» из :data:`HALLUCINATION_PREFIXES`.
+    """
+    normalized = _normalize_for_match(text)
+    if not normalized:
+        return False
+    if normalized in HALLUCINATION_PHRASES:
+        return True
+    return (
+        _word_count(normalized) <= HALLUCINATION_PREFIX_MAX_WORDS
+        and normalized.startswith(HALLUCINATION_PREFIXES)
+    )
+
+
+def _sparse_metrics(entry: TranscriptEntry) -> tuple[float, int, int]:
+    """(длительность, число слов, число символов) для эвристики разреженности."""
+    text = entry.text.strip()
+    return entry.end - entry.start, _word_count(text), len(text)
+
+
+def _is_sparse_long(entry: TranscriptEntry) -> bool:
+    """Подозрительно мало текста на длинном интервале (широкое условие — «или»)."""
+    duration, words, chars = _sparse_metrics(entry)
+    if duration <= SPARSE_LONG_SECONDS:
+        return False
+    return words <= SPARSE_MAX_WORDS or chars <= SPARSE_MAX_CHARS
+
+
+def _is_extreme_sparse_long(entry: TranscriptEntry) -> bool:
+    """Совсем мало и слов, и символов на длинном интервале (узкое — «и»)."""
+    duration, words, chars = _sparse_metrics(entry)
+    if duration <= SPARSE_LONG_SECONDS:
+        return False
+    return words <= SPARSE_MAX_WORDS and chars <= SPARSE_MAX_CHARS
+
+
 def _normalize(text: str) -> str:
     """Нормализует пробелы и пунктуацию после удаления пометок."""
     text = text.replace("\u00a0", " ")
@@ -286,6 +400,11 @@ class ArtifactCleaner:
     Реализует протокол ``ArtifactCleanerProtocol``.
     """
 
+    def __init__(self, *, drop_sparse_long: bool = True) -> None:
+        # Удалять ли «совсем пустые» длинные реплики (см. _is_extreme_sparse_long).
+        # При False такие реплики только помечаются в логе, но сохраняются.
+        self._drop_sparse_long = drop_sparse_long
+
     def _clean_text(self, text: str) -> tuple[str, list[str]]:
         """Возвращает очищенный текст и список удалённых артефактов.
 
@@ -326,6 +445,7 @@ class ArtifactCleaner:
         cleaned_entries: list[TranscriptEntry] = []
         removed_markers = 0
         dropped_entries = 0
+        sparse_marked = 0
         # Буфер подряд идущих «голых» шумовых реплик: одиночную сохраняем
         # (может быть реальной короткой фразой), серию из двух и более — нет.
         pending_noise: list[TranscriptEntry] = []
@@ -345,6 +465,44 @@ class ArtifactCleaner:
             pending_noise.clear()
 
         for entry in entries:
+            # Шаблонная галлюцинация Whisper — удаляем целиком до прочей очистки.
+            if _is_hallucination(entry.text):
+                flush_pending()
+                dropped_entries += 1
+                logger.debug(
+                    "Очистка артефактов: шаблонная галлюцинация удалена — «%s»",
+                    entry.text,
+                )
+                continue
+
+            # «Совсем пустая» длинная реплика — почти наверняка галлюцинация.
+            if _is_extreme_sparse_long(entry):
+                flush_pending()
+                if self._drop_sparse_long:
+                    dropped_entries += 1
+                    logger.warning(
+                        "Очистка артефактов: удалена реплика с аномально малым "
+                        "текстом на длинном интервале (%.1f с) — «%s»",
+                        entry.end - entry.start,
+                        entry.text,
+                    )
+                    continue
+                logger.warning(
+                    "Очистка артефактов: подозрительно мало текста на длинном "
+                    "интервале (%.1f с) — «%s» (оставлена)",
+                    entry.end - entry.start,
+                    entry.text,
+                )
+            elif _is_sparse_long(entry):
+                # Спорный случай: текста мало, но полностью «пустым» он не выглядит.
+                sparse_marked += 1
+                logger.warning(
+                    "Очистка артефактов: подозрительно мало текста на длинном "
+                    "интервале (%.1f с) — «%s» (оставлена)",
+                    entry.end - entry.start,
+                    entry.text,
+                )
+
             new_text, removed = self._clean_text(entry.text)
             removed_markers += len(removed)
 
@@ -387,11 +545,13 @@ class ArtifactCleaner:
 
         flush_pending()
 
-        if removed_markers or dropped_entries:
+        if removed_markers or dropped_entries or sparse_marked:
             logger.info(
-                "Очистка артефактов: удалено пометок — %d, пустых реплик — %d",
+                "Очистка артефактов: удалено пометок — %d, реплик — %d, "
+                "подозрительных длинных реплик — %d",
                 removed_markers,
                 dropped_entries,
+                sparse_marked,
             )
         else:
             logger.info("Очистка артефактов: пометок не найдено")

@@ -24,11 +24,15 @@ from audio_transcriber.domain.models import (
 )
 from audio_transcriber.pipeline import (
     _asr_cache_params,
+    _build_recognizer,
     _diarization_cache_params,
+    _whisper_cpp_chunk_settings,
     run_pipeline,
 )
 from audio_transcriber.transcription.whisper_cpp_engine import (
     ASR_IMPL_VERSION,
+    DEFAULT_CHUNK_OVERLAP,
+    DEFAULT_CHUNK_SECONDS,
     WhisperCppRecognizer,
 )
 
@@ -288,6 +292,72 @@ def test_faster_whisper_cache_params_have_no_whisper_cpp_salt(
     params = _asr_cache_params(config, Device.CPU, RecordingRecognizer())
 
     assert "asr_impl_version" not in params
+
+
+def test_asr_cache_params_include_chunk_settings(audio_file: Path, tmp_path: Path) -> None:
+    config = _whisper_cpp_config(audio_file, tmp_path)
+    recognizer = WhisperCppRecognizer(
+        config.whisper_cpp_model,  # type: ignore[arg-type]
+        chunk_seconds=15.0,
+        chunk_overlap=3.0,
+    )
+
+    params = _asr_cache_params(config, Device.CPU, recognizer)
+
+    assert params["whisper_cpp_chunk_seconds"] == 15.0
+    assert params["whisper_cpp_chunk_overlap"] == 3.0
+
+
+def test_whisper_cpp_chunk_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("WHISPER_CPP_CHUNK_SECONDS", raising=False)
+    monkeypatch.delenv("WHISPER_CPP_CHUNK_OVERLAP", raising=False)
+
+    assert _whisper_cpp_chunk_settings() == (DEFAULT_CHUNK_SECONDS, DEFAULT_CHUNK_OVERLAP)
+
+
+def test_whisper_cpp_chunk_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WHISPER_CPP_CHUNK_SECONDS", "45")
+    monkeypatch.setenv("WHISPER_CPP_CHUNK_OVERLAP", "3")
+
+    assert _whisper_cpp_chunk_settings() == (45.0, 3.0)
+
+
+def test_whisper_cpp_chunk_settings_zero_disables(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WHISPER_CPP_CHUNK_SECONDS", "0")
+
+    chunk_seconds, _overlap = _whisper_cpp_chunk_settings()
+
+    assert chunk_seconds == 0.0
+
+
+def test_whisper_cpp_chunk_settings_invalid_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WHISPER_CPP_CHUNK_SECONDS", "не число")
+    monkeypatch.setenv("WHISPER_CPP_CHUNK_OVERLAP", "-5")
+
+    assert _whisper_cpp_chunk_settings() == (DEFAULT_CHUNK_SECONDS, DEFAULT_CHUNK_OVERLAP)
+
+
+def test_whisper_cpp_chunk_settings_caps_overlap(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WHISPER_CPP_CHUNK_SECONDS", "10")
+    monkeypatch.setenv("WHISPER_CPP_CHUNK_OVERLAP", "20")
+
+    assert _whisper_cpp_chunk_settings() == (10.0, 5.0)
+
+
+def test_build_recognizer_reads_chunk_env(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("WHISPER_CPP_CHUNK_SECONDS", "12")
+    monkeypatch.setenv("WHISPER_CPP_CHUNK_OVERLAP", "1.5")
+    config = _whisper_cpp_config(audio_file, tmp_path)
+
+    recognizer = _build_recognizer(config, Device.CPU)
+
+    assert isinstance(recognizer, WhisperCppRecognizer)
+    assert recognizer.chunk_seconds == 12.0
+    assert recognizer.chunk_overlap == 1.5
 
 
 def test_diarization_cache_params_include_impl_version(

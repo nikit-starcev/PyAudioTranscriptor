@@ -210,3 +210,65 @@ def test_bare_noise_entry_with_different_stems_is_removed_when_repeated() -> Non
 
     # Разные шумовые основы, но серия из двух слов — тоже артефакт.
     assert cleaner.clean([_entry("СМЕХ АПЛОДИСМЕНТЫ")]) == []
+
+
+# --- шаблонные галлюцинации --------------------------------------------------
+
+
+def test_template_hallucinations_are_removed() -> None:
+    cleaner = ArtifactCleaner()
+    entries = [
+        _entry("Продолжение следует"),
+        _entry("Продолжение в следующей части"),
+        _entry("Добро пожаловать в Казахстан!"),
+        _entry("Спасибо за просмотр"),
+        _entry("Редактор субтитров А. Иванов"),
+        _entry("Субтитры подготовил Иван"),
+    ]
+
+    assert cleaner.clean(entries) == []
+
+
+def test_hallucination_matching_is_case_and_punctuation_insensitive() -> None:
+    cleaner = ArtifactCleaner()
+
+    assert cleaner.clean([_entry("ПРОДОЛЖЕНИЕ, СЛЕДУЕТ...")]) == []
+
+
+def test_real_phrase_mentioning_subtitles_not_at_start_is_kept() -> None:
+    cleaner = ArtifactCleaner()
+    entry = _entry("Обсудили, как делаются субтитры")
+
+    assert cleaner.clean([entry]) == [entry]
+
+
+# --- эвристика «мало текста на длинном интервале» ----------------------------
+
+
+def test_extreme_sparse_long_entry_is_removed() -> None:
+    cleaner = ArtifactCleaner()
+    entry = _entry("Спасибо.", start=0.0, end=30.0)
+
+    assert cleaner.clean([entry]) == []
+
+
+def test_sparse_long_entry_with_enough_chars_is_kept() -> None:
+    cleaner = ArtifactCleaner()
+    # 26 с, 3 слова, но 16 символов — не «совсем пусто», сохраняем.
+    entry = _entry("Пока еще ошибки.", start=300.0, end=326.0)
+
+    assert cleaner.clean([entry]) == [entry]
+
+
+def test_sparse_short_interval_is_kept() -> None:
+    cleaner = ArtifactCleaner()
+    entry = _entry("Спасибо.", start=0.0, end=1.0)
+
+    assert cleaner.clean([entry]) == [entry]
+
+
+def test_sparse_long_entry_is_kept_when_dropping_disabled() -> None:
+    cleaner = ArtifactCleaner(drop_sparse_long=False)
+    entry = _entry("Спасибо.", start=0.0, end=30.0)
+
+    assert cleaner.clean([entry]) == [entry]
