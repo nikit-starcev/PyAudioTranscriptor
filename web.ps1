@@ -3,10 +3,14 @@
 # Поднимает локальный сервер (`audio-transcriber web`) и открывает браузер.
 # Запускается двойным щелчком по web.bat либо из PowerShell:
 #
-#   .\web.ps1                # http://127.0.0.1:8765/ + браузер
-#   .\web.ps1 -Port 9000     # свой порт
+#   .\web.ps1                # 8765 либо ближайший свободный порт + браузер
+#   .\web.ps1 -Port 9000     # строго заданный порт (занят — понятная ошибка)
 #   .\web.ps1 -NoBrowser     # не открывать браузер автоматически
 #   .\web.ps1 -WebHost 0.0.0.0   # слушать на всех интерфейсах (осторожно!)
+#
+# Фактический адрес и порт печатает сама команда (`audio-transcriber web`),
+# поэтому оболочка передаёт `--port` только когда он задан явно и не дублирует
+# URL: при автоподборе порт может отличаться от 8765.
 #
 # Остановить сервер — Ctrl+C.
 
@@ -20,7 +24,10 @@ param(
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Set-Location -Path $PSScriptRoot
 
-$cliArgs = @("web", "--host", $WebHost, "--port", "$Port")
+$cliArgs = @("web", "--host", $WebHost)
+# `--port` пробрасываем только при явном указании: иначе CLI сам подберёт
+# свободный порт, а не получит «зашитый» 8765 как обязательный.
+if ($PSBoundParameters.ContainsKey("Port")) { $cliArgs += @("--port", "$Port") }
 if ($NoBrowser) { $cliArgs += "--no-browser" }
 if ($Reload) { $cliArgs += "--reload" }
 
@@ -32,7 +39,6 @@ if (-not (Test-Path $venvPython) -and -not (Get-Command uv -ErrorAction Silently
     $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
 }
 
-Write-Host "Веб-интерфейс: http://${WebHost}:${Port}/"
 Write-Host "Ctrl+C — остановить."
 
 if (Test-Path $venvPython) {

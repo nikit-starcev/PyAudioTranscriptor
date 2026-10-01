@@ -34,6 +34,12 @@ from audio_transcriber.utils.exceptions import AudioTranscriberError
 from audio_transcriber.utils.glossary_paths import normalize_glossary_paths_tuple
 from audio_transcriber.utils.hotwords import build_hotwords
 from audio_transcriber.utils.logging import setup_logging
+from audio_transcriber.utils.net import (
+    DEFAULT_WEB_PORT,
+    WEB_PORT_SCAN_LIMIT,
+    find_available_port,
+    is_port_available,
+)
 from audio_transcriber.utils.notifications import notify
 
 if TYPE_CHECKING:
@@ -818,19 +824,63 @@ def tui() -> None:
     TranscriberApp().run()
 
 
+def _resolve_web_port(ctx: typer.Context, host: str, port: int | None) -> int:
+    """Определяет фактический порт веб-сервера (issue #27).
+
+    * ``--port`` задан явно: порт используется как есть, а если занят — ошибка
+      без молчаливой подмены.
+    * ``--port`` не задан: начиная с :data:`DEFAULT_WEB_PORT` подбирается первый
+      свободный порт в пределах :data:`WEB_PORT_SCAN_LIMIT`.
+    """
+    from click.core import ParameterSource
+
+    source = ctx.get_parameter_source("port")
+    explicit = port is not None and source is not ParameterSource.DEFAULT
+
+    if explicit:
+        assert port is not None  # для mypy: explicit ⇒ port задан
+        if not is_port_available(host, port):
+            typer.echo(
+                f"Порт {port} уже занят. Освободите его или укажите другой "
+                "порт через --port.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        return port
+
+    base = DEFAULT_WEB_PORT
+    if is_port_available(host, base):
+        return base
+    selected = find_available_port(host, start=base, limit=WEB_PORT_SCAN_LIMIT)
+    if selected is None:
+        typer.echo(
+            f"Порт {base} занят, а свободных портов в диапазоне "
+            f"{base}–{base + WEB_PORT_SCAN_LIMIT} не нашлось. "
+            "Укажите свободный порт через --port.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    typer.echo(f"Порт {base} занят, использую свободный {selected}.")
+    return selected
+
+
 @app.command()
 def web(
+    ctx: typer.Context,
     host: str = typer.Option(
         "127.0.0.1",
         "--host",
         help="Адрес прослушивания (по умолчанию только локальный интерфейс).",
     ),
-    port: int = typer.Option(
-        8765,
+    port: int | None = typer.Option(
+        None,
         "--port",
         min=1,
         max=65535,
-        help="Порт локального сервера веб-интерфейса.",
+        help=(
+            "Порт локального сервера веб-интерфейса. Если не задан, "
+            f"берётся {DEFAULT_WEB_PORT}, а при занятости подбирается свободный."
+        ),
     ),
     no_browser: bool = typer.Option(
         False,
@@ -844,6 +894,8 @@ def web(
     ),
 ) -> None:
     """Запустить локальный веб-интерфейс транскрибации (127.0.0.1)."""
+    actual_port = _resolve_web_port(ctx, host, port)
+
     try:
         from audio_transcriber.web.app import serve
     except ImportError as exc:  # веб-зависимости не установлены
@@ -854,8 +906,8 @@ def web(
         )
         raise typer.Exit(code=1) from exc
 
-    typer.echo(f"Веб-интерфейс: http://{host}:{port}/")
-    serve(host=host, port=port, open_browser=not no_browser, reload=reload)
+    typer.echo(f"Веб-интерфейс: http://{host}:{actual_port}/")
+    serve(host=host, port=actual_port, open_browser=not no_browser, reload=reload)
 
 
 # --- Подкоманда glossary: локальная БД глоссария ---------------------------

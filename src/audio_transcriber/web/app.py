@@ -483,8 +483,10 @@ def register_api(
     register_glossary_routes(router, db_path=_glossary_db_path)
 
     @router.get("/health")
-    def health() -> dict[str, object]:
-        return {"status": "ok", "version": __version__}
+    def health(request: Request) -> dict[str, object]:
+        host = getattr(request.app.state, "server_host", None)
+        port = getattr(request.app.state, "server_port", None)
+        return {"status": "ok", "version": __version__, "host": host, "port": port}
 
     @router.get("/config")
     def get_config() -> dict[str, object]:
@@ -1780,4 +1782,8 @@ def serve(
         opener = threading.Timer(1.0, lambda: webbrowser.open(f"http://{host}:{port}/"))
         opener.daemon = True
         opener.start()
-    uvicorn.run(create_app(), host=host, port=port, log_level="info")
+    app = create_app()
+    # Фактический адрес сервера — доступен в ``/api/health`` (issue #27).
+    app.state.server_host = host
+    app.state.server_port = port
+    uvicorn.run(app, host=host, port=port, log_level="info")
