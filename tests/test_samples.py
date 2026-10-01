@@ -309,6 +309,34 @@ def test_extract_speaker_samples_writes_one_wav_per_speaker(
     assert np.any(frames != 0)
 
 
+def test_extract_speaker_samples_uses_provided_waveform_without_decoding(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Переданный waveform отменяет повторный декод; образец пишется из него."""
+    calls: list[Path] = []
+
+    def spy_loader(path: Path, *, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
+        calls.append(path)
+        raise AssertionError("load_waveform не должен вызываться при переданном waveform")
+
+    monkeypatch.setattr(samples, "load_waveform", spy_loader)
+    waveform = _tone_waveform(windows=((0.0, 8.0),))
+    result = _result(audio_file, [_entry(0.0, 10.0, IVAN)])
+
+    written = extract_speaker_samples(
+        result,
+        audio_path=audio_file,
+        output_dir=tmp_path / "out",
+        waveform=waveform,
+    )
+
+    assert calls == []
+    assert written["SPEAKER_00"] == tmp_path / "out" / "sample.speakers" / "Иван.wav"
+    _, _, _, frames = _read_wav(written["SPEAKER_00"])
+    assert frames.shape[0] == 8 * SAMPLE_RATE
+    assert np.abs(frames).max() > 0.9 * 32767
+
+
 def test_extract_speaker_samples_uses_shorter_clean_segment(
     audio_file: Path, tmp_path: Path, fake_audio
 ) -> None:

@@ -70,11 +70,42 @@ from audio_transcriber.transcription.whisper_cpp_engine import (
     WhisperCppRecognizer,
 )
 from audio_transcriber.transcription.whisper_engine import WhisperSpeechRecognizer
+from audio_transcriber.utils.audio import load_waveform
 from audio_transcriber.utils.device import resolve_device
 from audio_transcriber.utils.exceptions import ProcessingCancelled
 from audio_transcriber.utils.subprocess_registry import terminate_all_processes
 
 logger = logging.getLogger(__name__)
+
+
+class _SharedWaveform:
+    """Однократное декодирование 16-кГц waveform для нескольких стадий.
+
+    Диаризация, enrollment и извлечение образцов нуждаются в одном и том же
+    декодированном аудио. Если денойз уже посчитал waveform — отдаётся он;
+    иначе аудио декодируется **один раз** при первом обращении и кэшируется,
+    а последующие обращения возвращают тот же массив. Ошибка декодирования
+    мягко деградирует до ``None``: потребитель сам решит, что делать (как и
+    раньше, когда декодировал файл сам).
+    """
+
+    def __init__(self, path: Path, waveform: np.ndarray | None = None) -> None:
+        self._path = path
+        self._waveform = waveform
+        self._attempted = waveform is not None
+
+    def get(self) -> np.ndarray | None:
+        """Возвращает waveform, декодируя его при первом обращении (не более раз)."""
+        if not self._attempted:
+            self._attempted = True
+            try:
+                self._waveform = load_waveform(self._path)
+            except Exception as exc:  # noqa: BLE001 — потребитель деградирует сам
+                logger.debug(
+                    "Общий waveform: не удалось декодировать %s: %s", self._path, exc
+                )
+                self._waveform = None
+        return self._waveform
 
 
 def _whisper_cpp_vad_model() -> Path | None:
@@ -310,9 +341,11 @@ def run_pipeline(
     if denoiser is not None and config.use_cache:
         denoiser = CachingDenoiser(denoiser, cache, source=config.input_file)
     audio_path = config.input_file
-    # Декодированный 16-кГц waveform денойза (если он его посчитал): передаём
-    # в диаризацию, чтобы та не декодировала тот же файл второй раз.
-    denoised_waveform: np.ndarray | None = None
+    # Единый декодированный 16-кГц waveform для всех стадий, которым нужно
+    # аудио: диаризации, enrollment и извлечения образцов. Денойз может отдать
+    # его сразу; иначе он декодируется лениво **один раз** при первом обращении
+    # и переиспользуется, поэтому повторных декодов одного файла нет.
+    shared_waveform: _SharedWaveform | None = None
     overlaps: list[SpeakerOverlap] = []
     # Имена, сопоставленные говорящим по образцам голоса (enrollment).
     # Приоритетнее переименования по индексу (``--speaker-name``).
@@ -323,15 +356,19 @@ def run_pipeline(
             logger.info("Шумоподавление (DeepFilterNet)...")
             emit(ProgressEvent("denoise", "Шумоподавление", fraction=None))
             audio_path = denoiser.denoise(config.input_file)
-            # Если денойз уже декодировал аудио — переиспользуем на диаризации.
-            # При попадании в кэш массива в памяти нет (``last_waveform`` = None),
-            # тогда диаризация декодирует WAV сама, как и раньше.
-            if config.diarization_enabled:
-                denoised_waveform = getattr(denoiser, "last_waveform", None)
             # Явный сигнал попадания в кэш: веб-слой помечает такие стадии как
             # «из кэша» (по ``detail``), не полагаясь на эвристику по времени.
             if getattr(denoiser, "last_hit", False):
                 emit(ProgressEvent("denoise", "Шумоподавление", fraction=None, detail="из кэша"))
+        # Общий waveform нужен только когда диаризация включена: без неё
+        # говорящих нет, поэтому enrollment и извлечение образцов ничего не
+        # декодируют. При попадании денойза в кэш ``last_waveform`` = None —
+        # тогда waveform декодируется из файла один раз и переиспользуется.
+        if config.diarization_enabled:
+            shared_waveform = _SharedWaveform(
+                audio_path,
+                getattr(denoiser, "last_waveform", None) if denoiser is not None else None,
+            )
         _ensure_not_cancelled(cancel_event, "после шумоподавления")
 
         _ensure_not_cancelled(cancel_event, "перед распознаванием речи")
@@ -409,7 +446,9 @@ def run_pipeline(
                         num_speakers=config.num_speakers,
                         min_speakers=config.min_speakers,
                         max_speakers=config.max_speakers,
-                        waveform=denoised_waveform,
+                        waveform=(
+                            shared_waveform.get() if shared_waveform is not None else None
+                        ),
                     )
                 except Exception:
                     # Диаризация не порождает дочерних процессов, но отмена во
@@ -447,6 +486,7 @@ def run_pipeline(
                 device=diarization_device,
                 local_model_path=config.pyannote_local_model,
                 engine=enrollment_engine,
+                waveform=shared_waveform.get() if shared_waveform is not None else None,
             )
         _ensure_not_cancelled(cancel_event, "после сопоставления голосов")
     finally:
@@ -570,8 +610,9 @@ def run_pipeline(
         )
 
     if config.export_speaker_samples:
-        # Образцы голоса извлекаем из того же аудио, что шло в ASR/диаризацию
-        # (денойзенный файл), если оно ещё доступно; иначе — из исходного.
+        # Образцы голоса извлекаем из того же декодированного аудио, что шло в
+        # диаризацию/enrollment (денойзенный waveform), — повторного декода нет.
+        # Если общего waveform не было (диаризация отключена), берём файл.
         # Любая ошибка здесь не должна ронять конвейер: экспорт уже выполнен.
         sample_audio = audio_path if audio_path.is_file() else config.input_file
         emit(ProgressEvent("export", "Образцы голоса", fraction=None))
@@ -580,6 +621,7 @@ def run_pipeline(
                 result,
                 audio_path=sample_audio,
                 output_dir=config.output_dir,
+                waveform=shared_waveform.get() if shared_waveform is not None else None,
             )
         except Exception as exc:  # noqa: BLE001 — мягкая деградация
             logger.warning("Образцы голоса не сохранены: %s", exc)

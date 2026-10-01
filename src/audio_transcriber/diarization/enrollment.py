@@ -366,6 +366,7 @@ def assign_speaker_names(
     device: Device = Device.CPU,
     local_model_path: Path | str | None = None,
     engine: SpeakerEmbeddingEngine | None = None,
+    waveform: np.ndarray | None = None,
 ) -> dict[str, str]:
     """Сопоставляет говорящих с именами по образцам голоса.
 
@@ -373,6 +374,11 @@ def assign_speaker_names(
     не ниже ``min_similarity``). Любая ошибка (нет образцов, модель недоступна,
     битый файл) обрабатывается мягко: пишется предупреждение, возвращается
     пустой словарь. Для диагностики используйте :func:`enroll_speakers`.
+
+    ``waveform`` — уже декодированное моно аудио задачи (16 кГц float32),
+    например результат денойза. Если он передан, файл ``audio_path`` не
+    декодируется повторно; ``None`` — декодировать самому, как раньше.
+    Образцы голоса всегда читаются со своих путей.
     """
     return enroll_speakers(
         speaker_segments=speaker_segments,
@@ -382,6 +388,7 @@ def assign_speaker_names(
         device=device,
         local_model_path=local_model_path,
         engine=engine,
+        waveform=waveform,
     ).mapping
 
 
@@ -394,11 +401,16 @@ def enroll_speakers(
     device: Device = Device.CPU,
     local_model_path: Path | str | None = None,
     engine: SpeakerEmbeddingEngine | None = None,
+    waveform: np.ndarray | None = None,
 ) -> EnrollmentOutcome:
     """Сопоставляет говорящих с именами и возвращает подробный итог.
 
     Как :func:`assign_speaker_names`, но вместе с применёнными именами отдаёт
     лучших недобранных кандидатов по каждому говорящему (для статуса TUI).
+
+    ``waveform`` — необязательное уже декодированное моно аудио задачи
+    (16 кГц float32): позволяет переиспользовать результат денойза и не
+    декодировать ``audio_path`` повторно.
     """
     cleaned = _clean_references(references)
     if not cleaned:
@@ -426,17 +438,17 @@ def enroll_speakers(
         vectors: list[np.ndarray] = []
         for path in paths:
             try:
-                waveform = load_waveform(path)
+                reference_waveform = load_waveform(path)
             except Exception as exc:  # noqa: BLE001 — один битый образец не роняет всё
                 logger.warning("Enrollment: не удалось прочитать образец %s: %s", path, exc)
                 continue
-            bounds = _best_reference_window(waveform, window_seconds)
+            bounds = _best_reference_window(reference_waveform, window_seconds)
             if bounds is None:
                 logger.warning(
                     "Enrollment: образец %s почти тихий (нет речи) — пропускаю", path
                 )
                 continue
-            window = _extract_window(waveform, *bounds)
+            window = _extract_window(reference_waveform, *bounds)
             if window.size < MIN_WINDOW_SAMPLES:
                 logger.warning("Enrollment: образец %s слишком короткий — пропускаю", path)
                 continue
@@ -452,11 +464,16 @@ def enroll_speakers(
         logger.warning("Enrollment: ни один образец не обработан — имена не применены")
         return _empty_outcome()
 
-    try:
-        audio = load_waveform(audio_path)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Enrollment: не удалось прочитать аудио %s: %s", audio_path, exc)
-        return _empty_outcome()
+    if waveform is not None:
+        # Аудио уже декодировано предыдущей стадией (например, денойзом) —
+        # повторное чтение файла не нужно.
+        audio = np.asarray(waveform, dtype=np.float32).reshape(-1)
+    else:
+        try:
+            audio = load_waveform(audio_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Enrollment: не удалось прочитать аудио %s: %s", audio_path, exc)
+            return _empty_outcome()
 
     audio_prefix = energy.prefix_squares(audio)
     audio_threshold = energy.energy_threshold(

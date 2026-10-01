@@ -419,6 +419,103 @@ def test_run_pipeline_reuses_denoised_waveform_for_diarization(
     assert denoiser.closed == 1
 
 
+def test_run_pipeline_decodes_audio_once_for_all_consumers(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Денойз выключен: один декод обслуживает диаризацию, enrollment и образцы."""
+    import numpy as np
+
+    from audio_transcriber import pipeline as pipeline_module
+
+    waveform = np.full(16000, 0.5, dtype=np.float32)
+    decoded: list[Path] = []
+
+    def counting_loader(path: Path, *, sample_rate: int = 16000) -> object:
+        decoded.append(path)
+        return waveform
+
+    monkeypatch.setattr(pipeline_module, "load_waveform", counting_loader)
+
+    diarizer = RecordingDiarizer()
+    seen: dict[str, object] = {}
+
+    def fake_assign(**kwargs: object) -> dict[str, str]:
+        seen["enrollment"] = kwargs["waveform"]
+        return {}
+
+    def fake_samples(
+        result: object,
+        *,
+        audio_path: Path,
+        output_dir: Path,
+        waveform: object = None,
+    ) -> dict[str, Path]:
+        seen["samples"] = waveform
+        return {}
+
+    monkeypatch.setattr("audio_transcriber.pipeline.assign_speaker_names", fake_assign)
+    monkeypatch.setattr("audio_transcriber.pipeline.extract_speaker_samples", fake_samples)
+
+    reference = _reference_file(tmp_path)
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+        denoise=False,
+        use_cache=False,
+        speaker_references={"Иван": (reference,)},
+        voices_dir=tmp_path / "no_voices",
+        export_speaker_samples=True,
+    )
+
+    run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=FakeRecognizer(),
+        diarizer=diarizer,
+        merger=OverlapSegmentMerger(),
+    )
+
+    # Ровно один декод на весь конвейер — все потребители получили один массив.
+    assert decoded == [audio_file]
+    assert diarizer.seen_waveform is waveform
+    assert seen["enrollment"] is waveform
+    assert seen["samples"] is waveform
+
+
+def test_run_pipeline_skips_audio_decode_when_no_stage_needs_it(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Если аудио не нужно ни диаризации, ни образцам — декода нет."""
+    from audio_transcriber import pipeline as pipeline_module
+
+    decoded: list[Path] = []
+
+    def counting_loader(path: Path, *, sample_rate: int = 16000) -> object:
+        decoded.append(path)
+        raise AssertionError("декодирование не должно вызываться")
+
+    monkeypatch.setattr(pipeline_module, "load_waveform", counting_loader)
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+        denoise=False,
+        use_cache=False,
+        diarization_enabled=False,
+        export_speaker_samples=False,
+    )
+
+    run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=FakeRecognizer(),
+        merger=FakeMerger(),
+    )
+
+    assert decoded == []
+
+
 def test_run_pipeline_skips_denoise_when_disabled(audio_file: Path, tmp_path: Path) -> None:
     recognizer = RecordingRecognizer()
     diarizer = RecordingDiarizer()

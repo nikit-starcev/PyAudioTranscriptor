@@ -426,6 +426,70 @@ def test_enroll_speakers_outcome_for_matched(
     assert outcome.speaker_count == 1
 
 
+def test_assign_speaker_names_uses_waveform_without_decoding_audio(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Переданный waveform (например, из денойза) отменяет повторный декод."""
+    reference = _segment(tmp_path / "ivan.wav")
+    audio = tmp_path / "call.wav"
+    audio.write_bytes(b"")
+    decoded: list[str] = []
+
+    def loader(path: Path, *, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
+        decoded.append(path.name)
+        return np.full(sample_rate, 11.0, dtype=np.float32)
+
+    monkeypatch.setattr(enrollment, "load_waveform", loader)
+    provided = np.zeros(20 * SAMPLE_RATE, dtype=np.float32)
+    provided[0 : 3 * SAMPLE_RATE] = 100.0
+    engine = _FakeEngine({100: [1, 0, 0], 11: [0.99, 0.01, 0]})
+
+    mapping = assign_speaker_names(
+        speaker_segments=[SpeakerSegment(start=0.0, end=3.0, speaker_id="SPEAKER_00")],
+        references={"Иван": (reference,)},
+        audio_path=audio,
+        min_similarity=0.6,
+        engine=engine,
+        waveform=provided,
+    )
+
+    assert mapping == {"SPEAKER_00": "Иван"}
+    # Декодирован только образец; аудио задачи взято из переданного waveform.
+    assert decoded == ["ivan.wav"]
+
+
+def test_assign_speaker_names_decodes_audio_without_waveform(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Без waveform поведение прежнее: аудио задачи декодируется из файла."""
+    reference = _segment(tmp_path / "ivan.wav")
+    audio = tmp_path / "call.wav"
+    audio.write_bytes(b"")
+    decoded: list[str] = []
+
+    def loader(path: Path, *, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
+        decoded.append(path.name)
+        if path.name == "ivan.wav":
+            return np.full(sample_rate, 11.0, dtype=np.float32)
+        samples = np.zeros(20 * sample_rate, dtype=np.float32)
+        samples[0 : 3 * sample_rate] = 100.0
+        return samples
+
+    monkeypatch.setattr(enrollment, "load_waveform", loader)
+    engine = _FakeEngine({100: [1, 0, 0], 11: [0.99, 0.01, 0]})
+
+    mapping = assign_speaker_names(
+        speaker_segments=[SpeakerSegment(start=0.0, end=3.0, speaker_id="SPEAKER_00")],
+        references={"Иван": (reference,)},
+        audio_path=audio,
+        min_similarity=0.6,
+        engine=engine,
+    )
+
+    assert mapping == {"SPEAKER_00": "Иван"}
+    assert decoded == ["ivan.wav", "call.wav"]
+
+
 def test_reference_trims_pause_heavy_sample_to_speech(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

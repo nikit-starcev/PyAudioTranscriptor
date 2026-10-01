@@ -409,12 +409,17 @@ def extract_speaker_samples(
     output_dir: Path,
     max_duration: float = DEFAULT_MAX_SAMPLE_SECONDS,
     min_duration: float = DEFAULT_MIN_SAMPLE_SECONDS,
+    waveform: np.ndarray | None = None,
 ) -> dict[str, Path]:
     """Сохраняет по одному образцу голоса на говорящего (16 кГц моно WAV).
 
     Возвращает отображение ``speaker_id -> путь`` к записанным файлам. Говорящие
     без чистой речи или без участков с достаточной энергией пропускаются (причина
     логируется); любая ошибка чтения/записи не прерывает обработку остальных.
+
+    ``waveform`` — уже декодированное моно аудио (16 кГц float32), например
+    результат денойза или общий waveform конвейера. Если он передан, аудиофайл
+    не декодируется повторно; ``None`` — читать ``audio_path``, как раньше.
     """
     speakers_with_speech = [
         speaker for speaker in result.speakers if _clean_intervals(result.entries, speaker.id)
@@ -428,11 +433,16 @@ def extract_speaker_samples(
     if not speakers_with_speech:
         return {}
 
-    try:
-        waveform = load_waveform(audio_path)
-    except Exception as exc:  # noqa: BLE001 — мягкая деградация
-        logger.warning("Образцы голоса: не удалось прочитать аудио %s: %s", audio_path, exc)
-        return {}
+    if waveform is None:
+        try:
+            waveform = load_waveform(audio_path)
+        except Exception as exc:  # noqa: BLE001 — мягкая деградация
+            logger.warning("Образцы голоса: не удалось прочитать аудио %s: %s", audio_path, exc)
+            return {}
+    else:
+        # Аудио уже декодировано (денойзом или общей стадией конвейера) —
+        # повторное чтение файла не нужно.
+        waveform = np.asarray(waveform, dtype=np.float32).reshape(-1)
 
     planned: list[tuple[str, str, float, float]] = []
     for speaker in speakers_with_speech:
