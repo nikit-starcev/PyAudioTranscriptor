@@ -39,6 +39,8 @@ _UPDATABLE_FIELDS = frozenset(
         "stage",
         "fraction",
         "num_speakers",
+        "min_speakers",
+        "max_speakers",
         "stage_started_at",
         "stage_times",
     }
@@ -59,6 +61,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     stage TEXT,
     fraction REAL,
     num_speakers INTEGER,
+    min_speakers INTEGER,
+    max_speakers INTEGER,
     stage_started_at TEXT,
     stage_times TEXT
 )
@@ -138,6 +142,10 @@ class Job:
     fraction: float | None = None
     #: Ожидаемое число говорящих; ``None`` — автоопределение (pyannote сам решает).
     num_speakers: int | None = None
+    #: Нижняя/верхняя граница числа говорящих; ``None`` — без ограничения.
+    #: Игнорируются, если задано точное ``num_speakers``.
+    min_speakers: int | None = None
+    max_speakers: int | None = None
     #: Когда началась текущая стадия (ISO); ``None`` — стадия ещё не сообщалась.
     stage_started_at: str | None = None
     #: Длительности завершённых стадий в порядке выполнения.
@@ -193,6 +201,8 @@ class Job:
             "error": self.error,
             "result_path": self.result_path,
             "num_speakers": self.num_speakers,
+            "min_speakers": self.min_speakers,
+            "max_speakers": self.max_speakers,
             "stage_started_at": self.stage_started_at,
             "stage_times": [timing.as_dict() for timing in self.stage_times],
             "total_seconds": self.total_seconds,
@@ -229,12 +239,17 @@ class JobsDB:
         """Добавляет недостающие колонки в уже существующую таблицу.
 
         ``CREATE TABLE IF NOT EXISTS`` не меняет старую схему, поэтому для баз,
-        созданных до появления ``num_speakers``/``stage_started_at``/
-        ``stage_times``, колонки добавляем отдельно.
+        созданных до появления ``num_speakers``/``min_speakers``/
+        ``max_speakers``/``stage_started_at``/``stage_times``, колонки добавляем
+        отдельно.
         """
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
         if "num_speakers" not in columns:
             connection.execute("ALTER TABLE jobs ADD COLUMN num_speakers INTEGER")
+        if "min_speakers" not in columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN min_speakers INTEGER")
+        if "max_speakers" not in columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN max_speakers INTEGER")
         if "stage_started_at" not in columns:
             connection.execute("ALTER TABLE jobs ADD COLUMN stage_started_at TEXT")
         if "stage_times" not in columns:
@@ -247,14 +262,27 @@ class JobsDB:
         *,
         language: str | None = None,
         num_speakers: int | None = None,
+        min_speakers: int | None = None,
+        max_speakers: int | None = None,
     ) -> Job:
         """Создаёт задачу в статусе ``queued`` и возвращает её."""
         created_at = utc_now_iso()
         with self._connect() as connection:
             connection.execute(
-                "INSERT INTO jobs (id, source_path, status, created_at, language, num_speakers) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (job_id, str(source_path), STATUS_QUEUED, created_at, language, num_speakers),
+                "INSERT INTO jobs "
+                "(id, source_path, status, created_at, language, num_speakers, "
+                "min_speakers, max_speakers) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    job_id,
+                    str(source_path),
+                    STATUS_QUEUED,
+                    created_at,
+                    language,
+                    num_speakers,
+                    min_speakers,
+                    max_speakers,
+                ),
             )
         job = self.get(job_id)
         assert job is not None  # только что вставили
@@ -308,6 +336,8 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         stage=row["stage"],
         fraction=row["fraction"],
         num_speakers=row["num_speakers"],
+        min_speakers=row["min_speakers"],
+        max_speakers=row["max_speakers"],
         stage_started_at=row["stage_started_at"],
         stage_times=_parse_stage_times(row["stage_times"]),
     )

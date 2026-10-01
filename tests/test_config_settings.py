@@ -508,3 +508,78 @@ def test_protocol_auto_can_be_disabled(audio_file: Path) -> None:
 def test_protocol_auto_must_be_boolean(audio_file: Path) -> None:
     with pytest.raises(ConfigurationError):
         AppConfig(input_file=audio_file, protocol_auto="yes")  # type: ignore[arg-type]
+
+
+# --- Диаризация: диапазон говорящих и гиперпараметры pyannote ----------------
+
+def test_diarization_hyperparameters_defaults(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file)
+
+    assert config.diarization_min_duration_off == pytest.approx(0.5)
+    assert config.diarization_clustering_threshold is None
+    assert config.diarization_clustering_fb is None
+    assert config.min_speakers is None
+    assert config.max_speakers is None
+
+
+def test_min_duration_off_must_be_non_negative(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, diarization_min_duration_off=-0.1)
+
+    config = AppConfig(input_file=audio_file, diarization_min_duration_off=0.0)
+    assert config.diarization_min_duration_off == pytest.approx(0.0)
+
+
+def test_min_duration_off_must_be_number(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, diarization_min_duration_off="0.5")  # type: ignore[arg-type]
+
+
+def test_clustering_threshold_must_be_in_unit_interval(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, diarization_clustering_threshold=0.0)
+
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, diarization_clustering_threshold=1.5)
+
+    assert AppConfig(input_file=audio_file, diarization_clustering_threshold=0.6).diarization_clustering_threshold == pytest.approx(0.6)
+
+
+def test_clustering_fb_must_be_positive(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, diarization_clustering_fb=0.0)
+
+    assert AppConfig(input_file=audio_file, diarization_clustering_fb=1.5).diarization_clustering_fb == pytest.approx(1.5)
+
+
+def test_min_speakers_greater_than_max_rejected(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, min_speakers=5, max_speakers=3)
+
+
+def test_speaker_bounds_must_be_positive(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, min_speakers=0)
+
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, max_speakers=0)
+
+
+def test_speaker_range_preserved_when_valid(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file, min_speakers=2, max_speakers=4)
+
+    assert config.min_speakers == 2
+    assert config.max_speakers == 4
+
+
+def test_num_speakers_overrides_range(
+    audio_file: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level("WARNING"):
+        config = AppConfig(
+            input_file=audio_file, num_speakers=3, min_speakers=2, max_speakers=5
+        )
+
+    assert config.min_speakers is None
+    assert config.max_speakers is None
+    assert any("игнорируются" in record.message for record in caplog.records)

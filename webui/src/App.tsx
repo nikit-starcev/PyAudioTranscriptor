@@ -74,6 +74,16 @@ function parseSpeakerCount(raw: string | undefined): number | null | undefined {
   return value
 }
 
+// Настройка числа говорящих задачи для строки списка:
+// точное число приоритетнее диапазона, пустое — «авто».
+function formatSpeakerSetting(job: Job): string {
+  if (job.num_speakers != null) return `${job.num_speakers}`
+  if (job.min_speakers != null || job.max_speakers != null) {
+    return `${job.min_speakers ?? '—'}–${job.max_speakers ?? '—'}`
+  }
+  return 'авто'
+}
+
 function App() {
   const [version, setVersion] = useState<string>('')
   const [config, setConfig] = useState<ConfigInfo | null>(null)
@@ -100,7 +110,10 @@ function App() {
   const [query, setQuery] = useState('')
   const [error, setError] = useState<string | null>(null)
   // Число говорящих по каждому файлу (пустая строка — авто). Ключ — путь файла.
+  // Точное число (`speakerCounts`) приоритетнее диапазона `мин`/`макс`.
   const [speakerCounts, setSpeakerCounts] = useState<Record<string, string>>({})
+  const [speakerMins, setSpeakerMins] = useState<Record<string, string>>({})
+  const [speakerMaxs, setSpeakerMaxs] = useState<Record<string, string>>({})
   // Тайминги стадий активной задачи: завершённые (с сервера) + живой счётчик.
   const [stageTimes, setStageTimes] = useState<StageTime[]>([])
   const [finalTotalSeconds, setFinalTotalSeconds] = useState<number | null>(null)
@@ -284,15 +297,30 @@ function App() {
     async (path: string) => {
       setError(null)
       const numSpeakers = parseSpeakerCount(speakerCounts[path])
-      if (numSpeakers === undefined) {
+      const minSpeakers = parseSpeakerCount(speakerMins[path])
+      const maxSpeakers = parseSpeakerCount(speakerMaxs[path])
+      if (
+        numSpeakers === undefined ||
+        minSpeakers === undefined ||
+        maxSpeakers === undefined
+      ) {
         setError('Число говорящих должно быть целым числом не меньше 1 или пустым (авто)')
+        return
+      }
+      if (minSpeakers != null && maxSpeakers != null && minSpeakers > maxSpeakers) {
+        setError('Минимум говорящих не может быть больше максимума')
         return
       }
       try {
         const job = await api<Job>('/api/jobs', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path, num_speakers: numSpeakers }),
+          body: JSON.stringify({
+            path,
+            num_speakers: numSpeakers,
+            min_speakers: minSpeakers,
+            max_speakers: maxSpeakers,
+          }),
         })
         setActiveJobId(job.id)
         setProgress({ stage: 'queued', fraction: 0, message: 'В очереди', status: 'queued' })
@@ -306,7 +334,7 @@ function App() {
         setError(errorMessage(cause))
       }
     },
-    [refreshJobs, resetTiming, speakerCounts],
+    [refreshJobs, resetTiming, speakerCounts, speakerMins, speakerMaxs],
   )
 
   const runJob = useCallback(
@@ -604,7 +632,7 @@ function App() {
                         htmlFor={`speakers-${file.path}`}
                         className="whitespace-nowrap text-xs text-slate-400 dark:text-slate-500"
                       >
-                        Говорящих
+                        Точно
                       </label>
                       <input
                         id={`speakers-${file.path}`}
@@ -612,7 +640,7 @@ function App() {
                         min={1}
                         step={1}
                         placeholder="авто"
-                        title="Число говорящих: пусто — автоопределение"
+                        title="Точное число говорящих: пусто — автоопределение"
                         value={speakerCounts[file.path] ?? ''}
                         onChange={(event) =>
                           setSpeakerCounts((prev) => ({
@@ -620,7 +648,51 @@ function App() {
                             [file.path]: event.target.value,
                           }))
                         }
-                        className="w-16 rounded-md border border-slate-300 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder-slate-500"
+                        className="w-14 rounded-md border border-slate-300 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder-slate-500"
+                      />
+                      <label
+                        htmlFor={`min-speakers-${file.path}`}
+                        className="whitespace-nowrap text-xs text-slate-400 dark:text-slate-500"
+                      >
+                        Мин
+                      </label>
+                      <input
+                        id={`min-speakers-${file.path}`}
+                        type="number"
+                        min={1}
+                        step={1}
+                        placeholder="—"
+                        title="Нижняя граница числа говорящих: пусто — без ограничения"
+                        value={speakerMins[file.path] ?? ''}
+                        onChange={(event) =>
+                          setSpeakerMins((prev) => ({
+                            ...prev,
+                            [file.path]: event.target.value,
+                          }))
+                        }
+                        className="w-14 rounded-md border border-slate-300 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder-slate-500"
+                      />
+                      <label
+                        htmlFor={`max-speakers-${file.path}`}
+                        className="whitespace-nowrap text-xs text-slate-400 dark:text-slate-500"
+                      >
+                        Макс
+                      </label>
+                      <input
+                        id={`max-speakers-${file.path}`}
+                        type="number"
+                        min={1}
+                        step={1}
+                        placeholder="—"
+                        title="Верхняя граница числа говорящих: пусто — без ограничения"
+                        value={speakerMaxs[file.path] ?? ''}
+                        onChange={(event) =>
+                          setSpeakerMaxs((prev) => ({
+                            ...prev,
+                            [file.path]: event.target.value,
+                          }))
+                        }
+                        className="w-14 rounded-md border border-slate-300 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder-slate-500"
                       />
                     </div>
                     <button
@@ -671,7 +743,7 @@ function App() {
                         {job.stage ? `${job.stage} · ` : ''}
                         {job.fraction != null ? `${Math.round(job.fraction * 100)}%` : '—'}
                         {' · говорящих: '}
-                        {job.num_speakers != null ? job.num_speakers : 'авто'}
+                        {formatSpeakerSetting(job)}
                       </p>
                     </button>
                     <span

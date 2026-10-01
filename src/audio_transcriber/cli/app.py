@@ -14,6 +14,7 @@ from audio_transcriber.cleaning.repetition_filter import (
     DEFAULT_REPEAT_SIMILARITY,
 )
 from audio_transcriber.config.defaults import (
+    DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_ENROLLMENT_MIN_SIMILARITY,
     DEFAULT_GLOSSARY_DB,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
@@ -120,6 +121,52 @@ def transcribe(
         "-n",
         min=1,
         help="Точное количество говорящих, если оно известно заранее.",
+    ),
+    min_speakers: int | None = typer.Option(
+        None,
+        "--min-speakers",
+        min=1,
+        help=(
+            "Нижняя граница числа говорящих для диаризации (включительно). "
+            "Игнорируется, если задано --num-speakers."
+        ),
+    ),
+    max_speakers: int | None = typer.Option(
+        None,
+        "--max-speakers",
+        min=1,
+        help=(
+            "Верхняя граница числа говорящих для диаризации (включительно). "
+            "Игнорируется, если задано --num-speakers."
+        ),
+    ),
+    min_duration_off: float = typer.Option(
+        DEFAULT_DIARIZATION_MIN_DURATION_OFF,
+        "--min-duration-off",
+        min=0.0,
+        help=(
+            "Гиперпараметр pyannote segmentation.min_duration_off: паузы короче "
+            "этого значения склеиваются внутри реплики. Главный рычаг против "
+            "дробления говорящих. "
+            f"По умолчанию {DEFAULT_DIARIZATION_MIN_DURATION_OFF} (у pyannote 0.0)."
+        ),
+    ),
+    clustering_threshold: float | None = typer.Option(
+        None,
+        "--clustering-threshold",
+        help=(
+            "Гиперпараметр pyannote clustering.threshold (диапазон (0; 1]): порог "
+            "решения «один и тот же говорящий». Пусто — значение модели по умолчанию."
+        ),
+    ),
+    clustering_fb: float | None = typer.Option(
+        None,
+        "--clustering-fb",
+        help=(
+            "Гиперпараметр pyannote clustering.Fb (> 0): регуляризация "
+            "кластеризации; выше — меньше «Спикеров». "
+            "Пусто — значение модели по умолчанию."
+        ),
     ),
     diarization: bool = typer.Option(
         True,
@@ -525,6 +572,11 @@ def transcribe(
             device=device,
             export_formats=tuple(dict.fromkeys(export_format)),
             num_speakers=num_speakers,
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
+            diarization_min_duration_off=min_duration_off,
+            diarization_clustering_threshold=clustering_threshold,
+            diarization_clustering_fb=clustering_fb,
             diarization_enabled=diarization,
             speaker_names=AppConfig.parse_speaker_names(speaker_name),
             speaker_references=AppConfig.parse_speaker_references(speaker_reference),
@@ -595,6 +647,26 @@ def transcribe(
         logger.info("Диаризация: %s", "включена" if config.diarization_enabled else "выключена")
         if config.diarization_enabled:
             logger.info("Количество говорящих: %s", config.num_speakers or "автоопределение")
+            if config.min_speakers is not None or config.max_speakers is not None:
+                logger.info(
+                    "Диапазон числа говорящих: %s–%s",
+                    config.min_speakers if config.min_speakers is not None else "—",
+                    config.max_speakers if config.max_speakers is not None else "—",
+                )
+            logger.info(
+                "Гиперпараметры диаризации: min_duration_off=%s%s%s",
+                config.diarization_min_duration_off,
+                (
+                    f", clustering.threshold={config.diarization_clustering_threshold}"
+                    if config.diarization_clustering_threshold is not None
+                    else ""
+                ),
+                (
+                    f", clustering.Fb={config.diarization_clustering_fb}"
+                    if config.diarization_clustering_fb is not None
+                    else ""
+                ),
+            )
         if config.speaker_names:
             logger.info("Пользовательские имена говорящих: %s", config.speaker_names)
         resolved_references = config.resolved_speaker_references()

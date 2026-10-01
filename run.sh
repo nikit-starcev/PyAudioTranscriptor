@@ -62,6 +62,11 @@ if [ -n "${FORMATS:-}" ]; then
 fi
 
 [ -n "${NUM_SPEAKERS:-}" ] && ARGS+=(--num-speakers "$NUM_SPEAKERS")
+[ -n "${MIN_SPEAKERS:-}" ] && ARGS+=(--min-speakers "$MIN_SPEAKERS")
+[ -n "${MAX_SPEAKERS:-}" ] && ARGS+=(--max-speakers "$MAX_SPEAKERS")
+[ -n "${DIARIZATION_MIN_DURATION_OFF:-}" ] && ARGS+=(--min-duration-off "$DIARIZATION_MIN_DURATION_OFF")
+[ -n "${DIARIZATION_CLUSTERING_THRESHOLD:-}" ] && ARGS+=(--clustering-threshold "$DIARIZATION_CLUSTERING_THRESHOLD")
+[ -n "${DIARIZATION_CLUSTERING_FB:-}" ] && ARGS+=(--clustering-fb "$DIARIZATION_CLUSTERING_FB")
 
 if [ -n "${SPEAKER_NAMES:-}" ]; then
     IFS=',' read -ra NAME_LIST <<< "$SPEAKER_NAMES"

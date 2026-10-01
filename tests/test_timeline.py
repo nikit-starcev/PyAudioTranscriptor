@@ -182,7 +182,14 @@ class _Recognizer:
 
 
 class _Diarizer:
-    def diarize(self, audio_path: Path, *, num_speakers: int | None = None):
+    def diarize(
+        self,
+        audio_path: Path,
+        *,
+        num_speakers: int | None = None,
+        min_speakers: int | None = None,
+        max_speakers: int | None = None,
+    ):
         return [SpeakerSegment(start=0.0, end=2.0, speaker_id="SPEAKER_00")]
 
 

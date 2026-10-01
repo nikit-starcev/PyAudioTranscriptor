@@ -21,6 +21,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_CONTEXT_SIZE as DEFAULT_LLM_CONTEXT_SIZE,
 )
 from audio_transcriber.config.defaults import (
+    DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_ENROLLMENT_MIN_SIMILARITY,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
     DEFAULT_VOICES_DIR,
@@ -70,6 +71,18 @@ class AppConfig:
     device: Device = Device.AUTO
     export_formats: tuple[ExportFormat, ...] = (ExportFormat.TXT,)
     num_speakers: int | None = None
+    # Диапазон числа говорящих для диаризации (аргументы вызова пайплайна
+    # pyannote). Заданный ``num_speakers`` приоритетнее: тогда диапазон
+    # игнорируется (см. ``_validate``). ``None`` — ограничение не задано.
+    min_speakers: int | None = None
+    max_speakers: int | None = None
+    # Гиперпараметры диаризации pyannote, применяемые через
+    # ``pipeline.instantiate(...)`` после загрузки модели. ``min_duration_off``
+    # — главный рычаг против дробления реплик (дефолт у нас 0.5, у pyannote 0.0).
+    # ``clustering.*`` — грубые рычаги числа говорящих; ``None`` — дефолт модели.
+    diarization_min_duration_off: float = DEFAULT_DIARIZATION_MIN_DURATION_OFF
+    diarization_clustering_threshold: float | None = None
+    diarization_clustering_fb: float | None = None
     # Размечать говорящих (диаризация). При False конвейер идёт без спикеров:
     # локальная модель и токен Hugging Face не нужны.
     diarization_enabled: bool = True
@@ -190,6 +203,9 @@ class AppConfig:
 
         if self.num_speakers is not None and self.num_speakers < 1:
             raise ConfigurationError("Количество говорящих должно быть положительным числом")
+
+        self._validate_speaker_range()
+        self._validate_diarization_hyperparameters()
 
         if not isinstance(self.diarization_enabled, bool):
             raise ConfigurationError("DIARIZATION_ENABLED должно быть true или false")
@@ -317,6 +333,70 @@ class AppConfig:
             for reference_path in reference_paths:
                 if not reference_path.is_file():
                     raise ConfigurationError(f"Образец голоса не найден: {reference_path}")
+
+    def _validate_speaker_range(self) -> None:
+        """Проверяет диапазон числа говорящих (``min_speakers``/``max_speakers``).
+
+        Границы должны быть положительными, а ``min`` не больше ``max``. Точное
+        число говорящих (``num_speakers``) приоритетнее диапазона, поэтому при
+        его наличии границы сбрасываются с предупреждением — так поведение
+        конвейера и ключ кэша остаются однозначными.
+        """
+        for name, value in (
+            ("MIN_SPEAKERS", self.min_speakers),
+            ("MAX_SPEAKERS", self.max_speakers),
+        ):
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ConfigurationError(f"{name} должно быть целым числом")
+            if value < 1:
+                raise ConfigurationError(f"{name} должно быть положительным числом")
+
+        if (
+            self.min_speakers is not None
+            and self.max_speakers is not None
+            and self.min_speakers > self.max_speakers
+        ):
+            raise ConfigurationError(
+                "MIN_SPEAKERS не может быть больше MAX_SPEAKERS "
+                f"({self.min_speakers} > {self.max_speakers})"
+            )
+
+        if self.num_speakers is not None and (
+            self.min_speakers is not None or self.max_speakers is not None
+        ):
+            logger.warning(
+                "Задано точное число говорящих (%d) — MIN_SPEAKERS/MAX_SPEAKERS "
+                "игнорируются",
+                self.num_speakers,
+            )
+            self.min_speakers = None
+            self.max_speakers = None
+
+    def _validate_diarization_hyperparameters(self) -> None:
+        """Проверяет гиперпараметры диаризации (pyannote)."""
+        min_duration_off = self.diarization_min_duration_off
+        if isinstance(min_duration_off, bool) or not isinstance(min_duration_off, (int, float)):
+            raise ConfigurationError("DIARIZATION_MIN_DURATION_OFF должно быть числом")
+        if min_duration_off < 0.0:
+            raise ConfigurationError("DIARIZATION_MIN_DURATION_OFF не может быть отрицательным")
+
+        threshold = self.diarization_clustering_threshold
+        if threshold is not None:
+            if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
+                raise ConfigurationError("DIARIZATION_CLUSTERING_THRESHOLD должно быть числом")
+            if not (0.0 < threshold <= 1.0):
+                raise ConfigurationError(
+                    "DIARIZATION_CLUSTERING_THRESHOLD должно быть числом в диапазоне (0; 1]"
+                )
+
+        fb = self.diarization_clustering_fb
+        if fb is not None:
+            if isinstance(fb, bool) or not isinstance(fb, (int, float)):
+                raise ConfigurationError("DIARIZATION_CLUSTERING_FB должно быть числом")
+            if fb <= 0.0:
+                raise ConfigurationError("DIARIZATION_CLUSTERING_FB должно быть положительным числом")
 
     def resolved_cache_dir(self) -> Path:
         """Каталог постадийного кэша: ``cache_dir`` или ``<output_dir>/.cache``."""

@@ -50,7 +50,14 @@ class RecordingDiarizer:
     def __init__(self) -> None:
         self.calls = 0
 
-    def diarize(self, audio_path: Path, *, num_speakers: int | None = None):
+    def diarize(
+        self,
+        audio_path: Path,
+        *,
+        num_speakers: int | None = None,
+        min_speakers: int | None = None,
+        max_speakers: int | None = None,
+    ):
         self.calls += 1
         return [SpeakerSegment(0.0, 1.0, "SPEAKER_00")]
 
@@ -384,6 +391,64 @@ def test_diarization_cache_key_changes_with_impl_version(
     )
     after = compute_cache_key(
         "diarization", audio_file, _diarization_cache_params(config, Device.CPU, RecordingDiarizer())
+    )
+
+    assert before != after
+
+
+def test_diarization_cache_params_include_hyperparameters(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    config = _config(
+        audio_file,
+        tmp_path,
+        diarization_min_duration_off=0.7,
+        diarization_clustering_threshold=0.6,
+        diarization_clustering_fb=1.5,
+        min_speakers=2,
+        max_speakers=5,
+    )
+
+    params = _diarization_cache_params(config, Device.CPU, RecordingDiarizer())
+
+    assert params["min_duration_off"] == pytest.approx(0.7)
+    assert params["clustering_threshold"] == pytest.approx(0.6)
+    assert params["clustering_fb"] == pytest.approx(1.5)
+    assert params["min_speakers"] == 2
+    assert params["max_speakers"] == 5
+
+
+def test_diarization_cache_key_changes_with_min_duration_off(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    base = _config(audio_file, tmp_path, diarization_min_duration_off=0.0)
+    changed = _config(audio_file, tmp_path, diarization_min_duration_off=0.5)
+
+    before = compute_cache_key(
+        "diarization", audio_file, _diarization_cache_params(base, Device.CPU, RecordingDiarizer())
+    )
+    after = compute_cache_key(
+        "diarization",
+        audio_file,
+        _diarization_cache_params(changed, Device.CPU, RecordingDiarizer()),
+    )
+
+    assert before != after
+
+
+def test_diarization_cache_key_changes_with_speaker_range(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    base = _config(audio_file, tmp_path)
+    changed = _config(audio_file, tmp_path, min_speakers=2, max_speakers=4)
+
+    before = compute_cache_key(
+        "diarization", audio_file, _diarization_cache_params(base, Device.CPU, RecordingDiarizer())
+    )
+    after = compute_cache_key(
+        "diarization",
+        audio_file,
+        _diarization_cache_params(changed, Device.CPU, RecordingDiarizer()),
     )
 
     assert before != after

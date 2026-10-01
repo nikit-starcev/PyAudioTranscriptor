@@ -421,6 +421,103 @@ def test_transcribe_quality_flags(
     assert config.repeat_similarity == pytest.approx(0.8)
 
 
+def test_transcribe_diarization_hyperparameters_defaults(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 0
+    config = captured["config"]
+    # Наш дефолт против дробления реплик — 0.5 (у pyannote 0.0).
+    assert config.diarization_min_duration_off == pytest.approx(0.5)
+    assert config.diarization_clustering_threshold is None
+    assert config.diarization_clustering_fb is None
+    assert config.min_speakers is None
+    assert config.max_speakers is None
+
+
+def test_transcribe_diarization_hyperparameter_flags(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(
+        app,
+        [
+            "transcribe",
+            str(audio_file),
+            "-o",
+            str(tmp_path / "out"),
+            "--min-duration-off",
+            "0.8",
+            "--clustering-threshold",
+            "0.6",
+            "--clustering-fb",
+            "1.5",
+            "--min-speakers",
+            "2",
+            "--max-speakers",
+            "5",
+        ],
+    )
+
+    assert result.exit_code == 0
+    config = captured["config"]
+    assert config.diarization_min_duration_off == pytest.approx(0.8)
+    assert config.diarization_clustering_threshold == pytest.approx(0.6)
+    assert config.diarization_clustering_fb == pytest.approx(1.5)
+    assert config.min_speakers == 2
+    assert config.max_speakers == 5
+
+
+def test_transcribe_rejects_negative_min_duration_off(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "transcribe",
+            str(audio_file),
+            "-o",
+            str(tmp_path / "out"),
+            "--min-duration-off",
+            "-1",
+        ],
+    )
+
+    assert result.exit_code != 0
+
+
+def test_transcribe_rejects_min_greater_than_max_speakers(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(
+        app,
+        [
+            "transcribe",
+            str(audio_file),
+            "-o",
+            str(tmp_path / "out"),
+            "--min-speakers",
+            "5",
+            "--max-speakers",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 1
+
+
 def test_transcribe_rejects_positive_confidence_threshold(
     audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

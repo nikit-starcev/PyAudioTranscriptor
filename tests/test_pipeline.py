@@ -29,7 +29,14 @@ class FakeRecognizer:
 
 
 class FakeDiarizer:
-    def diarize(self, audio_path: Path, *, num_speakers: int | None = None):
+    def diarize(
+        self,
+        audio_path: Path,
+        *,
+        num_speakers: int | None = None,
+        min_speakers: int | None = None,
+        max_speakers: int | None = None,
+    ):
         return [SpeakerSegment(start=0.0, end=1.0, speaker_id="SPEAKER_00")]
 
 
@@ -299,7 +306,14 @@ class RecordingDiarizer:
     def __init__(self) -> None:
         self.seen: list[Path] = []
 
-    def diarize(self, audio_path: Path, *, num_speakers: int | None = None):
+    def diarize(
+        self,
+        audio_path: Path,
+        *,
+        num_speakers: int | None = None,
+        min_speakers: int | None = None,
+        max_speakers: int | None = None,
+    ):
         self.seen.append(audio_path)
         return [SpeakerSegment(start=0.0, end=1.0, speaker_id="SPEAKER_00")]
 

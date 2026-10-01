@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from audio_transcriber.config.defaults import DEFAULT_DIARIZATION_MIN_DURATION_OFF
 from audio_transcriber.diarization.overlap import compute_overlap_regions
 from audio_transcriber.domain.enums import Device
 from audio_transcriber.domain.models import SpeakerOverlap, SpeakerSegment
@@ -30,6 +31,9 @@ class PyannoteSpeakerDiarizer:
         hf_token: str | None = None,
         local_model_path: Path | str | None = None,
         on_progress: ProgressCallback | None = None,
+        min_duration_off: float = DEFAULT_DIARIZATION_MIN_DURATION_OFF,
+        clustering_threshold: float | None = None,
+        clustering_fb: float | None = None,
     ) -> None:
         self._device = device
         self._pipeline_name = pipeline_name
@@ -38,8 +42,57 @@ class PyannoteSpeakerDiarizer:
         self._hf_token = (
             hf_token or os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
         )
+        self._min_duration_off = min_duration_off
+        self._clustering_threshold = clustering_threshold
+        self._clustering_fb = clustering_fb
         self._pipeline: Any = None
         self._overlaps: list[SpeakerOverlap] = []
+
+    def _hyperparameters(self) -> dict[str, Any]:
+        """Собирает гиперпараметры диаризации для ``pipeline.instantiate``.
+
+        Возвращает только явно заданные параметры: ``min_duration_off``
+        передаётся всегда (наш дефолт 0.5), а ``clustering.threshold`` и
+        ``clustering.Fb`` — лишь когда заданы, чтобы остальные значения
+        остались дефолтами модели.
+        """
+        params: dict[str, Any] = {}
+        segmentation: dict[str, Any] = {}
+        if self._min_duration_off is not None:
+            segmentation["min_duration_off"] = self._min_duration_off
+        if segmentation:
+            params["segmentation"] = segmentation
+        clustering: dict[str, Any] = {}
+        if self._clustering_threshold is not None:
+            clustering["threshold"] = self._clustering_threshold
+        if self._clustering_fb is not None:
+            clustering["Fb"] = self._clustering_fb
+        if clustering:
+            params["clustering"] = clustering
+        return params
+
+    def _apply_hyperparameters(self, pipeline: Any) -> None:
+        """Применяет гиперпараметры к загруженному пайплайну.
+
+        ``instantiate`` в текущих версиях pyannote бросает исключение на
+        неизвестный параметр, а не только предупреждает. Чтобы смена набора
+        параметров между версиями не роняла диаризацию, ошибку логируем и
+        оставляем дефолты модели.
+        """
+        params = self._hyperparameters()
+        if not params:
+            return
+        try:
+            pipeline.instantiate(params)
+        except Exception as exc:  # noqa: BLE001 — версионная совместимость параметров
+            logger.warning(
+                "Не удалось применить гиперпараметры диаризации %s: %s — "
+                "использую значения модели по умолчанию",
+                params,
+                exc,
+            )
+            return
+        logger.debug("Гиперпараметры диаризации применены: %s", params)
 
     def _load_pipeline(self) -> Any:
         if self._pipeline is not None:
@@ -78,11 +131,22 @@ class PyannoteSpeakerDiarizer:
                 f"Модель диаризации '{self._pipeline_name}' не найдена или недоступна"
             )
 
+        # Гиперпараметры применяем сразу после загрузки, до переноса на
+        # устройство (``instantiate`` вызывает повторную инициализацию пайплайна).
+        self._apply_hyperparameters(pipeline)
+
         pipeline.to(torch.device(self._device.value))
         self._pipeline = pipeline
         return self._pipeline
 
-    def diarize(self, audio_path: Path, *, num_speakers: int | None = None) -> list[SpeakerSegment]:
+    def diarize(
+        self,
+        audio_path: Path,
+        *,
+        num_speakers: int | None = None,
+        min_speakers: int | None = None,
+        max_speakers: int | None = None,
+    ) -> list[SpeakerSegment]:
         pipeline = self._load_pipeline()
 
         import torch
@@ -95,6 +159,18 @@ class PyannoteSpeakerDiarizer:
         }
 
         try:
+            # Точное число говорящих приоритетнее диапазона: pyannote сам
+            # разрешает приоритет ``num_speakers`` над min/max, но мы не
+            # передаём лишние аргументы, чтобы не зависеть от версии.
+            speaker_kwargs: dict[str, int] = {}
+            if num_speakers is not None:
+                speaker_kwargs["num_speakers"] = num_speakers
+            else:
+                if min_speakers is not None:
+                    speaker_kwargs["min_speakers"] = min_speakers
+                if max_speakers is not None:
+                    speaker_kwargs["max_speakers"] = max_speakers
+
             emit = self._on_progress
             if emit is not None:
 
@@ -125,12 +201,12 @@ class PyannoteSpeakerDiarizer:
                         )
                     )
 
-                output = pipeline(audio_input, num_speakers=num_speakers, hook=_hook)
+                output = pipeline(audio_input, hook=_hook, **speaker_kwargs)
             else:
                 # ProgressHook показывает прогресс внутренних этапов
                 # (сегментация, эмбеддинги, кластеризация) в консоли.
                 with ProgressHook() as hook:
-                    output = pipeline(audio_input, num_speakers=num_speakers, hook=hook)
+                    output = pipeline(audio_input, hook=hook, **speaker_kwargs)
         except Exception as exc:
             raise DiarizationError(
                 f"Ошибка при определении говорящих в файле {audio_path}: {exc}"

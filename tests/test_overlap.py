@@ -185,7 +185,14 @@ class _FakeRecognizer:
 
 
 class _OverlapDiarizer:
-    def diarize(self, audio_path: Path, *, num_speakers: int | None = None):
+    def diarize(
+        self,
+        audio_path: Path,
+        *,
+        num_speakers: int | None = None,
+        min_speakers: int | None = None,
+        max_speakers: int | None = None,
+    ):
         return [SpeakerSegment(start=0.0, end=2.0, speaker_id="SPEAKER_00")]
 
     def overlap_regions(self):
@@ -241,7 +248,14 @@ def test_pipeline_skips_overlap_when_disabled(audio_file: Path, tmp_path: Path) 
 
 def test_pipeline_degrades_without_overlap_method(audio_file: Path, tmp_path: Path) -> None:
     class _PlainDiarizer:
-        def diarize(self, audio_path: Path, *, num_speakers: int | None = None):
+        def diarize(
+            self,
+            audio_path: Path,
+            *,
+            num_speakers: int | None = None,
+            min_speakers: int | None = None,
+            max_speakers: int | None = None,
+        ):
             return [SpeakerSegment(start=0.0, end=2.0, speaker_id="SPEAKER_00")]
 
     config = AppConfig(
@@ -395,7 +409,14 @@ def test_apply_overlap_regions_no_regions_is_noop() -> None:
 class _DisjointOverlapDiarizer:
     """Эксклюзивные сегменты не пересекаются, но зона наложения — с участниками."""
 
-    def diarize(self, audio_path: Path, *, num_speakers: int | None = None):
+    def diarize(
+        self,
+        audio_path: Path,
+        *,
+        num_speakers: int | None = None,
+        min_speakers: int | None = None,
+        max_speakers: int | None = None,
+    ):
         return [
             SpeakerSegment(start=0.0, end=1.0, speaker_id="SPEAKER_00"),
             SpeakerSegment(start=1.0, end=2.0, speaker_id="SPEAKER_01"),
@@ -453,7 +474,14 @@ def test_pipeline_old_cache_overlaps_mark_without_names(
 ) -> None:
     # Старый формат зон (без участников): реплика помечается, extras пусты.
     class _OldFormatDiarizer:
-        def diarize(self, audio_path: Path, *, num_speakers: int | None = None):
+        def diarize(
+            self,
+            audio_path: Path,
+            *,
+            num_speakers: int | None = None,
+            min_speakers: int | None = None,
+            max_speakers: int | None = None,
+        ):
             return [SpeakerSegment(start=0.0, end=2.0, speaker_id="SPEAKER_00")]
 
         def overlap_regions(self):

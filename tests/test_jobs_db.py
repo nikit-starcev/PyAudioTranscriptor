@@ -58,6 +58,36 @@ def test_update_num_speakers(tmp_path: Path) -> None:
     assert updated.num_speakers is None
 
 
+def test_create_job_with_speaker_range(tmp_path: Path) -> None:
+    db = _make_db(tmp_path)
+
+    job = db.create("job-1", tmp_path / "a.mp3", min_speakers=2, max_speakers=5)
+
+    assert job.min_speakers == 2
+    assert job.max_speakers == 5
+    fetched = db.get("job-1")
+    assert fetched is not None
+    payload = fetched.as_dict()
+    assert payload["min_speakers"] == 2
+    assert payload["max_speakers"] == 5
+
+
+def test_update_speaker_range(tmp_path: Path) -> None:
+    db = _make_db(tmp_path)
+    db.create("job-1", tmp_path / "a.mp3")
+
+    updated = db.update("job-1", min_speakers=1, max_speakers=4)
+
+    assert updated is not None
+    assert updated.min_speakers == 1
+    assert updated.max_speakers == 4
+
+    reset = db.update("job-1", min_speakers=None, max_speakers=None)
+    assert reset is not None
+    assert reset.min_speakers is None
+    assert reset.max_speakers is None
+
+
 def test_migration_adds_num_speakers_to_existing_table(tmp_path: Path) -> None:
     """Старая база без колонки ``num_speakers`` аккуратно мигрируется."""
     path = tmp_path / "jobs.db"
@@ -86,6 +116,28 @@ def test_migration_adds_num_speakers_to_existing_table(tmp_path: Path) -> None:
     with sqlite3.connect(path) as connection:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
     assert "num_speakers" in columns
+
+
+def test_migration_adds_speaker_range_columns(tmp_path: Path) -> None:
+    """Старая база без колонок ``min_speakers``/``max_speakers`` мигрируется."""
+    path = tmp_path / "jobs.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE jobs ("
+            "id TEXT PRIMARY KEY, source_path TEXT NOT NULL, status TEXT NOT NULL, "
+            "created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, "
+            "language TEXT, duration REAL, error TEXT, result_path TEXT, "
+            "stage TEXT, fraction REAL, num_speakers INTEGER)"
+        )
+
+    db = JobsDB(path)
+    db.initialize()
+
+    assert db.create("new", tmp_path / "new.mp3", min_speakers=2, max_speakers=4).max_speakers == 4
+
+    with sqlite3.connect(path) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
+    assert {"min_speakers", "max_speakers"} <= columns
 
 
 def test_get_missing_job_returns_none(tmp_path: Path) -> None:

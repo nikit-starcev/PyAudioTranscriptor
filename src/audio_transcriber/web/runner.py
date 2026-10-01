@@ -207,6 +207,8 @@ class JobRunner:
             job = self._store.get(job_id)
             if job is not None:
                 config.num_speakers = job.num_speakers
+                config.min_speakers = job.min_speakers
+                config.max_speakers = job.max_speakers
             result = self._pipeline_fn(
                 config, on_progress=self._progress_callback(job_id, timer)
             )

@@ -177,17 +177,23 @@ class CreateJobRequest(BaseModel):
     """Тело ``POST /api/jobs``.
 
     ``num_speakers`` — необязательное ожидаемое число говорящих; ``None``
-    (по умолчанию) — автоопределение диаризатором.
+    (по умолчанию) — автоопределение диаризатором. ``min_speakers``/
+    ``max_speakers`` задают диапазон (``None`` — без ограничения); при
+    заданном ``num_speakers`` диапазон игнорируется.
     """
 
     path: str
     num_speakers: int | None = Field(default=None, ge=1)
+    min_speakers: int | None = Field(default=None, ge=1)
+    max_speakers: int | None = Field(default=None, ge=1)
 
 
 class UpdateJobRequest(BaseModel):
     """Тело ``PATCH /api/jobs/{id}``: правка числа говорящих до/после запуска."""
 
     num_speakers: int | None = Field(default=None, ge=1)
+    min_speakers: int | None = Field(default=None, ge=1)
+    max_speakers: int | None = Field(default=None, ge=1)
 
 
 class MergeSpec(BaseModel):
@@ -643,8 +649,13 @@ def register_api(
     @router.post("/jobs", status_code=201)
     def create_job(payload: CreateJobRequest) -> dict[str, object]:
         source = _resolve_input_path(paths, payload.path)
+        _validate_speaker_range(payload.min_speakers, payload.max_speakers)
         job = store.create(
-            uuid.uuid4().hex, source, num_speakers=payload.num_speakers
+            uuid.uuid4().hex,
+            source,
+            num_speakers=payload.num_speakers,
+            min_speakers=payload.min_speakers,
+            max_speakers=payload.max_speakers,
         )
         return job_payload(job)
 
@@ -654,9 +665,20 @@ def register_api(
         job = _require_job(store, job_id)
         if job.status == STATUS_RUNNING and runner.is_active(job_id):
             raise HTTPException(status_code=409, detail="Задача уже выполняется")
-        if "num_speakers" not in payload.model_fields_set:
+        speech_fields = {"num_speakers", "min_speakers", "max_speakers"}
+        provided = payload.model_fields_set & speech_fields
+        if not provided:
             raise HTTPException(status_code=400, detail="Нет полей для обновления")
-        updated = store.update(job_id, num_speakers=payload.num_speakers)
+        # Диапазон проверяем по итоговым (слитым со строкой) значениям.
+        effective_min = (
+            payload.min_speakers if "min_speakers" in provided else job.min_speakers
+        )
+        effective_max = (
+            payload.max_speakers if "max_speakers" in provided else job.max_speakers
+        )
+        _validate_speaker_range(effective_min, effective_max)
+        updates = {field_name: getattr(payload, field_name) for field_name in provided}
+        updated = store.update(job_id, **updates)
         return job_payload(updated) if updated is not None else job_payload(job)
 
     @router.get("/jobs/{job_id}")
@@ -1379,6 +1401,25 @@ def _require_job(store: JobsDB, job_id: str) -> Job:
     if job is None:
         raise HTTPException(status_code=404, detail="Задача не найдена")
     return job
+
+
+def _validate_speaker_range(
+    min_speakers: int | None, max_speakers: int | None
+) -> None:
+    """Проверяет, что нижняя граница числа говорящих не превышает верхнюю.
+
+    Отдельные значения (>= 1) уже проверены Pydantic; здесь — только
+    согласованность диапазона.
+    """
+    if (
+        min_speakers is not None
+        and max_speakers is not None
+        and min_speakers > max_speakers
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="min_speakers не может быть больше max_speakers",
+        )
 
 
 def _result_path(paths: WebPaths, job: Job) -> Path:

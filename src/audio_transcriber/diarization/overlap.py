@@ -22,7 +22,9 @@ _MIN_OVERLAP_SPEAKERS = 2
 # участников зон наложения (``SpeakerOverlap.speaker_ids``) меняет результат
 # при тех же входных параметрах, поэтому старый кэш должен быть пересчитан
 # ровно один раз (см. ``pipeline._diarization_cache_params``).
-DIARIZATION_IMPL_VERSION = 2
+# 3 — добавлены настраиваемые гиперпараметры диаризации (min_duration_off,
+# cluster threshold/Fb) и диапазон числа говорящих.
+DIARIZATION_IMPL_VERSION = 3
 
 
 def compute_overlap_regions(

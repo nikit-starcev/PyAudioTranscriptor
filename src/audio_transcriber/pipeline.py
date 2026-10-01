@@ -201,6 +201,14 @@ def _diarization_cache_params(
         "device": device.value,
         "denoise": config.denoise,
         "num_speakers": config.num_speakers,
+        "min_speakers": config.min_speakers,
+        "max_speakers": config.max_speakers,
+        # Гиперпараметры pyannote, применяемые через ``pipeline.instantiate``.
+        # Их смена меняет сегменты при том же входе, поэтому они обязаны
+        # участвовать в ключе кэша.
+        "min_duration_off": config.diarization_min_duration_off,
+        "clustering_threshold": config.diarization_clustering_threshold,
+        "clustering_fb": config.diarization_clustering_fb,
         "pipeline": DIARIZATION_PIPELINE,
         # Версия формата/алгоритма диаризации: добавление участников зон
         # наложения (``SpeakerOverlap.speaker_ids``) меняет результат при тех же
@@ -319,6 +327,9 @@ def run_pipeline(
                 hf_token=config.hf_token,
                 local_model_path=config.pyannote_local_model,
                 on_progress=emit,
+                min_duration_off=config.diarization_min_duration_off,
+                clustering_threshold=config.diarization_clustering_threshold,
+                clustering_fb=config.diarization_clustering_fb,
             )
             dia_key = cache.key(
                 "diarization",
@@ -343,7 +354,10 @@ def run_pipeline(
                 logger.info("Кэш диаризации: промах — определение говорящих...")
                 emit(ProgressEvent("diarization", "Определение говорящих", fraction=None))
                 speaker_segments = active_diarizer.diarize(
-                    audio_path, num_speakers=config.num_speakers
+                    audio_path,
+                    num_speakers=config.num_speakers,
+                    min_speakers=config.min_speakers,
+                    max_speakers=config.max_speakers,
                 )
                 # Зоны наложения речи — из обычной (не эксклюзивной) разметки, если
                 # движок её умеет. Отсутствие метода — не ошибка (мягкая деградация).

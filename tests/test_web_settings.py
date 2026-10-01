@@ -139,3 +139,41 @@ def test_disabled_glossary_not_applied(audio_file: Path, tmp_path: Path) -> None
     assert build_glossary(disabled) is None
     assert enabled.glossary_enabled is True
     assert build_glossary(enabled) is not None
+
+
+def test_build_job_config_reads_diarization_hyperparameters(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Изолируемся от реального config.env, чтобы проверить именно overrides.
+    monkeypatch.setattr("audio_transcriber.web.config.env_defaults", lambda: {})
+
+    config = build_job_config(
+        audio_file,
+        output_dir=tmp_path / "out",
+        data_dir=tmp_path / "data",
+        overrides={
+            "DIARIZATION_MIN_DURATION_OFF": "0.9",
+            "DIARIZATION_CLUSTERING_THRESHOLD": "0.6",
+            "DIARIZATION_CLUSTERING_FB": "1.5",
+        },
+    )
+
+    assert config.diarization_min_duration_off == pytest.approx(0.9)
+    assert config.diarization_clustering_threshold == pytest.approx(0.6)
+    assert config.diarization_clustering_fb == pytest.approx(1.5)
+
+
+def test_build_job_config_diarization_defaults(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("audio_transcriber.web.config.env_defaults", lambda: {})
+
+    config = build_job_config(
+        audio_file,
+        output_dir=tmp_path / "out",
+        data_dir=tmp_path / "data",
+    )
+
+    assert config.diarization_min_duration_off == pytest.approx(0.5)
+    assert config.diarization_clustering_threshold is None
+    assert config.diarization_clustering_fb is None

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from audio_transcriber.config.defaults import (
+    DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_GLOSSARY_DB,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
 )
@@ -47,6 +48,15 @@ def _as_float(raw: str | None, default: float) -> float:
         return float(raw.strip())
     except ValueError:
         return default
+
+
+def _as_optional_float(raw: str | None) -> float | None:
+    if raw is None or not raw.strip():
+        return None
+    try:
+        return float(raw.strip())
+    except ValueError:
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +158,9 @@ def build_job_config(
     wcp_model_raw = defaults.get("WHISPER_CPP_MODEL", "").strip()
     llm_model_raw = defaults.get("LLM_MODEL", "").strip()
     glossary_path_raw = defaults.get("GLOSSARY_PATH", "").strip()
+    min_duration_off_raw = defaults.get("DIARIZATION_MIN_DURATION_OFF", "").strip()
+    clustering_threshold_raw = defaults.get("DIARIZATION_CLUSTERING_THRESHOLD", "").strip()
+    clustering_fb_raw = defaults.get("DIARIZATION_CLUSTERING_FB", "").strip()
 
     return AppConfig(
         input_file=source_path,
@@ -158,6 +171,11 @@ def build_job_config(
         export_formats=_env_export_formats(defaults),
         num_speakers=None,
         diarization_enabled=_as_bool(defaults.get("DIARIZATION_ENABLED"), default=True),
+        diarization_min_duration_off=_as_float(
+            min_duration_off_raw, DEFAULT_DIARIZATION_MIN_DURATION_OFF
+        ),
+        diarization_clustering_threshold=_as_optional_float(clustering_threshold_raw),
+        diarization_clustering_fb=_as_optional_float(clustering_fb_raw),
         export_speaker_samples=True,
         hf_token=defaults.get("HF_TOKEN") or None,
         pyannote_local_model=Path(pyannote_raw) if pyannote_raw else None,

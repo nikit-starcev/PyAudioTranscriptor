@@ -36,6 +36,8 @@ export type Job = {
   duration: number | null
   error: string | null
   num_speakers: number | null
+  min_speakers: number | null
+  max_speakers: number | null
   stage_started_at: string | null
   stage_times: StageTime[]
   total_seconds: number | null

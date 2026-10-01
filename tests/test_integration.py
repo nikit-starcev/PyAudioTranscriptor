@@ -30,7 +30,14 @@ pytestmark = pytest.mark.integration
 class SingleSpeakerDiarizer:
     """Заглушка диаризации: во всём файле говорит один человек."""
 
-    def diarize(self, audio_path: Path, *, num_speakers: int | None = None) -> list[SpeakerSegment]:
+    def diarize(
+        self,
+        audio_path: Path,
+        *,
+        num_speakers: int | None = None,
+        min_speakers: int | None = None,
+        max_speakers: int | None = None,
+    ) -> list[SpeakerSegment]:
         return [SpeakerSegment(start=0.0, end=15.0, speaker_id="SPEAKER_00")]
 
 

@@ -440,6 +440,81 @@ def test_create_job_rejects_invalid_num_speakers(client: TestClient) -> None:
     assert response.status_code == 422
 
 
+def test_create_job_with_speaker_range_reaches_config(
+    web_paths: WebPaths, config_builder
+) -> None:
+    """``min_speakers``/``max_speakers`` задачи доходят до ``AppConfig``."""
+    captured: list[tuple[int | None, int | None, int | None]] = []
+
+    def pipeline(config: AppConfig, *, on_progress=None) -> TranscriptionResult:
+        captured.append((config.num_speakers, config.min_speakers, config.max_speakers))
+        return TranscriptionResult(
+            source_path=config.input_file,
+            language="ru",
+            duration=1.0,
+            entries=[],
+            speakers=[],
+            low_confidence_threshold=-1.0,
+        )
+
+    app = create_app(
+        paths=web_paths,
+        pipeline_fn=pipeline,
+        config_builder=config_builder,
+        heartbeat=0.05,
+    )
+    with TestClient(app) as test_client:
+        uploaded = _upload(test_client)
+        created = test_client.post(
+            "/api/jobs",
+            json={"path": uploaded["name"], "min_speakers": 2, "max_speakers": 4},
+        )
+        assert created.status_code == 201
+        job_id = created.json()["id"]
+        assert created.json()["min_speakers"] == 2
+        assert created.json()["max_speakers"] == 4
+        assert test_client.get(f"/api/jobs/{job_id}").json()["min_speakers"] == 2
+
+        assert test_client.post(f"/api/jobs/{job_id}/run").status_code == 200
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            if test_client.get(f"/api/jobs/{job_id}").json()["status"] in {"done", "error"}:
+                break
+            time.sleep(0.02)
+
+    assert captured == [(None, 2, 4)]
+
+
+def test_create_job_rejects_inverted_speaker_range(client: TestClient) -> None:
+    uploaded = _upload(client)
+
+    response = client.post(
+        "/api/jobs",
+        json={"path": uploaded["name"], "min_speakers": 5, "max_speakers": 2},
+    )
+
+    assert response.status_code == 422
+
+
+def test_patch_job_speaker_range(client: TestClient) -> None:
+    uploaded = _upload(client)
+    job_id = client.post("/api/jobs", json={"path": uploaded["name"]}).json()["id"]
+
+    updated = client.patch(
+        f"/api/jobs/{job_id}", json={"min_speakers": 2, "max_speakers": 4}
+    )
+    assert updated.status_code == 200
+    assert updated.json()["min_speakers"] == 2
+    assert updated.json()["max_speakers"] == 4
+
+    # Инверсия проверяется по итоговому (слитому) диапазону.
+    assert (
+        client.patch(f"/api/jobs/{job_id}", json={"min_speakers": 6}).status_code == 422
+    )
+    # Пустое тело — обновлять нечего.
+    assert client.patch(f"/api/jobs/{job_id}", json={}).status_code == 400
+
+
 def test_patch_job_num_speakers(client: TestClient) -> None:
     uploaded = _upload(client)
     job_id = client.post("/api/jobs", json={"path": uploaded["name"]}).json()["id"]

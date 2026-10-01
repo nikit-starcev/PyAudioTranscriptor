@@ -87,6 +87,11 @@ if ($config["FORMATS"]) {
 }
 
 $cliArgs += Get-ValueArg "--num-speakers" "NUM_SPEAKERS"
+$cliArgs += Get-ValueArg "--min-speakers" "MIN_SPEAKERS"
+$cliArgs += Get-ValueArg "--max-speakers" "MAX_SPEAKERS"
+$cliArgs += Get-ValueArg "--min-duration-off" "DIARIZATION_MIN_DURATION_OFF"
+$cliArgs += Get-ValueArg "--clustering-threshold" "DIARIZATION_CLUSTERING_THRESHOLD"
+$cliArgs += Get-ValueArg "--clustering-fb" "DIARIZATION_CLUSTERING_FB"
 
 if ($config["SPEAKER_NAMES"]) {
     foreach ($name in $config["SPEAKER_NAMES"].Split(",")) {

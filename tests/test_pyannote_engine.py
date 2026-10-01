@@ -24,15 +24,34 @@ class _FakeAnnotation:
 
 
 class _FakePipeline:
+    def __init__(self) -> None:
+        # Аргументы числа говорящих, с которыми пайплайн реально вызвали
+        # (не указанные ключи отсутствуют — как в вызове движка).
+        self.speaker_kwargs: list[dict[str, object]] = []
+
     def to(self, *args: object, **kwargs: object) -> _FakePipeline:
         return self
 
-    def __call__(self, audio: object, *, num_speakers=None, hook=None):
+    def __call__(self, audio: object, *, hook=None, **kwargs: object):
         # Воспроизводим вызов pyannote: file= передаётся по ключу.
         assert hook is not None
+        self.speaker_kwargs.append(dict(kwargs))
         hook("segmentation", None, file={"uri": "test"}, total=2, completed=1)
         hook("embeddings", None, file={"uri": "test"}, total=None, completed=None)
         return _FakeAnnotation()
+
+
+class _InstantiateRecorder:
+    """Мини-пайплайн, запоминающий вызовы ``instantiate`` и умеющий падать."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.params: list[dict[str, object]] = []
+        self.error = error
+
+    def instantiate(self, params: dict[str, object]) -> None:
+        self.params.append(params)
+        if self.error is not None:
+            raise self.error
 
 
 def test_diarize_progress_hook_accepts_file_keyword(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -40,7 +59,8 @@ def test_diarize_progress_hook_accepts_file_keyword(monkeypatch: pytest.MonkeyPa
     diarizer = PyannoteSpeakerDiarizer(
         Device.CPU, on_progress=lambda event: events.append(event)
     )
-    monkeypatch.setattr(diarizer, "_load_pipeline", lambda: _FakePipeline())
+    pipeline = _FakePipeline()
+    monkeypatch.setattr(diarizer, "_load_pipeline", lambda: pipeline)
     monkeypatch.setattr(
         "audio_transcriber.diarization.pyannote_engine.load_waveform",
         lambda _path, **_kwargs: np.zeros(16000, dtype=np.float32),
@@ -52,3 +72,75 @@ def test_diarize_progress_hook_accepts_file_keyword(monkeypatch: pytest.MonkeyPa
     # хук отработал без TypeError и эмитил события прогресса
     assert events
     assert all(event.stage == "diarization" for event in events)
+
+
+def test_hyperparameters_default_include_min_duration_off() -> None:
+    diarizer = PyannoteSpeakerDiarizer(Device.CPU)
+
+    assert diarizer._hyperparameters() == {"segmentation": {"min_duration_off": 0.5}}
+
+
+def test_hyperparameters_include_clustering_when_set() -> None:
+    diarizer = PyannoteSpeakerDiarizer(
+        Device.CPU, clustering_threshold=0.6, clustering_fb=1.5
+    )
+
+    assert diarizer._hyperparameters() == {
+        "segmentation": {"min_duration_off": 0.5},
+        "clustering": {"threshold": 0.6, "Fb": 1.5},
+    }
+
+
+def test_apply_hyperparameters_calls_instantiate() -> None:
+    recorder = _InstantiateRecorder()
+    diarizer = PyannoteSpeakerDiarizer(
+        Device.CPU, min_duration_off=1.0, clustering_threshold=0.6
+    )
+
+    diarizer._apply_hyperparameters(recorder)
+
+    assert recorder.params == [
+        {"segmentation": {"min_duration_off": 1.0}, "clustering": {"threshold": 0.6}}
+    ]
+
+
+def test_apply_hyperparameters_swallows_unknown_parameter(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    recorder = _InstantiateRecorder(error=ValueError("parameter 'x' does not exist"))
+    diarizer = PyannoteSpeakerDiarizer(Device.CPU)
+
+    with caplog.at_level("WARNING"):
+        diarizer._apply_hyperparameters(recorder)  # не бросает исключение
+
+    assert any(
+        "гиперпараметры диаризации" in record.message.lower() for record in caplog.records
+    )
+
+
+def test_diarize_passes_speaker_range(monkeypatch: pytest.MonkeyPatch) -> None:
+    diarizer = PyannoteSpeakerDiarizer(Device.CPU, on_progress=lambda _event: None)
+    pipeline = _FakePipeline()
+    monkeypatch.setattr(diarizer, "_load_pipeline", lambda: pipeline)
+    monkeypatch.setattr(
+        "audio_transcriber.diarization.pyannote_engine.load_waveform",
+        lambda _path, **_kwargs: np.zeros(16000, dtype=np.float32),
+    )
+
+    diarizer.diarize(Path("audio.wav"), min_speakers=2, max_speakers=5)
+
+    assert pipeline.speaker_kwargs == [{"min_speakers": 2, "max_speakers": 5}]
+
+
+def test_diarize_num_speakers_overrides_range(monkeypatch: pytest.MonkeyPatch) -> None:
+    diarizer = PyannoteSpeakerDiarizer(Device.CPU, on_progress=lambda _event: None)
+    pipeline = _FakePipeline()
+    monkeypatch.setattr(diarizer, "_load_pipeline", lambda: pipeline)
+    monkeypatch.setattr(
+        "audio_transcriber.diarization.pyannote_engine.load_waveform",
+        lambda _path, **_kwargs: np.zeros(16000, dtype=np.float32),
+    )
+
+    diarizer.diarize(Path("audio.wav"), num_speakers=3, min_speakers=2, max_speakers=5)
+
+    assert pipeline.speaker_kwargs == [{"num_speakers": 3}]
