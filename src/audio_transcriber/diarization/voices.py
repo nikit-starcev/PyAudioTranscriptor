@@ -23,6 +23,12 @@ import shutil
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from audio_transcriber.diarization.reference import (
+    ReferencePrepareOptions,
+    ReferenceQuality,
+    prepare_reference,
+)
+from audio_transcriber.utils.audio import load_waveform, write_wav
 from audio_transcriber.utils.text import sanitize_filename
 
 logger = logging.getLogger(__name__)
@@ -138,6 +144,37 @@ def save_speaker_sample(source: Path, directory: Path, name: str) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, target)
     return target
+
+
+def save_reference_sample(
+    source: Path,
+    directory: Path,
+    name: str,
+    *,
+    options: ReferencePrepareOptions | None = None,
+) -> tuple[Path, ReferenceQuality | None]:
+    """Сохраняет образец в библиотеку, подготавливая его (VAD + нормализация).
+
+    Если подготовка включена (``options.enabled``), исходный аудиофайл
+    декодируется в 16 кГц моно, обрезается до речи (3–10 с) и нормализуется по
+    RMS, а качество возвращается вызывающему для предупреждений. Имя файла —
+    свободный ``<имя>.wav``/``<имя> (N).wav``. При выключенной подготовке файл
+    копируется как есть (``quality`` — ``None``). Ошибки ввода-вывода
+    пробрасываются вызывающему.
+    """
+    target = unique_sample_path(Path(directory), name)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    options = options if options is not None else ReferencePrepareOptions()
+    if not options.enabled:
+        shutil.copyfile(source, target)
+        return target, None
+
+    waveform = load_waveform(Path(source))
+    prepared = prepare_reference(waveform, options=options)
+    if prepared.waveform.size == 0:
+        raise ValueError("пустой образец после подготовки")
+    write_wav(target, prepared.waveform)
+    return target, prepared.quality
 
 
 def delete_voice_sample(path: Path, directory: Path | None = None) -> bool:

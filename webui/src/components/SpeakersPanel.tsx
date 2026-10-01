@@ -89,7 +89,12 @@ function SpeakersPanel({
         setStatus({ kind: 'info', text: `${state.sid} → ${name}` })
       } else {
         const voice = await onToLibrary(state.sid, name)
-        setStatus({ kind: 'info', text: `Сохранено в библиотеку: ${voice.name}.wav` })
+        const warnings = voice.quality?.warnings ?? []
+        const suffix = warnings.length > 0 ? ` — ⚠ ${warnings.join('; ')}` : ''
+        setStatus({
+          kind: 'info',
+          text: `Сохранено в библиотеку: ${voice.name}.wav${suffix}`,
+        })
       }
       setEdit(null)
     })

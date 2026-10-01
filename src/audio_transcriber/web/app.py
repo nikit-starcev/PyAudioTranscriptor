@@ -25,6 +25,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
+import numpy as np
 from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import (
     FileResponse,
@@ -39,6 +40,11 @@ from starlette.background import BackgroundTask
 from audio_transcriber import __version__
 from audio_transcriber.config.defaults import DEFAULT_ENROLLMENT_MIN_SIMILARITY
 from audio_transcriber.config.settings import AppConfig
+from audio_transcriber.diarization.reference import (
+    ReferencePrepareOptions,
+    ReferenceQuality,
+    prepare_reference,
+)
 from audio_transcriber.diarization.samples import (
     normalize_sample,
     select_sample_variants,
@@ -49,6 +55,7 @@ from audio_transcriber.diarization.voices import (
     collect_voice_library,
     delete_voice_sample,
     delete_voice_samples,
+    save_reference_sample,
     save_speaker_sample,
     unique_sample_path,
 )
@@ -59,7 +66,12 @@ from audio_transcriber.protocol import ProtocolArtifacts, generate_protocol
 from audio_transcriber.utils.audio import load_waveform, write_wav
 from audio_transcriber.utils.playback import amplitude_envelope, read_duration
 from audio_transcriber.utils.text import sanitize_filename
-from audio_transcriber.web.config import build_job_config, env_defaults, public_config
+from audio_transcriber.web.config import (
+    build_job_config,
+    env_defaults,
+    public_config,
+    reference_prepare_options,
+)
 from audio_transcriber.web.doctor_api import (
     build_doctor_env,
     check_hf_access,
@@ -1212,30 +1224,35 @@ def register_api(
         if not name:
             raise HTTPException(status_code=400, detail="Не указано имя образца")
         directory = resolve_voices()
+        options = reference_prepare_options()
         if payload.start is not None or payload.end is not None:
             window = _variant_window(payload.start, payload.end)
             source = Path(job.source_path)
             if not source.is_file():
                 raise HTTPException(status_code=404, detail="Исходное аудио не найдено")
             try:
-                target = _save_window_to_library(source, window, directory, name)
+                target, quality = _save_window_to_library(
+                    source, window, directory, name, options=options
+                )
             except Exception as exc:
                 raise HTTPException(
                     status_code=500, detail=f"Не удалось сохранить образец: {exc}"
                 ) from exc
-            return VoiceSample(name=base_sample_name(target.stem), path=target).as_dict()
+            return VoiceSample(name=base_sample_name(target.stem), path=target).as_dict(quality)
 
         relative = _result_samples(result).get(speaker_id)
         sample_path = _sample_path(paths, relative) if relative else None
         if sample_path is None or not sample_path.is_file():
             raise HTTPException(status_code=404, detail="Образец говорящего не найден")
         try:
-            target = save_speaker_sample(sample_path, directory, name)
-        except OSError as exc:
+            target, quality = save_reference_sample(
+                sample_path, directory, name, options=options
+            )
+        except Exception as exc:
             raise HTTPException(
                 status_code=500, detail=f"Не удалось сохранить образец: {exc}"
             ) from exc
-        return VoiceSample(name=base_sample_name(target.stem), path=target).as_dict()
+        return VoiceSample(name=base_sample_name(target.stem), path=target).as_dict(quality)
 
     @router.get("/jobs/{job_id}/audio")
     def job_audio(job_id: str, request: Request) -> Response:
@@ -1318,16 +1335,10 @@ def register_api(
             ) from exc
         target = unique_sample_path(directory, raw_name)
         suffix = Path(file.filename or "").suffix.lower()
-        if suffix == ".wav":
-            try:
-                target.write_bytes(data)
-            except OSError as exc:
-                raise HTTPException(
-                    status_code=500, detail=f"Не удалось сохранить образец: {exc}"
-                ) from exc
-        else:
-            _write_converted_wav(data, suffix, target)
-        return VoiceSample(name=base_sample_name(target.stem), path=target).as_dict()
+        quality = _save_upload_to_library(
+            data, suffix, target, options=reference_prepare_options()
+        )
+        return VoiceSample(name=base_sample_name(target.stem), path=target).as_dict(quality)
 
     @router.get("/voices/samples/{filename}/audio")
     def voice_sample_audio(filename: str) -> Response:
@@ -1545,13 +1556,18 @@ def _apply_names_error(
 
 def _write_converted_wav(data: bytes, suffix: str, target: Path) -> None:
     """Декодирует загруженный не-WAV файл и сохраняет его как 16 кГц моно WAV."""
+    waveform = _decode_upload(data, suffix)
+    write_wav(target, waveform)
+
+
+def _decode_upload(data: bytes, suffix: str) -> np.ndarray:
+    """Декодирует загруженные байты аудио в моно waveform 16 кГц float32."""
     temp_path: str | None = None
     try:
         with tempfile.NamedTemporaryFile(suffix=suffix or ".bin", delete=False) as handle:
             handle.write(data)
             temp_path = handle.name
-        waveform = load_waveform(Path(temp_path))
-        write_wav(target, waveform)
+        return load_waveform(Path(temp_path))
     except Exception as exc:
         raise HTTPException(
             status_code=400, detail=f"Не удалось декодировать аудио: {exc}"
@@ -1559,6 +1575,43 @@ def _write_converted_wav(data: bytes, suffix: str, target: Path) -> None:
     finally:
         if temp_path is not None:
             Path(temp_path).unlink(missing_ok=True)
+
+
+def _save_upload_to_library(
+    data: bytes,
+    suffix: str,
+    target: Path,
+    *,
+    options: ReferencePrepareOptions,
+) -> ReferenceQuality | None:
+    """Сохраняет загруженный образец, подготавливая его (VAD + RMS).
+
+    При выключенной подготовке поведение прежнее: WAV пишется как есть, прочие
+    форматы конвертируются в 16 кГц моно. При включённой — аудио декодируется,
+    обрезается до речи и нормализуется, а качество возвращается для API.
+    """
+    if not options.enabled:
+        if suffix == ".wav":
+            try:
+                target.write_bytes(data)
+            except OSError as exc:
+                raise HTTPException(
+                    status_code=500, detail=f"Не удалось сохранить образец: {exc}"
+                ) from exc
+        else:
+            _write_converted_wav(data, suffix, target)
+        return None
+
+    prepared = prepare_reference(_decode_upload(data, suffix), options=options)
+    if prepared.waveform.size == 0:
+        raise HTTPException(status_code=400, detail="Пустой или нечитаемый аудиофайл")
+    try:
+        write_wav(target, prepared.waveform)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Не удалось сохранить образец: {exc}"
+        ) from exc
+    return prepared.quality
 
 
 def _variant_window(start: float | None, end: float | None) -> tuple[float, float]:
@@ -1571,18 +1624,34 @@ def _variant_window(start: float | None, end: float | None) -> tuple[float, floa
 
 
 def _save_window_to_library(
-    source: Path, window: tuple[float, float], directory: Path, name: str
-) -> Path:
-    """Вырезает окно исходного аудио и сохраняет его как новый образец библиотеки."""
+    source: Path,
+    window: tuple[float, float],
+    directory: Path,
+    name: str,
+    *,
+    options: ReferencePrepareOptions,
+) -> tuple[Path, ReferenceQuality | None]:
+    """Вырезает окно исходного аудио, подготавливает и кладёт в библиотеку.
+
+    К вырезанному окну применяется та же подготовка (#29), что и к прочим
+    образцам: VAD-обрезка + RMS-нормализация. Возвращает путь и качество.
+    """
     start, end = window
-    window_wave = normalize_sample(slice_waveform(load_waveform(source), start, end))
+    window_wave = slice_waveform(load_waveform(source), start, end)
+    if options.enabled:
+        prepared = prepare_reference(window_wave, options=options)
+        window_wave = prepared.waveform
+        quality = prepared.quality
+    else:
+        window_wave = normalize_sample(window_wave)
+        quality = None
     if window_wave.size == 0:
         raise ValueError("пустое окно образца")
     tmp_dir = Path(tempfile.mkdtemp(prefix="audio-transcriber-window-"))
     try:
         tmp = tmp_dir / "window.wav"
         write_wav(tmp, window_wave)
-        return save_speaker_sample(tmp, directory, name)
+        return save_speaker_sample(tmp, directory, name), quality
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

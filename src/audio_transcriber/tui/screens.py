@@ -24,7 +24,7 @@ from audio_transcriber.diarization.voices import (
     collect_voice_library,
     delete_voice_sample,
     merge_references,
-    save_speaker_sample,
+    save_reference_sample,
 )
 from audio_transcriber.domain.editing import merge_speakers, rename_speaker
 from audio_transcriber.domain.models import SpeakerSegment, TranscriptionResult
@@ -609,13 +609,17 @@ class SpeakerEditorScreen(ModalScreen[TranscriptionResult | None]):
             return
         name = self._selected_display_name()
         try:
-            target = save_speaker_sample(sample, self._voices_dir, name)
+            target, quality = save_reference_sample(sample, self._voices_dir, name)
         except OSError as exc:
             self.app.notify(
                 f"Не удалось сохранить образец: {exc}", severity="error", timeout=8
             )
             return
-        self._set_status(f"Сохранено в библиотеку: {target.name}")
+        warnings = quality.warnings() if quality is not None else []
+        message = f"Сохранено в библиотеку: {target.name}"
+        if warnings:
+            message += " | качество: " + "; ".join(warnings)
+        self._set_status(message)
 
     def action_save(self) -> None:
         self.dismiss(self._result)

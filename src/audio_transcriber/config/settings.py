@@ -22,10 +22,14 @@ from audio_transcriber.config.defaults import (
 )
 from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
+    DEFAULT_ENROLLMENT_MAX_SAMPLE_SECONDS,
+    DEFAULT_ENROLLMENT_MIN_SAMPLE_SECONDS,
     DEFAULT_ENROLLMENT_MIN_SIMILARITY,
     DEFAULT_LLM_PROVIDER,
     DEFAULT_LLM_REQUEST_TIMEOUT,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
+    DEFAULT_REFERENCE_PREPARE,
+    DEFAULT_REFERENCE_TARGET_DBFS,
     DEFAULT_VOICES_DIR,
     VALID_LLM_PROVIDERS,
 )
@@ -96,6 +100,13 @@ class AppConfig:
     # образцов на одно имя усредняются. Инвариант после нормализации — кортеж.
     speaker_references: dict[str, tuple[Path, ...]] = field(default_factory=dict)
     enrollment_min_similarity: float = DEFAULT_ENROLLMENT_MIN_SIMILARITY
+    # Подготовка эталона голоса (#29): VAD-обрезка тишины, ограничение длины
+    # 3–10 с речи и лёгкая RMS-нормализация. Одинаково применяется к образцам
+    # (при сохранении в библиотеку и при enrollment) и к окнам говорящего.
+    reference_prepare: bool = DEFAULT_REFERENCE_PREPARE
+    enrollment_min_sample_seconds: float = DEFAULT_ENROLLMENT_MIN_SAMPLE_SECONDS
+    enrollment_max_sample_seconds: float = DEFAULT_ENROLLMENT_MAX_SAMPLE_SECONDS
+    reference_target_dbfs: float = DEFAULT_REFERENCE_TARGET_DBFS
     # Каталог-библиотека образцов голоса: каждый ``<Имя>.wav`` трактуется как
     # образец участника и добавляется к ``speaker_references``. ``None`` —
     # использовать ``./voices`` (если каталог существует). Отсутствие каталога —
@@ -344,6 +355,8 @@ class AppConfig:
                 "ENROLLMENT_MIN_SIMILARITY должно быть числом в диапазоне [-1; 1]"
             )
 
+        self._validate_reference_prepare()
+
         for name, reference_paths in self.speaker_references.items():
             if not name:
                 raise ConfigurationError("В образцах голоса не указано имя участника")
@@ -472,6 +485,36 @@ class AppConfig:
             logger.warning(
                 "LLM включена с провайдером openai, но не задано имя модели "
                 "(LLM_MODEL_NAME/--llm-model-name) — LLM-постобработка будет пропущена"
+            )
+
+    def _validate_reference_prepare(self) -> None:
+        """Проверяет параметры подготовки эталона голоса (#29)."""
+        if not isinstance(self.reference_prepare, bool):
+            raise ConfigurationError("REFERENCE_PREPARE должно быть true или false")
+
+        for name, value in (
+            ("ENROLLMENT_MIN_SAMPLE_SECONDS", self.enrollment_min_sample_seconds),
+            ("ENROLLMENT_MAX_SAMPLE_SECONDS", self.enrollment_max_sample_seconds),
+        ):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ConfigurationError(f"{name} должно быть числом")
+            if value <= 0.0:
+                raise ConfigurationError(f"{name} должно быть положительным числом")
+
+        if self.enrollment_min_sample_seconds > self.enrollment_max_sample_seconds:
+            raise ConfigurationError(
+                "ENROLLMENT_MIN_SAMPLE_SECONDS не может быть больше "
+                "ENROLLMENT_MAX_SAMPLE_SECONDS "
+                f"({self.enrollment_min_sample_seconds} > {self.enrollment_max_sample_seconds})"
+            )
+
+        if isinstance(self.reference_target_dbfs, bool) or not isinstance(
+            self.reference_target_dbfs, (int, float)
+        ):
+            raise ConfigurationError("REFERENCE_TARGET_DBFS должно быть числом")
+        if self.reference_target_dbfs >= 0.0:
+            raise ConfigurationError(
+                "REFERENCE_TARGET_DBFS должно быть отрицательным (уровень ниже 0 dBFS)"
             )
 
     def resolved_cache_dir(self) -> Path:

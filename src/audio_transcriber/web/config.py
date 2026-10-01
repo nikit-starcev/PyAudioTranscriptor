@@ -14,10 +14,15 @@ from pathlib import Path
 
 from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
+    DEFAULT_ENROLLMENT_MAX_SAMPLE_SECONDS,
+    DEFAULT_ENROLLMENT_MIN_SAMPLE_SECONDS,
     DEFAULT_GLOSSARY_DB,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
+    DEFAULT_REFERENCE_PREPARE,
+    DEFAULT_REFERENCE_TARGET_DBFS,
 )
 from audio_transcriber.config.settings import AppConfig
+from audio_transcriber.diarization.reference import ReferencePrepareOptions
 from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
 from audio_transcriber.utils.config_env import load_config_env
 from audio_transcriber.utils.glossary_paths import normalize_glossary_paths_tuple
@@ -137,6 +142,27 @@ def _env_device(defaults: dict[str, str]) -> Device:
         return Device.AUTO
 
 
+def reference_prepare_options() -> ReferencePrepareOptions:
+    """Параметры подготовки эталона (#29) из ``config.env``/окружения."""
+    defaults = env_defaults()
+    return ReferencePrepareOptions(
+        enabled=_as_bool(
+            defaults.get("REFERENCE_PREPARE"), default=DEFAULT_REFERENCE_PREPARE
+        ),
+        min_speech_seconds=_as_float(
+            defaults.get("ENROLLMENT_MIN_SAMPLE_SECONDS"),
+            DEFAULT_ENROLLMENT_MIN_SAMPLE_SECONDS,
+        ),
+        max_seconds=_as_float(
+            defaults.get("ENROLLMENT_MAX_SAMPLE_SECONDS"),
+            DEFAULT_ENROLLMENT_MAX_SAMPLE_SECONDS,
+        ),
+        target_dbfs=_as_float(
+            defaults.get("REFERENCE_TARGET_DBFS"), DEFAULT_REFERENCE_TARGET_DBFS
+        ),
+    )
+
+
 def build_job_config(
     source_path: Path,
     *,
@@ -233,6 +259,21 @@ def build_job_config(
         glossary_db=glossary_db,
         glossary_enabled=_as_bool(defaults.get("GLOSSARY_ENABLED"), default=True),
         voices_dir=Path(voices_raw) if voices_raw else None,
+        # Подготовка эталона голоса (#29): VAD-обрезка + RMS-нормализация.
+        reference_prepare=_as_bool(
+            defaults.get("REFERENCE_PREPARE"), default=DEFAULT_REFERENCE_PREPARE
+        ),
+        enrollment_min_sample_seconds=_as_float(
+            defaults.get("ENROLLMENT_MIN_SAMPLE_SECONDS"),
+            DEFAULT_ENROLLMENT_MIN_SAMPLE_SECONDS,
+        ),
+        enrollment_max_sample_seconds=_as_float(
+            defaults.get("ENROLLMENT_MAX_SAMPLE_SECONDS"),
+            DEFAULT_ENROLLMENT_MAX_SAMPLE_SECONDS,
+        ),
+        reference_target_dbfs=_as_float(
+            defaults.get("REFERENCE_TARGET_DBFS"), DEFAULT_REFERENCE_TARGET_DBFS
+        ),
         # Экспорт по кнопке (протокол) — по умолчанию; может быть включён
         # настройкой веб-интерфейса (PROTOCOL_AUTO).
         protocol_auto=_as_bool(defaults.get("PROTOCOL_AUTO"), default=False),

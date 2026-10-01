@@ -47,6 +47,7 @@ from audio_transcriber.diarization.pyannote_engine import (
     DEFAULT_PIPELINE as DIARIZATION_PIPELINE,
 )
 from audio_transcriber.diarization.pyannote_engine import PyannoteSpeakerDiarizer
+from audio_transcriber.diarization.reference import ReferencePrepareOptions
 from audio_transcriber.diarization.samples import extract_speaker_samples
 from audio_transcriber.domain.enums import AsrBackend, Device
 from audio_transcriber.domain.models import SpeakerOverlap, TranscriptionResult
@@ -487,6 +488,12 @@ def run_pipeline(
                 local_model_path=config.pyannote_local_model,
                 engine=enrollment_engine,
                 waveform=shared_waveform.get() if shared_waveform is not None else None,
+                prepare=ReferencePrepareOptions(
+                    enabled=config.reference_prepare,
+                    min_speech_seconds=config.enrollment_min_sample_seconds,
+                    max_seconds=config.enrollment_max_sample_seconds,
+                    target_dbfs=config.reference_target_dbfs,
+                ),
             )
         _ensure_not_cancelled(cancel_event, "после сопоставления голосов")
     finally:

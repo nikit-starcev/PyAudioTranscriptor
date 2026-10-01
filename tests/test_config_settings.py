@@ -467,6 +467,39 @@ def test_resolved_voices_dir_defaults_to_voices(audio_file: Path) -> None:
     assert config.resolved_voices_dir() == Path("voices")
 
 
+# --- Подготовка эталона голоса (#29) ----------------------------------------
+
+
+def test_reference_prepare_defaults(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file)
+
+    assert config.reference_prepare is True
+    assert config.enrollment_min_sample_seconds == pytest.approx(3.0)
+    assert config.enrollment_max_sample_seconds == pytest.approx(10.0)
+    assert config.reference_target_dbfs == pytest.approx(-30.0)
+
+
+def test_reference_prepare_must_be_boolean(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, reference_prepare="yes")  # type: ignore[arg-type]
+
+
+def test_reference_sample_duration_range_validated(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(
+            input_file=audio_file,
+            enrollment_min_sample_seconds=5.0,
+            enrollment_max_sample_seconds=3.0,
+        )
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, enrollment_min_sample_seconds=0.0)
+
+
+def test_reference_target_dbfs_must_be_negative(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, reference_target_dbfs=0.0)
+
+
 def test_resolved_voices_dir_honors_explicit_value(tmp_path: Path, audio_file: Path) -> None:
     custom = tmp_path / "my-voices"
     config = AppConfig(input_file=audio_file, voices_dir=custom)

@@ -30,6 +30,10 @@ import numpy as np
 
 from audio_transcriber.config.defaults import DEFAULT_ENROLLMENT_MIN_SIMILARITY
 from audio_transcriber.diarization import energy
+from audio_transcriber.diarization.reference import (
+    ReferencePrepareOptions,
+    prepare_reference,
+)
 from audio_transcriber.domain.enums import Device
 from audio_transcriber.domain.models import SpeakerSegment
 from audio_transcriber.utils.audio import SAMPLE_RATE, load_waveform
@@ -47,13 +51,6 @@ MAX_REPRESENTATIVE_SEGMENTS = 3
 
 #: Окно меньше этого числа сэмплов не несёт полезного сигнала.
 MIN_WINDOW_SAMPLES = 160
-
-#: Минимальная доля речи в окне образца. Если окно с наибольшей энергией тише
-#: (содержит много пауз), образец обрезается до участка речи: паузы «размывают»
-#: эмбеддинг говорящего. Замеры на реальной записи: порог 0.6 чинит образцы с
-#: 34–37 % речи, не трогая чистые.
-DEFAULT_REFERENCE_MIN_SPEECH_RATIO = 0.6
-
 
 @dataclass(frozen=True, slots=True)
 class EnrollmentOutcome:
@@ -237,13 +234,12 @@ def _segments_by_speaker(
 def _best_reference_window(
     waveform: np.ndarray, window_seconds: float, *, sample_rate: int = SAMPLE_RATE
 ) -> tuple[float, float] | None:
-    """Окно образца с наибольшей энергией, обрезанное до речи при нужде.
+    """Окно образца с наибольшей энергией (речь), либо ``None`` если тишина.
 
     Берётся окно ``window_seconds`` с наибольшей энергией по всему образцу (а не
-    первые секунды, как раньше). Если в этом окне меньше
-    ``DEFAULT_REFERENCE_MIN_SPEECH_RATIO`` речи (много пауз), образец обрезается
-    до участка речи вокруг пика — иначе паузы «размывают» эмбеддинг. Возвращает
-    ``(start, end)`` или ``None``, если образец почти тихий (нет речи).
+    первые секунды, как раньше). Точная обрезка пауз внутри выбранного окна и
+    нормализация выполняются единым :func:`prepare_reference` — одинаково для
+    эталонов и окон говорящего.
     """
     total = waveform.size / sample_rate
     if total <= 0:
@@ -258,22 +254,26 @@ def _best_reference_window(
     if best is None or best[0] < threshold:
         return None
     _, start, end = best
-    if (
-        energy.speech_fraction(
-            prefix, start, end, sample_rate=sample_rate, threshold=threshold
-        )
-        >= DEFAULT_REFERENCE_MIN_SPEECH_RATIO
-    ):
-        return start, end
-    trimmed = energy.speech_window_around_peak(
-        prefix,
-        [(0.0, total)],
-        sample_rate=sample_rate,
-        threshold=threshold,
-        max_duration=window_seconds,
-        min_duration=energy.DEFAULT_MIN_SPEECH_SECONDS,
+    return start, end
+
+
+def _prepare_window(
+    waveform: np.ndarray,
+    *,
+    window_seconds: float,
+    options: ReferencePrepareOptions | None,
+    sample_rate: int = SAMPLE_RATE,
+) -> tuple[np.ndarray, list[str]]:
+    """Общая подготовка окна (эталона или говорящего): обрезка + нормализация.
+
+    Единая точка обработки эталона и теста — обязательное условие отсутствия
+    domain mismatch. Возвращает очищенный waveform и список предупреждений
+    качества (для лога).
+    """
+    prepared = prepare_reference(
+        waveform, sample_rate, options=options, max_seconds=window_seconds
     )
-    return trimmed if trimmed is not None else (start, end)
+    return prepared.waveform, prepared.quality.warnings()
 
 
 def _representative_windows(
@@ -367,6 +367,7 @@ def assign_speaker_names(
     local_model_path: Path | str | None = None,
     engine: SpeakerEmbeddingEngine | None = None,
     waveform: np.ndarray | None = None,
+    prepare: ReferencePrepareOptions | None = None,
 ) -> dict[str, str]:
     """Сопоставляет говорящих с именами по образцам голоса.
 
@@ -379,6 +380,9 @@ def assign_speaker_names(
     например результат денойза. Если он передан, файл ``audio_path`` не
     декодируется повторно; ``None`` — декодировать самому, как раньше.
     Образцы голоса всегда читаются со своих путей.
+
+    ``prepare`` — параметры подготовки эталона/окон (VAD-обрезка + RMS-
+    нормализация); ``None`` — значения по умолчанию из конфигурации.
     """
     return enroll_speakers(
         speaker_segments=speaker_segments,
@@ -389,6 +393,7 @@ def assign_speaker_names(
         local_model_path=local_model_path,
         engine=engine,
         waveform=waveform,
+        prepare=prepare,
     ).mapping
 
 
@@ -402,6 +407,7 @@ def enroll_speakers(
     local_model_path: Path | str | None = None,
     engine: SpeakerEmbeddingEngine | None = None,
     waveform: np.ndarray | None = None,
+    prepare: ReferencePrepareOptions | None = None,
 ) -> EnrollmentOutcome:
     """Сопоставляет говорящих с именами и возвращает подробный итог.
 
@@ -411,6 +417,10 @@ def enroll_speakers(
     ``waveform`` — необязательное уже декодированное моно аудио задачи
     (16 кГц float32): позволяет переиспользовать результат денойза и не
     декодировать ``audio_path`` повторно.
+
+    ``prepare`` — параметры подготовки (VAD-обрезка + RMS-нормализация),
+    применяемые **одинаково** к эталонам и к окнам говорящего. ``None`` —
+    значения по умолчанию (:class:`ReferencePrepareOptions`).
     """
     cleaned = _clean_references(references)
     if not cleaned:
@@ -449,6 +459,15 @@ def enroll_speakers(
                 )
                 continue
             window = _extract_window(reference_waveform, *bounds)
+            window, warnings = _prepare_window(
+                window,
+                window_seconds=window_seconds,
+                options=prepare,
+            )
+            if warnings:
+                logger.warning(
+                    "Enrollment: качество образца %s — %s", path, "; ".join(warnings)
+                )
             if window.size < MIN_WINDOW_SAMPLES:
                 logger.warning("Enrollment: образец %s слишком короткий — пропускаю", path)
                 continue
@@ -491,6 +510,13 @@ def enroll_speakers(
         )
         for start, end in windows:
             window = _extract_window(audio, start, end)
+            # Та же подготовка, что и для эталона (обрезка+нормализация) —
+            # иначе домены «эталон» и «тест» расходятся (domain mismatch).
+            window, _ = _prepare_window(
+                window,
+                window_seconds=window_seconds,
+                options=prepare,
+            )
             if window.size < MIN_WINDOW_SAMPLES:
                 continue
             try:

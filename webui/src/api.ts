@@ -117,7 +117,29 @@ export type TranscriptResult = {
 
 export type SampleMeta = { speaker_id: string; duration: number; size: number }
 
-export type VoiceInfo = { name: string; filename: string; duration: number; size: number }
+/** Качество образца голоса: метрики, флаги и готовые предупреждения (#29). */
+export type VoiceQuality = {
+  duration: number
+  speech_seconds: number
+  trimmed_seconds: number
+  speech_ratio: number
+  rms_dbfs: number | null
+  peak: number
+  too_short: boolean
+  clipped: boolean
+  low_energy: boolean
+  mostly_non_speech: boolean
+  ok: boolean
+  warnings: string[]
+}
+
+export type VoiceInfo = {
+  name: string
+  filename: string
+  duration: number
+  size: number
+  quality?: VoiceQuality
+}
 
 /** Группа образцов одного человека (имя → список образцов). */
 export type VoiceGroup = { name: string; count: number; samples: VoiceInfo[] }

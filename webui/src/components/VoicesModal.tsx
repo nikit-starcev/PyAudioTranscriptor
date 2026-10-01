@@ -24,6 +24,7 @@ function VoicesModal({ open, onClose }: Props) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
+  const [warning, setWarning] = useState<string | null>(null)
   const [newName, setNewName] = useState('')
   const [file, setFile] = useState<File | null>(null)
   const [edit, setEdit] = useState<{ filename: string; name: string; value: string } | null>(null)
@@ -68,12 +69,21 @@ function VoicesModal({ open, onClose }: Props) {
     }
     setBusy(true)
     setError(null)
+    setWarning(null)
     try {
       const body = new FormData()
       body.append('file', file)
       body.append('name', name)
       const created = await api<VoiceInfo>('/api/voices', { method: 'POST', body })
-      setStatus(`Загружено: ${created.filename}`)
+      const warnings = created.quality?.warnings ?? []
+      if (warnings.length > 0) {
+        const speech = created.quality?.speech_seconds
+        const speechNote = typeof speech === 'number' ? ` Речь: ${speech.toFixed(1)} с.` : ''
+        setWarning(`Загружено: ${created.filename}.${speechNote} ${warnings.join('; ')}.`)
+        setStatus(null)
+      } else {
+        setStatus(`Загружено: ${created.filename}`)
+      }
       setNewName('')
       setFile(null)
       await refresh()
@@ -184,6 +194,14 @@ function VoicesModal({ open, onClose }: Props) {
               className="rounded-md bg-slate-50 px-3 py-1.5 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300"
             >
               {status}
+            </p>
+          )}
+          {warning && (
+            <p
+              role="alert"
+              className="rounded-md bg-amber-50 px-3 py-1.5 text-xs text-amber-800 dark:bg-amber-950/50 dark:text-amber-300"
+            >
+              ⚠ {warning}
             </p>
           )}
 

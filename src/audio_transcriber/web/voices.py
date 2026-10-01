@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from audio_transcriber.config.defaults import DEFAULT_VOICES_DIR
+from audio_transcriber.diarization.reference import ReferenceQuality
 from audio_transcriber.diarization.voices import collect_voice_library
 from audio_transcriber.utils.playback import read_duration
 from audio_transcriber.web.config import env_defaults
@@ -44,18 +45,25 @@ class VoiceSample:
         """Имя файла образца (уникальный идентификатор в API)."""
         return self.path.name
 
-    def as_dict(self) -> dict[str, object]:
-        """Плоское представление для API (имя, файл, длительность, размер)."""
+    def as_dict(self, quality: ReferenceQuality | None = None) -> dict[str, object]:
+        """Плоское представление для API (имя, файл, длительность, размер).
+
+        ``quality`` — результат оценки образца (объект с ``as_dict``); если
+        передан, добавляется в ответ (метрики, флаги, предупреждения).
+        """
         try:
             size = self.path.stat().st_size
         except OSError:
             size = 0
-        return {
+        payload: dict[str, object] = {
             "name": self.name,
             "filename": self.filename,
             "duration": round(read_duration(self.path), 2),
             "size": size,
         }
+        if quality is not None:
+            payload["quality"] = quality.as_dict()
+        return payload
 
 
 @dataclass(frozen=True, slots=True)

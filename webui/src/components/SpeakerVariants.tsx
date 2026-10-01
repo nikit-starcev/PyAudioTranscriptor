@@ -113,7 +113,9 @@ function SpeakerVariants({ jobId, speakerId, speakerName, onToLibrary }: Props) 
     setError(null)
     try {
       const saved = await onToLibrary(speakerId, name, { start: variant.start, end: variant.end })
-      setStatus(`Сохранено в библиотеку: ${saved.filename}`)
+      const warnings = saved.quality?.warnings ?? []
+      const suffix = warnings.length > 0 ? ` — ⚠ ${warnings.join('; ')}` : ''
+      setStatus(`Сохранено в библиотеку: ${saved.filename}${suffix}`)
       setLibraryIndex(null)
     } catch (cause) {
       setError(errorMessage(cause))

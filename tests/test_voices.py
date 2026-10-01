@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+import pytest
+
+from audio_transcriber.diarization.reference import ReferencePrepareOptions
 from audio_transcriber.diarization.voices import (
     base_sample_name,
     collect_voice_library,
@@ -11,9 +15,11 @@ from audio_transcriber.diarization.voices import (
     delete_voice_samples,
     merge_references,
     sample_index,
+    save_reference_sample,
     save_speaker_sample,
     unique_sample_path,
 )
+from audio_transcriber.utils.audio import load_waveform, write_wav
 
 
 def test_collect_voice_library_uses_file_stem(tmp_path: Path) -> None:
@@ -138,6 +144,40 @@ def test_unique_sample_path_skips_taken_names(tmp_path: Path) -> None:
 
     assert unique_sample_path(voices, "Иван") == voices / "Иван (3).wav"
     assert unique_sample_path(voices, "Пётр") == voices / "Пётр.wav"
+
+
+def test_save_reference_sample_prepares_and_reports_quality(tmp_path: Path) -> None:
+    source = tmp_path / "raw.wav"
+    waveform = np.zeros(8 * 16000, dtype=np.float32)
+    waveform[2 * 16000 : 5 * 16000] = 0.5  # 3 с речи, остальное — тишина
+    write_wav(source, waveform)
+
+    target, quality = save_reference_sample(source, tmp_path / "voices", "Иван")
+
+    assert target == tmp_path / "voices" / "Иван.wav"
+    prepared = load_waveform(target)
+    # Обрезка до речи: длительность заметно меньше исходных 8 с.
+    assert prepared.size < waveform.size
+    assert quality is not None
+    assert quality.speech_seconds == pytest.approx(3.0, abs=0.2)
+    assert quality.ok is True
+
+
+def test_save_reference_sample_passthrough_when_disabled(tmp_path: Path) -> None:
+    source = tmp_path / "raw.wav"
+    waveform = np.zeros(8 * 16000, dtype=np.float32)
+    waveform[2 * 16000 : 5 * 16000] = 0.5
+    write_wav(source, waveform)
+
+    target, quality = save_reference_sample(
+        source,
+        tmp_path / "voices",
+        "Иван",
+        options=ReferencePrepareOptions(enabled=False),
+    )
+
+    assert quality is None
+    assert target.read_bytes() == source.read_bytes()
 
 
 def test_delete_voice_samples_removes_whole_group(tmp_path: Path) -> None:

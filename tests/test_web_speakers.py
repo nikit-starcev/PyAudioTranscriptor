@@ -402,6 +402,32 @@ def test_speaker_to_library_copies_sample(client: TestClient) -> None:
     assert missing.status_code == 404
 
 
+def test_voices_upload_reports_quality_warnings(client: TestClient) -> None:
+    created = client.post(
+        "/api/voices",
+        files={"file": ("voice.wav", _wav_bytes(seconds=0.2), "audio/wav")},
+        data={"name": "Тихий"},
+    )
+
+    assert created.status_code == 201
+    quality = created.json()["quality"]
+    assert quality["too_short"] is True
+    assert quality["warnings"]
+
+
+def test_speaker_to_library_reports_quality(client: TestClient) -> None:
+    job_id, _ = _prepared_job(client)
+
+    response = client.post(
+        f"/api/jobs/{job_id}/speakers/SPEAKER_00/to-library", json={"name": "Клон"}
+    )
+
+    assert response.status_code == 201
+    quality = response.json()["quality"]
+    assert "warnings" in quality
+    assert "speech_seconds" in quality
+
+
 def test_voice_delete_cannot_escape_library(
     client: TestClient, voices_dir: Path, tmp_path: Path
 ) -> None:

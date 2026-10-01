@@ -305,3 +305,41 @@ def test_llm_check_reports_error(
 
     assert payload["status"] == "error"
     assert "Не удалось" in payload["message"]
+
+
+# --- Подготовка эталона голоса (#29) ------------------------------------------
+
+
+def test_reference_prepare_options_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    from audio_transcriber.web import config as web_config
+
+    monkeypatch.setattr(
+        web_config,
+        "env_defaults",
+        lambda: {
+            "REFERENCE_PREPARE": "false",
+            "ENROLLMENT_MIN_SAMPLE_SECONDS": "4",
+            "ENROLLMENT_MAX_SAMPLE_SECONDS": "8",
+            "REFERENCE_TARGET_DBFS": "-35",
+        },
+    )
+
+    options = web_config.reference_prepare_options()
+
+    assert options.enabled is False
+    assert options.min_speech_seconds == pytest.approx(4.0)
+    assert options.max_seconds == pytest.approx(8.0)
+    assert options.target_dbfs == pytest.approx(-35.0)
+
+
+def test_reference_prepare_options_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    from audio_transcriber.web import config as web_config
+
+    monkeypatch.setattr(web_config, "env_defaults", lambda: {})
+
+    options = web_config.reference_prepare_options()
+
+    assert options.enabled is True
+    assert options.min_speech_seconds == pytest.approx(3.0)
+    assert options.max_seconds == pytest.approx(10.0)
+    assert options.target_dbfs == pytest.approx(-30.0)
