@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from audio_transcriber.domain.models import (
 )
 from audio_transcriber.merging.aligner import OverlapSegmentMerger
 from audio_transcriber.pipeline import run_pipeline
+from audio_transcriber.utils.exceptions import ProcessingCancelled
 
 
 class FakeRecognizer:
@@ -731,4 +733,89 @@ def test_generate_protocol_without_llm_exports_without_summary(
     assert artifacts.summary is None
     assert artifacts.paths == (output_dir / f"{audio_file.stem}.txt",)
     assert artifacts.paths[0].is_file()
+
+
+# --- Отмена конвейера (#22) -----------------------------------------------
+
+
+class ToggleRecognizer:
+    """Распознаватель, который при желании взводит флаг отмены во время стадии."""
+
+    def __init__(self, cancel_event: threading.Event | None = None) -> None:
+        self.cancel_event = cancel_event
+        self.calls = 0
+
+    def transcribe(self, audio_path: Path, *, language: str | None = None):
+        self.calls += 1
+        if self.cancel_event is not None:
+            self.cancel_event.set()
+        return ([TranscriptionSegment(0.0, 1.0, "привет")], "ru", 1.0)
+
+
+def test_run_pipeline_cancel_before_start_stops_without_error(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    """Взведённый до старта флаг прекращает конвейер до первой стадии."""
+    cancel_event = threading.Event()
+    cancel_event.set()
+    recognizer = ToggleRecognizer(cancel_event)
+    config = AppConfig(input_file=audio_file, output_dir=tmp_path / "out")
+
+    with pytest.raises(ProcessingCancelled):
+        run_pipeline(
+            config,
+            device=Device.CPU,
+            recognizer=recognizer,
+            diarizer=FakeDiarizer(),
+            merger=FakeMerger(),
+            cancel_event=cancel_event,
+        )
+
+    # Ни одна стадия не запускалась — отмена проверяется до работы.
+    assert recognizer.calls == 0
+
+
+def test_run_pipeline_cancel_during_asr_keeps_completed_cache(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    """Отмена после ASR: исключение ProcessingCancelled, кэш стадии сохранён.
+
+    Повторный запуск без отмены переиспользует кэш ASR — распознавание не
+    выполняется заново, что и лежит в основе возобновления.
+    """
+    output_dir = tmp_path / "out"
+    cancel_event = threading.Event()
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=output_dir,
+        use_cache=True,
+    )
+    first = ToggleRecognizer(cancel_event)
+
+    with pytest.raises(ProcessingCancelled):
+        run_pipeline(
+            config,
+            device=Device.CPU,
+            recognizer=first,
+            diarizer=FakeDiarizer(),
+            merger=FakeMerger(),
+            cancel_event=cancel_event,
+        )
+
+    assert first.calls == 1
+    # ASR успел закэшироваться до срабатывания контрольной точки.
+    assert list((output_dir / ".cache").glob("asr-*.json"))
+
+    # Возобновление: свежий флаг, тот же тип движка — кэш ASR переиспользован.
+    resumed = ToggleRecognizer()
+    result = run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=resumed,
+        diarizer=FakeDiarizer(),
+        merger=FakeMerger(),
+    )
+
+    assert resumed.calls == 0
+    assert result.entries
 

@@ -26,14 +26,17 @@ from audio_transcriber.domain.models import (
     TranscriptionResult,
 )
 from audio_transcriber.progress import ProgressEvent
+from audio_transcriber.utils.exceptions import ProcessingCancelled
 from audio_transcriber.web.app import _resolve_upload_file, create_app
 from audio_transcriber.web.events import JobEventBus
 from audio_transcriber.web.paths import WebPaths
 from audio_transcriber.web.runner import ORPHAN_ERROR_MESSAGE, JobRunner
 from audio_transcriber.web.storage.jobs_db import (
+    STATUS_CANCELLED,
     STATUS_DONE,
     STATUS_ERROR,
     STATUS_RUNNING,
+    Job,
     JobsDB,
     utc_now_iso,
 )
@@ -984,3 +987,203 @@ def test_events_after_done_include_estimates(client: TestClient) -> None:
     assert '"progress_percent": 100.0' in response.text
     assert '"eta_seconds": 0.0' in response.text
     assert '"health": null' in response.text
+
+
+# --- #22: остановка и возобновление обработки -----------------------------
+
+
+class _BlockingCancelPipeline:
+    """Конвейер, ждущий отмены и затем поднимающий ``ProcessingCancelled``.
+
+    Принимает ``cancel_event`` (как штатный ``run_pipeline``), поэтому воркер
+    прокидывает в него флаг; на ``cancel`` он разблокируется и завершается
+    штатным прерыванием.
+    """
+
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.calls = 0
+
+    def __call__(self, config: AppConfig, *, on_progress=None, cancel_event=None):
+        self.calls += 1
+        self.started.set()
+        assert cancel_event is not None
+        cancel_event.wait(timeout=5.0)
+        raise ProcessingCancelled("Остановлено пользователем")
+
+
+def _wait_for_status(
+    client: TestClient, job_id: str, status: str, *, timeout: float = 5.0
+) -> dict:
+    deadline = time.time() + timeout
+    details: dict = {}
+    while time.time() < deadline:
+        details = client.get(f"/api/jobs/{job_id}").json()
+        if details["status"] == status and details["active"] is False:
+            break
+        time.sleep(0.02)
+    return details
+
+
+def _wait_for_status_direct(
+    store: JobsDB, job_id: str, status: str, *, timeout: float = 5.0
+) -> Job | None:
+    deadline = time.time() + timeout
+    job = store.get(job_id)
+    while time.time() < deadline:
+        job = store.get(job_id)
+        if job is not None and job.status == status:
+            break
+        time.sleep(0.02)
+    return job
+
+
+def test_cancel_active_job_marks_cancelled_and_reruns(
+    web_paths: WebPaths, config_builder
+) -> None:
+    """Активная задача отменяется в ``cancelled`` (не ``error``) и перезапускается."""
+    pipeline = _BlockingCancelPipeline()
+    app = create_app(
+        paths=web_paths,
+        pipeline_fn=pipeline,
+        config_builder=config_builder,
+        heartbeat=0.05,
+    )
+    with TestClient(app) as client:
+        uploaded = _upload(client)
+        job_id = client.post("/api/jobs", json={"path": uploaded["name"]}).json()["id"]
+        assert client.post(f"/api/jobs/{job_id}/run").status_code == 200
+        assert pipeline.started.wait(timeout=5.0)
+
+        response = client.post(f"/api/jobs/{job_id}/cancel")
+        assert response.status_code == 200
+        assert response.json()["status"] == STATUS_CANCELLED
+
+        details = _wait_for_status(client, job_id, STATUS_CANCELLED)
+        assert details["status"] == STATUS_CANCELLED
+        assert details["active"] is False
+        assert details["finished_at"] is not None
+        assert details["error"] is None
+
+        # Терминальное событие отмены опубликовано в SSE-шину.
+        history = client.app.state.bus.history(job_id)
+        assert any(event.get("status") == STATUS_CANCELLED for event in history)
+
+        # Отменённая задача перезапускаема (не 409).
+        assert client.post(f"/api/jobs/{job_id}/run").status_code == 200
+        deadline = time.time() + 5.0
+        while time.time() < deadline and pipeline.calls < 2:
+            time.sleep(0.02)
+        assert pipeline.calls >= 2
+        assert client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
+        _wait_for_status(client, job_id, STATUS_CANCELLED)
+
+
+def test_cancel_inactive_or_missing_job(client: TestClient) -> None:
+    """Неактивную задачу отменить нельзя (409), отсутствующую — 404."""
+    uploaded = _upload(client)
+    job_id = client.post("/api/jobs", json={"path": uploaded["name"]}).json()["id"]
+
+    assert client.post(f"/api/jobs/{job_id}/cancel").status_code == 409
+    assert client.post("/api/jobs/unknown/cancel").status_code == 404
+
+
+def test_cancel_completed_job_conflicts(client: TestClient) -> None:
+    """Завершённую задачу отменить нельзя — 409."""
+    uploaded = _upload(client)
+    job_id, _ = _run_job(client, uploaded["name"])
+
+    assert client.post(f"/api/jobs/{job_id}/cancel").status_code == 409
+
+
+def test_delete_cancelled_job(web_paths: WebPaths, config_builder) -> None:
+    """Отменённую задачу можно удалить, как и любую терминальную."""
+    pipeline = _BlockingCancelPipeline()
+    app = create_app(
+        paths=web_paths,
+        pipeline_fn=pipeline,
+        config_builder=config_builder,
+        heartbeat=0.05,
+    )
+    with TestClient(app) as client:
+        uploaded = _upload(client)
+        job_id = client.post("/api/jobs", json={"path": uploaded["name"]}).json()["id"]
+        assert client.post(f"/api/jobs/{job_id}/run").status_code == 200
+        assert pipeline.started.wait(timeout=5.0)
+        assert client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
+        _wait_for_status(client, job_id, STATUS_CANCELLED)
+
+        assert client.delete(f"/api/jobs/{job_id}").status_code == 200
+        assert client.get(f"/api/jobs/{job_id}").status_code == 404
+
+
+def test_runner_cancel_inactive_returns_false(
+    web_paths: WebPaths, config_builder
+) -> None:
+    """``JobRunner.cancel`` для задачи, которую воркер не ведёт, — ``False``."""
+    store = JobsDB(web_paths.jobs_db)
+    store.initialize()
+    runner = JobRunner(store, JobEventBus(heartbeat=0.05), web_paths, config_builder)
+
+    assert runner.cancel("missing") is False
+
+
+def test_cancel_queued_job_does_not_kill_current_processes(
+    web_paths: WebPaths, config_builder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Отмена ждущей в очереди задачи не гасит процессы текущей обработки."""
+    from audio_transcriber.web import runner as runner_module
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        runner_module, "terminate_all_processes", lambda: calls.append("terminate")
+    )
+    web_paths.ensure()
+    store = JobsDB(web_paths.jobs_db)
+    store.initialize()
+    runner = JobRunner(store, JobEventBus(heartbeat=0.05), web_paths, config_builder)
+    first = web_paths.input_dir / "first.mp3"
+    second = web_paths.input_dir / "second.mp3"
+    first.write_bytes(b"x")
+    second.write_bytes(b"x")
+    store.create("first", first)
+    store.create("second", second)
+    # Обе задачи активны (в очереди), но ни одна ещё не обрабатывается.
+    assert runner.submit("first", first) is True
+    assert runner.submit("second", second) is True
+
+    assert runner.cancel("second") is True
+    # Воркер ещё не взял её в работу — процессы гасить нечего.
+    assert calls == []
+
+
+def test_reconcile_does_not_touch_cancelling_job(
+    web_paths: WebPaths, config_builder
+) -> None:
+    """Отменяемая задача ещё активна — реконсиляция её не помечает как осиротевшую."""
+    pipeline = _BlockingCancelPipeline()
+    web_paths.ensure()
+    store = JobsDB(web_paths.jobs_db)
+    store.initialize()
+    runner = JobRunner(
+        store, JobEventBus(heartbeat=0.05), web_paths, config_builder, pipeline_fn=pipeline
+    )
+    source = web_paths.input_dir / "cancel-me.mp3"
+    source.write_bytes(b"x")
+    store.create("cancel-me", source)
+
+    runner.start()
+    try:
+        assert runner.submit("cancel-me", source) is True
+        assert pipeline.started.wait(timeout=5.0)
+        assert runner.cancel("cancel-me") is True
+
+        assert "cancel-me" not in runner.reconcile_orphans()
+        current = store.get("cancel-me")
+        assert current is not None
+        assert current.status in (STATUS_RUNNING, STATUS_CANCELLED)
+
+        final = _wait_for_status_direct(store, "cancel-me", STATUS_CANCELLED)
+        assert final is not None and final.status == STATUS_CANCELLED
+    finally:
+        runner.stop()

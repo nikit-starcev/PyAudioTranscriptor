@@ -95,6 +95,9 @@ function App() {
   const [files, setFiles] = useState<FileItem[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
   const [activeJobId, setActiveJobId] = useState<string | null>(null)
+  // Счётчик запусков: повторный запуск той же задачи должен переподключить SSE
+  // (значение activeJobId при этом не меняется, и эффект не сработал бы).
+  const [runSeq, setRunSeq] = useState(0)
   const [progress, setProgress] = useState<JobEvent | null>(null)
   const [result, setResult] = useState<TranscriptResult | null>(null)
   const [samplesMeta, setSamplesMeta] = useState<Record<string, SampleMeta>>({})
@@ -293,7 +296,7 @@ function App() {
     }
     source.onerror = () => source.close()
     return () => source.close()
-  }, [activeJobId, refreshJobs, loadResult, refreshJobTiming])
+  }, [activeJobId, runSeq, refreshJobs, loadResult, refreshJobTiming])
 
   const enqueue = useCallback(
     async (path: string) => {
@@ -325,6 +328,7 @@ function App() {
           }),
         })
         setActiveJobId(job.id)
+        setRunSeq((value) => value + 1)
         setProgress({ stage: 'queued', fraction: 0, message: 'В очереди', status: 'queued' })
         setResult(null)
         setSummary(null)
@@ -345,6 +349,7 @@ function App() {
       try {
         await api<Job>(`/api/jobs/${jobId}/run`, { method: 'POST' })
         setActiveJobId(jobId)
+        setRunSeq((value) => value + 1)
         setResult(null)
         setSummary(null)
         setProtocol(null)
@@ -356,6 +361,21 @@ function App() {
       }
     },
     [refreshJobs, resetTiming],
+  )
+
+  const stopJob = useCallback(
+    async (jobId: string) => {
+      setError(null)
+      try {
+        await api<{ id: string; status: string }>(`/api/jobs/${jobId}/cancel`, {
+          method: 'POST',
+        })
+        await refreshJobs()
+      } catch (cause) {
+        setError(errorMessage(cause))
+      }
+    },
+    [refreshJobs],
   )
 
   const openJob = useCallback(
@@ -767,9 +787,19 @@ function App() {
                     >
                       {STATUS_LABELS[job.status] ?? job.status}
                     </span>
+                    {isLiveJob(job) && (
+                      <button
+                        onClick={() => void stopJob(job.id)}
+                        title="Остановить обработку задачи"
+                        className="rounded-md border border-amber-300 px-3 py-1 text-xs text-amber-700 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-950/50"
+                      >
+                        Остановить
+                      </button>
+                    )}
                     {(job.status === 'queued' ||
                       job.status === 'done' ||
                       job.status === 'error' ||
+                      job.status === 'cancelled' ||
                       (job.status === 'running' && job.active === false)) && (
                       <button
                         onClick={() => void runJob(job.id)}
@@ -777,7 +807,7 @@ function App() {
                         title={blockedHint}
                         className="rounded-md bg-emerald-600 px-3 py-1 text-xs text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
                       >
-                        Запустить
+                        {job.status === 'cancelled' ? 'Запустить снова' : 'Запустить'}
                       </button>
                     )}
                     {(job.status !== 'running' || job.active === false) && (
@@ -797,9 +827,20 @@ function App() {
 
         {activeJobId && (
           <section className="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-            <h2 className="mb-3 font-medium">
-              Прогресс{activeJob ? ` · ${activeJob.name}` : ''}
-            </h2>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h2 className="font-medium">
+                Прогресс{activeJob ? ` · ${activeJob.name}` : ''}
+              </h2>
+              {progressRunning && activeJobId && (
+                <button
+                  onClick={() => void stopJob(activeJobId)}
+                  title="Остановить обработку задачи"
+                  className="rounded-md border border-amber-300 px-3 py-1 text-xs text-amber-700 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-950/50"
+                >
+                  Остановить
+                </button>
+              )}
+            </div>
             <div className="mb-2 h-2 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
               <div
                 className={`h-full rounded-full bg-blue-500 transition-all ${

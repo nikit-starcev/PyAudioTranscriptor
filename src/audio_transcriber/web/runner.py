@@ -9,6 +9,7 @@ daemon-поток, который при старте задачи вызыва�
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import queue
@@ -22,11 +23,14 @@ from audio_transcriber.diarization.samples import find_speaker_samples, samples_
 from audio_transcriber.domain.models import TranscriptionResult
 from audio_transcriber.pipeline import run_pipeline
 from audio_transcriber.progress import ProgressEvent
+from audio_transcriber.utils.exceptions import ProcessingCancelled
+from audio_transcriber.utils.subprocess_registry import terminate_all_processes
 from audio_transcriber.web.estimates import StageEstimator, probe_duration
 from audio_transcriber.web.events import JobEventBus
 from audio_transcriber.web.paths import WebPaths
 from audio_transcriber.web.results import serialize_result
 from audio_transcriber.web.storage.jobs_db import (
+    STATUS_CANCELLED,
     STATUS_DONE,
     STATUS_ERROR,
     STATUS_QUEUED,
@@ -47,6 +51,27 @@ PipelineFn = Callable[..., TranscriptionResult]
 
 #: Сообщение для «подвешенной» задачи, осиротевшей после перезапуска сервера.
 ORPHAN_ERROR_MESSAGE = "Прервано: сервер был перезапущен"
+
+#: Сообщение для задачи, остановленной пользователем.
+CANCELLED_MESSAGE = "Остановлено пользователем"
+
+
+def _accepts_cancel_event(pipeline_fn: Callable[..., TranscriptionResult]) -> bool:
+    """Умеет ли ``pipeline_fn`` принимать ``cancel_event`` (kwarg или ``**kwargs``).
+
+    Штатный :func:`run_pipeline` умеет; тестовые заглушки без него — нет. От
+    этого зависит, передавать ли воркеру флаг отмены, не ломая существующие
+    подмены конвейера.
+    """
+    try:
+        parameters = inspect.signature(pipeline_fn).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == "cancel_event"
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
 
 
 @dataclass(slots=True)
@@ -75,11 +100,19 @@ class JobRunner:
         self._paths = paths
         self._config_builder = config_builder
         self._pipeline_fn = pipeline_fn or run_pipeline
+        #: Умеет ли конвейер принимать ``cancel_event`` (у тестовых заглушек — нет).
+        self._pipeline_accepts_cancel = _accepts_cancel_event(self._pipeline_fn)
         #: Оценки прогресса/ETA/здоровья; ``None`` — отключены (тесты, минимальный режим).
         self._estimator = estimator
         self._queue: queue.Queue[JobRequest | None] = queue.Queue()
         self._lock = threading.Lock()
         self._active: set[str] = set()
+        #: Флаги отмены активных задач (id → событие). Создаются в :meth:`submit`,
+        #: снимаются по завершении задачи.
+        self._cancel_events: dict[str, threading.Event] = {}
+        #: Задача, которую воркер обрабатывает прямо сейчас (не в очереди).
+        #: Нужна, чтобы отмена ждущей задачи не гасила процессы текущей.
+        self._current: str | None = None
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
@@ -93,10 +126,21 @@ class JobRunner:
             self._thread.start()
 
     def stop(self, *, timeout: float = 5.0) -> None:
-        """Останавливает воркер, дожидаясь завершения текущей задачи."""
+        """Останавливает воркер, дожидаясь завершения текущей задачи.
+
+        При остановке сервера активные задачи получают сигнал отмены, а их
+        дочерние процессы (``whisper-cli``/``llama-server``) гасятся — Ctrl+C
+        не оставляет висящих процессов и не блокирует выход надолго.
+        """
         with self._lock:
             thread = self._thread
             self._thread = None
+            events = list(self._cancel_events.values())
+        for event in events:
+            event.set()
+        if events:
+            # Страховка поверх atexit/обработчиков сигналов реестра.
+            terminate_all_processes()
         if thread is None:
             return
         self._queue.put(None)
@@ -108,7 +152,30 @@ class JobRunner:
             if job_id in self._active:
                 return False
             self._active.add(job_id)
+            # Свежий флаг отмены на каждый прогон: осиротевший с прошлого раза
+            # не должен мгновенно гасить новую задачу.
+            self._cancel_events[job_id] = threading.Event()
         self._queue.put(JobRequest(job_id=job_id, source_path=source_path))
+        return True
+
+    def cancel(self, job_id: str) -> bool:
+        """Запрашивает отмену активной задачи; ``False``, если она не активна.
+
+        Выставляет флаг отмены (конвейер поднимет :class:`ProcessingCancelled`
+        в ближайшей контрольной точке) и гасит зарегистрированные дочерние
+        процессы, чтобы текущая долгая стадия завершилась быстро. Итоговый
+        статус ``cancelled`` проставит воркер по завершении потока задачи.
+        """
+        with self._lock:
+            event = self._cancel_events.get(job_id)
+            if job_id not in self._active or event is None:
+                return False
+            event.set()
+            # Гасим процессы только у обрабатываемой сейчас задачи: отмена
+            # ждущей в очереди не должна трогать чужую стадию.
+            is_current = self._current == job_id
+        if is_current:
+            terminate_all_processes()
         return True
 
     def active_job_ids(self) -> set[str]:
@@ -176,9 +243,15 @@ class JobRunner:
             finally:
                 with self._lock:
                     self._active.discard(request.job_id)
+                    self._cancel_events.pop(request.job_id, None)
+                    if self._current == request.job_id:
+                        self._current = None
 
     def _process(self, request: JobRequest) -> None:
         job_id = request.job_id
+        with self._lock:
+            self._current = job_id
+            cancel_event = self._cancel_events.get(job_id)
         # Монотонный таймер стадий живёт ровно один прогон задачи.
         timer = StageTimer()
         # Длительность аудио нужна для ETA уже во время прогона: результат
@@ -218,10 +291,26 @@ class JobRunner:
                 config.num_speakers = job.num_speakers
                 config.min_speakers = job.min_speakers
                 config.max_speakers = job.max_speakers
-            result = self._pipeline_fn(
-                config, on_progress=self._progress_callback(job_id, timer)
-            )
+            progress_callback = self._progress_callback(job_id, timer)
+            if self._pipeline_accepts_cancel:
+                result = self._pipeline_fn(
+                    config, on_progress=progress_callback, cancel_event=cancel_event
+                )
+            else:
+                result = self._pipeline_fn(config, on_progress=progress_callback)
+        except ProcessingCancelled as exc:
+            # Штатное прерывание по запросу пользователя — не ошибка.
+            logger.info("Задача %s отменена: %s", job_id, exc)
+            self._finish_cancelled(job_id, timer)
+            return
         except Exception as exc:
+            # Конвейер мог упасть из-за того, что мы погасили процесс при
+            # отмене (или отмена пришла во время стадии, не конвертировавшей
+            # исключение сама). Тогда это тоже отмена, а не сбой.
+            if cancel_event is not None and cancel_event.is_set():
+                logger.info("Задача %s отменена во время стадии", job_id)
+                self._finish_cancelled(job_id, timer)
+                return
             logger.exception("Задача %s завершилась ошибкой", job_id)
             timer.close()
             failed = self._store.update(
@@ -247,6 +336,34 @@ class JobRunner:
         # намеренно игнорирует, чтобы не засчитывать запись результата.
         timer.close()
         self._finish_success(job_id, config, result, timer)
+
+    def _finish_cancelled(self, job_id: str, timer: StageTimer) -> None:
+        """Переводит задачу в терминальный статус ``cancelled`` и шлёт событие.
+
+        Отменённая задача удаляема и перезапускаема; завершённые до отмены
+        стадии остаются в стадийном кэше — повторный запуск возобновит работу
+        с них. Событие терминальное, поэтому SSE-подписчики закрывают поток, а
+        живые таймеры в UI останавливаются.
+        """
+        timer.close()
+        # Стадию не перезаписываем: она показывает, где именно остановились.
+        cancelled = self._store.update(
+            job_id,
+            status=STATUS_CANCELLED,
+            finished_at=utc_now_iso(),
+            error=None,
+            stage_times=timer.timings(),
+        )
+        payload: dict[str, object] = {
+            "stage": "cancelled",
+            "fraction": None,
+            "message": CANCELLED_MESSAGE,
+            "status": STATUS_CANCELLED,
+            "stage_times": timer.snapshot(),
+        }
+        self._merge_estimate(payload, cancelled, active=False)
+        self._bus.publish(job_id, payload)
+        self._invalidate_estimates()
 
     def _progress_callback(
         self, job_id: str, timer: StageTimer

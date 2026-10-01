@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from pathlib import Path
 
 from audio_transcriber.cache.denoiser import CachingDenoiser
@@ -68,6 +69,8 @@ from audio_transcriber.transcription.whisper_cpp_engine import (
 )
 from audio_transcriber.transcription.whisper_engine import WhisperSpeechRecognizer
 from audio_transcriber.utils.device import resolve_device
+from audio_transcriber.utils.exceptions import ProcessingCancelled
+from audio_transcriber.utils.subprocess_registry import terminate_all_processes
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +225,24 @@ def _diarization_cache_params(
     }
 
 
+def _ensure_not_cancelled(
+    cancel_event: threading.Event | None, context: str
+) -> None:
+    """Прерывает конвейер, если запрошена отмена.
+
+    Вызывается в контрольных точках — перед и после каждой стадии. Помимо
+    собственно сигнала отмены гасит зарегистрированные дочерние процессы
+    (``whisper-cli``/``llama-server``): если стадия уже их запустила, она
+    завершится быстро ошибкой, которую верхний обработчик конвертирует в
+    :class:`ProcessingCancelled`.
+    """
+    if cancel_event is None or not cancel_event.is_set():
+        return
+    terminate_all_processes()
+    logger.info("Обработка отменена по запросу пользователя (%s)", context)
+    raise ProcessingCancelled(f"Обработка отменена: {context}")
+
+
 def run_pipeline(
     config: AppConfig,
     *,
@@ -238,11 +259,18 @@ def run_pipeline(
     denoiser: DenoiserProtocol | None = None,
     enrollment_engine: SpeakerEmbeddingEngine | None = None,
     on_progress: ProgressCallback | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> TranscriptionResult:
     """Прогоняет входной файл через полный конвейер и экспортирует результат.
 
     Необязательный ``on_progress`` вызывается с событиями :class:`ProgressEvent`
     на каждом этапе — это используется TUI для живого отображения прогресса.
+
+    ``cancel_event`` — флаг отмены от веб-воркера. Проверяется в контрольных
+    точках (перед/после каждой стадии); при срабатывании поднимается
+    :class:`ProcessingCancelled`, а дочерние процессы стадии (если есть)
+    гасятся. Уже завершённые стадии к этому моменту лежат в стадийном кэше —
+    повторный запуск их переиспользует.
     """
 
     emit = on_progress or (lambda _event: None)
@@ -285,6 +313,7 @@ def run_pipeline(
     # Приоритетнее переименования по индексу (``--speaker-name``).
     enrollment_names: dict[str, str] = {}
     try:
+        _ensure_not_cancelled(cancel_event, "перед шумоподавлением")
         if denoiser is not None:
             logger.info("Шумоподавление (DeepFilterNet)...")
             emit(ProgressEvent("denoise", "Шумоподавление", fraction=None))
@@ -293,7 +322,9 @@ def run_pipeline(
             # «из кэша» (по ``detail``), не полагаясь на эвристику по времени.
             if getattr(denoiser, "last_hit", False):
                 emit(ProgressEvent("denoise", "Шумоподавление", fraction=None, detail="из кэша"))
+        _ensure_not_cancelled(cancel_event, "после шумоподавления")
 
+        _ensure_not_cancelled(cancel_event, "перед распознаванием речи")
         asr_key = cache.key("asr", config.input_file, _asr_cache_params(config, device, recognizer))
         cached_asr = cache.load("asr", asr_key)
         if cached_asr is not None:
@@ -308,12 +339,20 @@ def run_pipeline(
         else:
             logger.info("Кэш ASR: промах — распознавание речи...")
             emit(ProgressEvent("asr", "Распознавание речи", fraction=None))
-            transcription_segments, language, duration = recognizer.transcribe(
-                audio_path, language=config.language
-            )
+            try:
+                transcription_segments, language, duration = recognizer.transcribe(
+                    audio_path, language=config.language
+                )
+            except Exception:
+                # При отмене whisper-cli убит нами — это не сбой распознавания,
+                # а прерывание: поднимаем ProcessingCancelled. Без отмены —
+                # пробрасываем исходную ошибку как есть.
+                _ensure_not_cancelled(cancel_event, "распознавание речи")
+                raise
             cache.save(
                 "asr", asr_key, asr_payload(transcription_segments, language, duration)
             )
+        _ensure_not_cancelled(cancel_event, "после распознавания речи")
 
         # whisper.cpp сам использует GPU через Vulkan; pyannote.audio в этом
         # гибриде не имеет GPU-бэкенда (ROCm не поддерживает старые AMD-карты),
@@ -321,6 +360,7 @@ def run_pipeline(
         diarization_device = (
             Device.CPU if config.asr_backend is AsrBackend.WHISPER_CPP else device
         )
+        _ensure_not_cancelled(cancel_event, "перед диаризацией")
         if config.diarization_enabled:
             active_diarizer = diarizer or PyannoteSpeakerDiarizer(
                 diarization_device,
@@ -353,12 +393,19 @@ def run_pipeline(
             else:
                 logger.info("Кэш диаризации: промах — определение говорящих...")
                 emit(ProgressEvent("diarization", "Определение говорящих", fraction=None))
-                speaker_segments = active_diarizer.diarize(
-                    audio_path,
-                    num_speakers=config.num_speakers,
-                    min_speakers=config.min_speakers,
-                    max_speakers=config.max_speakers,
-                )
+                try:
+                    speaker_segments = active_diarizer.diarize(
+                        audio_path,
+                        num_speakers=config.num_speakers,
+                        min_speakers=config.min_speakers,
+                        max_speakers=config.max_speakers,
+                    )
+                except Exception:
+                    # Диаризация не порождает дочерних процессов, но отмена во
+                    # время неё должна приводить к ProcessingCancelled, а не к
+                    # ошибке: проверяем флаг и, если он снят, пробрасываем сбой.
+                    _ensure_not_cancelled(cancel_event, "определение говорящих")
+                    raise
                 # Зоны наложения речи — из обычной (не эксклюзивной) разметки, если
                 # движок её умеет. Отсутствие метода — не ошибка (мягкая деградация).
                 if config.mark_overlap:
@@ -390,6 +437,7 @@ def run_pipeline(
                 local_model_path=config.pyannote_local_model,
                 engine=enrollment_engine,
             )
+        _ensure_not_cancelled(cancel_event, "после сопоставления голосов")
     finally:
         # Временный денойзенный WAV нужен только ASR и диаризации; удаляем его,
         # как только оба этапа завершились (в т.ч. при ошибке).
@@ -397,6 +445,7 @@ def run_pipeline(
         if callable(close):
             close()
 
+    _ensure_not_cancelled(cancel_event, "перед объединением сегментов")
     emit(ProgressEvent("merge", "Объединение сегментов", fraction=None))
     known_speakers = {**config.speaker_names, **enrollment_names}
     entries, speakers = merger.merge(transcription_segments, speaker_segments, known_speakers)
@@ -405,6 +454,7 @@ def run_pipeline(
     # схлопываем зацикленные повторы и аккуратно нормализуем текст — всё до
     # склейки предложений, чтобы корректор, LLM и экспорт работали с готовым
     # текстом. Реплики, состоящие только из пометок, здесь же отбрасываются.
+    _ensure_not_cancelled(cancel_event, "перед очисткой артефактов")
     if artifact_cleaner is not None:
         logger.info("Очистка неречевых артефактов...")
         emit(ProgressEvent("clean", "Очистка артефактов", fraction=None))
@@ -438,6 +488,7 @@ def run_pipeline(
             entries, speakers, overlaps, known_speakers=known_speakers
         )
 
+    _ensure_not_cancelled(cancel_event, "перед автоисправлением")
     if corrector is not None:
         logger.info("Автоисправление опечаток (только неизвестные словоформы)...")
         emit(ProgressEvent("correction", "Автоисправление опечаток", fraction=None))
@@ -445,21 +496,28 @@ def run_pipeline(
 
     participants = None
     summary = None
+    _ensure_not_cancelled(cancel_event, "перед LLM-постобработкой")
     if config.llm_enabled:
         from audio_transcriber.llm.postprocess import run_llm_postprocess
 
         logger.info("LLM-постобработка (имена участников, правка терминов, резюме)...")
-        entries, speakers, participants, summary = run_llm_postprocess(
-            config,
-            entries,
-            speakers,
-            client=llm_client,
-            # В режиме «протокол по кнопке» резюме не считается на прогоне:
-            # имена и термины правятся, а резюме пересчитывается позже по
-            # актуальной (в т.ч. переименованной) стенограмме.
-            summarize=config.protocol_auto and config.llm_summary,
-            on_progress=emit,
-        )
+        try:
+            entries, speakers, participants, summary = run_llm_postprocess(
+                config,
+                entries,
+                speakers,
+                client=llm_client,
+                # В режиме «протокол по кнопке» резюме не считается на прогоне:
+                # имена и термины правятся, а резюме пересчитывается позже по
+                # актуальной (в т.ч. переименованной) стенограмме.
+                summarize=config.protocol_auto and config.llm_summary,
+                on_progress=emit,
+            )
+        except Exception:
+            # llama-server мог быть погашен нами при отмене — это прерывание,
+            # а не сбой LLM.
+            _ensure_not_cancelled(cancel_event, "LLM-постобработка")
+            raise
 
     result = TranscriptionResult(
         source_path=config.input_file,
@@ -472,8 +530,10 @@ def run_pipeline(
         low_confidence_threshold=config.low_confidence_threshold,
     )
 
+    _ensure_not_cancelled(cancel_event, "перед экспортом")
     if config.protocol_auto:
         for export_format in config.export_formats:
+            _ensure_not_cancelled(cancel_event, f"экспорт {export_format.value}")
             output_path = (
                 config.output_dir / f"{config.input_file.stem}.{export_format.value}"
             )

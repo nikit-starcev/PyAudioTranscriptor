@@ -104,6 +104,7 @@ from audio_transcriber.web.speakers import (
     result_from_payload,
 )
 from audio_transcriber.web.storage.jobs_db import (
+    STATUS_CANCELLED,
     STATUS_DONE,
     STATUS_QUEUED,
     STATUS_RUNNING,
@@ -744,6 +745,20 @@ def register_api(
         updated = store.get(job_id)
         return job_payload(updated) if updated is not None else job_payload(job)
 
+    @router.post("/jobs/{job_id}/cancel")
+    def cancel_job(job_id: str) -> dict[str, object]:
+        """Останавливает активную задачу.
+
+        Возвращает ``cancelled`` сразу (флаг отмены выставлен, дочерние
+        процессы погашены); терминальный статус ``cancelled`` воркер проставит
+        по завершении потока задачи. Для неактивной/уже завершённой задачи —
+        409, чтобы клиент не считал отменённой то, что не выполняется.
+        """
+        _require_job(store, job_id)
+        if not runner.is_active(job_id) or not runner.cancel(job_id):
+            raise HTTPException(status_code=409, detail="Задача не выполняется")
+        return {"id": job_id, "status": STATUS_CANCELLED}
+
     @router.delete("/jobs/{job_id}")
     def delete_job(job_id: str) -> dict[str, object]:
         job = _require_job(store, job_id)
@@ -1218,6 +1233,8 @@ def _format_size(num_bytes: int) -> str:
 def _terminal_message(job: Job) -> str:
     if job.status == STATUS_DONE:
         return "Готово"
+    if job.status == STATUS_CANCELLED:
+        return "Остановлено пользователем"
     return job.error or "Обработка завершена"
 
 
