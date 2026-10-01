@@ -93,6 +93,11 @@ function App() {
   const [doctorLoading, setDoctorLoading] = useState(false)
   const [doctorError, setDoctorError] = useState<string | null>(null)
   const [files, setFiles] = useState<FileItem[]>([])
+  // Показывать ли в списке «Файлы» уже обработанные файлы (#16). По умолчанию
+  // они скрыты; значение дублируется в ref, чтобы `refreshFiles` не менял
+  // идентичность и не заставлял переподключать SSE.
+  const [showProcessed, setShowProcessed] = useState(false)
+  const showProcessedRef = useRef(false)
   const [jobs, setJobs] = useState<Job[]>([])
   const [activeJobId, setActiveJobId] = useState<string | null>(null)
   // Счётчик запусков: повторный запуск той же задачи должен переподключить SSE
@@ -140,11 +145,21 @@ function App() {
 
   const refreshFiles = useCallback(async () => {
     try {
-      setFiles(await api<FileItem[]>('/api/files'))
+      const suffix = showProcessedRef.current ? '?include_processed=true' : ''
+      setFiles(await api<FileItem[]>(`/api/files${suffix}`))
     } catch (cause) {
       setError(errorMessage(cause))
     }
   }, [])
+
+  const toggleProcessed = useCallback(
+    (value: boolean) => {
+      showProcessedRef.current = value
+      setShowProcessed(value)
+      void refreshFiles()
+    },
+    [refreshFiles],
+  )
 
   const refreshDoctor = useCallback(async () => {
     setDoctorLoading(true)
@@ -279,7 +294,11 @@ function App() {
         liveStageRef.current = null
         void refreshJobs()
         void refreshJobTiming(activeJobId)
-        if (event.status === 'done') void loadResult(activeJobId)
+        if (event.status === 'done') {
+          // Успешный прогон убирает файл из основного списка «Файлы» (#16).
+          void refreshFiles()
+          void loadResult(activeJobId)
+        }
         return
       }
       // Живой счётчик текущей стадии: при её смене перезапускаем отсчёт.
@@ -296,7 +315,7 @@ function App() {
     }
     source.onerror = () => source.close()
     return () => source.close()
-  }, [activeJobId, runSeq, refreshJobs, loadResult, refreshJobTiming])
+  }, [activeJobId, runSeq, refreshJobs, refreshFiles, loadResult, refreshJobTiming])
 
   const enqueue = useCallback(
     async (path: string) => {
@@ -470,6 +489,22 @@ function App() {
     [refreshFiles],
   )
 
+  const restoreFile = useCallback(
+    async (name: string) => {
+      setError(null)
+      try {
+        await api<{ restored: string; processed: boolean }>(
+          `/api/files/${encodeURIComponent(name)}/restore`,
+          { method: 'POST' },
+        )
+        await refreshFiles()
+      } catch (cause) {
+        setError(errorMessage(cause))
+      }
+    },
+    [refreshFiles],
+  )
+
   const patchSpeakers = useCallback(
     async (jobId: string, body: Record<string, unknown>) => {
       const updated = await api<TranscriptResult>(`/api/jobs/${jobId}/speakers`, {
@@ -627,7 +662,19 @@ function App() {
           <section className="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="font-medium">Файлы</h2>
-              <div>
+              <div className="flex items-center gap-3">
+                <label
+                  className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400"
+                  title="Показать файлы, уже успешно обработанные: их можно вернуть в основной список"
+                >
+                  <input
+                    type="checkbox"
+                    checked={showProcessed}
+                    onChange={(event) => toggleProcessed(event.target.checked)}
+                    className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-400 dark:border-slate-600 dark:bg-slate-800"
+                  />
+                  Обработанные
+                </label>
                 <input
                   ref={fileInput}
                   type="file"
@@ -655,11 +702,39 @@ function App() {
                 {files.map((file) => (
                   <li key={file.path} className="flex items-center gap-3 py-2">
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm">{file.name}</p>
+                      <p className="truncate text-sm">
+                        {file.name}
+                        {file.processed && (
+                          <span className="ml-2 rounded-full bg-emerald-100 px-2 py-0.5 align-middle text-xs text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
+                            Обработан
+                          </span>
+                        )}
+                      </p>
                       <p className="text-xs text-slate-400 dark:text-slate-500">
-                        {formatSize(file.size)} · {formatDuration(file.duration)}
+                        {file.processed
+                          ? 'Аудио и стенограмма доступны в задаче'
+                          : `${formatSize(file.size)} · ${formatDuration(file.duration)}`}
                       </p>
                     </div>
+                    {file.processed ? (
+                      <>
+                        <button
+                          onClick={() => void restoreFile(file.name)}
+                          title="Вернуть файл в основной список «Файлы»"
+                          className="rounded-md border border-emerald-300 px-3 py-1 text-xs text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-950/50"
+                        >
+                          Вернуть
+                        </button>
+                        <button
+                          onClick={() => void deleteFile(file.name)}
+                          title="Удалить загруженный файл"
+                          className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:bg-red-50 hover:text-red-600 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-red-950/50 dark:hover:text-red-300"
+                        >
+                          Удалить
+                        </button>
+                      </>
+                    ) : (
+                      <>
                     <div className="flex items-center gap-1">
                       <label
                         htmlFor={`speakers-${file.path}`}
@@ -743,6 +818,8 @@ function App() {
                     >
                       Удалить
                     </button>
+                      </>
+                    )}
                   </li>
                 ))}
               </ul>

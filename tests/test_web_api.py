@@ -1187,3 +1187,167 @@ def test_reconcile_does_not_touch_cancelling_job(
         assert final is not None and final.status == STATUS_CANCELLED
     finally:
         runner.stop()
+
+
+# --- #16: обработанные файлы убираются из списка «Файлы» -------------------
+
+
+def _file_names(client: TestClient, *, include_processed: bool = False) -> list[str]:
+    params = {"include_processed": "true"} if include_processed else None
+    return [item["name"] for item in client.get("/api/files", params=params).json()]
+
+
+def test_successful_run_hides_file_but_keeps_it_accessible(
+    client: TestClient, web_paths: WebPaths
+) -> None:
+    """После ``done`` файл уходит из ``/api/files``, но аудио и маркер на месте."""
+    uploaded = _upload(client, "done.mp3", b"abc")
+    job_id, details = _run_job(client, uploaded["name"])
+
+    assert details["status"] == STATUS_DONE
+    # Основной список пуст, полный (с обработанными) — содержит файл.
+    assert _file_names(client) == []
+    full = client.get("/api/files", params={"include_processed": "true"}).json()
+    assert [item["name"] for item in full] == ["done.mp3"]
+    assert full[0]["processed"] is True
+    # Файл физически остался, marker создан.
+    assert (web_paths.input_dir / "done.mp3").is_file()
+    assert (web_paths.input_dir / "done.mp3.processed").is_file()
+    # Аудио по-прежнему отдаётся.
+    audio = client.get(f"/api/jobs/{job_id}/audio")
+    assert audio.status_code == 200
+    assert audio.content == b"abc"
+
+
+def test_error_run_keeps_file_in_list(web_paths: WebPaths, config_builder) -> None:
+    """Ошибочный прогон не убирает файл из списка (пометки нет)."""
+
+    def pipeline(config: AppConfig, *, on_progress=None) -> TranscriptionResult:
+        raise RuntimeError("сбой распознавания")
+
+    app = create_app(
+        paths=web_paths,
+        pipeline_fn=pipeline,
+        config_builder=config_builder,
+        heartbeat=0.05,
+    )
+    with TestClient(app) as client:
+        uploaded = _upload(client, "err.mp3", b"abc")
+        _job_id, details = _run_job(client, uploaded["name"])
+
+        assert details["status"] == STATUS_ERROR
+        files = client.get("/api/files").json()
+        assert [item["name"] for item in files] == ["err.mp3"]
+        assert files[0]["processed"] is False
+        assert not (web_paths.input_dir / "err.mp3.processed").exists()
+
+
+def test_cancelled_run_keeps_file_in_list(
+    web_paths: WebPaths, config_builder
+) -> None:
+    """Отменённый прогон файл не убирает."""
+    pipeline = _BlockingCancelPipeline()
+    app = create_app(
+        paths=web_paths,
+        pipeline_fn=pipeline,
+        config_builder=config_builder,
+        heartbeat=0.05,
+    )
+    with TestClient(app) as client:
+        uploaded = _upload(client, "cancel.mp3", b"abc")
+        job_id = client.post("/api/jobs", json={"path": uploaded["name"]}).json()["id"]
+        assert client.post(f"/api/jobs/{job_id}/run").status_code == 200
+        assert pipeline.started.wait(timeout=5.0)
+        assert client.post(f"/api/jobs/{job_id}/cancel").status_code == 200
+        _wait_for_status(client, job_id, STATUS_CANCELLED)
+
+        files = client.get("/api/files").json()
+        assert [item["name"] for item in files] == ["cancel.mp3"]
+        assert files[0]["processed"] is False
+        assert not (web_paths.input_dir / "cancel.mp3.processed").exists()
+
+
+def test_restore_returns_file_to_main_list(client: TestClient, web_paths: WebPaths) -> None:
+    """``POST /api/files/{name}/restore`` снимает метку; вызов идемпотентен."""
+    uploaded = _upload(client, "restore.mp3", b"abc")
+    _run_job(client, uploaded["name"])
+    assert _file_names(client) == []
+
+    response = client.post("/api/files/restore.mp3/restore")
+    assert response.status_code == 200
+    assert response.json() == {"restored": "restore.mp3", "processed": False}
+
+    listing = client.get("/api/files").json()
+    assert [item["name"] for item in listing] == ["restore.mp3"]
+    assert listing[0]["processed"] is False
+    assert not (web_paths.input_dir / "restore.mp3.processed").exists()
+    # Повторный возврат — не ошибка; отсутствующий файл — 404.
+    assert client.post("/api/files/restore.mp3/restore").status_code == 200
+    assert client.post("/api/files/nope.mp3/restore").status_code == 404
+
+
+def test_processed_file_rerun_keeps_it_hidden(
+    client: TestClient, web_paths: WebPaths
+) -> None:
+    """Повторный запуск задачи по убранному файлу работает и не «возвращает» его."""
+    uploaded = _upload(client, "again.mp3", b"abc")
+    job_id, details = _run_job(client, uploaded["name"])
+    assert details["status"] == STATUS_DONE
+    assert _file_names(client) == []
+
+    assert client.post(f"/api/jobs/{job_id}/run").status_code == 200
+    rerun = _wait_for_status(client, job_id, STATUS_DONE)
+
+    assert rerun["status"] == STATUS_DONE
+    assert _file_names(client) == []
+    assert _file_names(client, include_processed=True) == ["again.mp3"]
+
+
+def test_one_file_multiple_jobs_stays_hidden_after_success(
+    client: TestClient, web_paths: WebPaths
+) -> None:
+    """Один файл на несколько задач: файл скрыт после первого успеха, вторая задача работает."""
+    uploaded = _upload(client, "multi.mp3", b"abc")
+    first = client.post("/api/jobs", json={"path": uploaded["name"]}).json()["id"]
+    second = client.post("/api/jobs", json={"path": uploaded["name"]}).json()["id"]
+
+    assert client.post(f"/api/jobs/{first}/run").status_code == 200
+    _wait_for_status(client, first, STATUS_DONE)
+    assert _file_names(client) == []
+
+    # Вторая задача по тому же файлу не сломана: исходник на месте.
+    assert client.post(f"/api/jobs/{second}/run").status_code == 200
+    _wait_for_status(client, second, STATUS_DONE)
+    assert (web_paths.input_dir / "multi.mp3.processed").is_file()
+
+
+def test_delete_processed_file_removes_marker(
+    client: TestClient, web_paths: WebPaths
+) -> None:
+    """Удаление выделенного файла уносит и sidecar-маркер."""
+    uploaded = _upload(client, "delproc.mp3", b"abc")
+    _run_job(client, uploaded["name"])
+    marker = web_paths.input_dir / "delproc.mp3.processed"
+    assert marker.is_file()
+
+    assert client.delete("/api/files/delproc.mp3").status_code == 200
+
+    assert not marker.exists()
+    assert not (web_paths.input_dir / "delproc.mp3").exists()
+    assert _file_names(client, include_processed=True) == []
+
+
+def test_upload_clears_stale_processed_marker(
+    client: TestClient, web_paths: WebPaths
+) -> None:
+    """Новый файл с именем прежде обработанного не наследует метку."""
+    web_paths.input_dir.mkdir(parents=True, exist_ok=True)
+    stale = web_paths.input_dir / "stale.mp3.processed"
+    stale.write_text("", encoding="utf-8")
+
+    uploaded = _upload(client, "stale.mp3", b"abc")
+
+    assert uploaded["processed"] is False
+    assert not stale.exists()
+    assert _file_names(client) == ["stale.mp3"]
+

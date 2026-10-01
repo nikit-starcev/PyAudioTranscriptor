@@ -28,6 +28,7 @@ from audio_transcriber.utils.subprocess_registry import terminate_all_processes
 from audio_transcriber.web.estimates import StageEstimator, probe_duration
 from audio_transcriber.web.events import JobEventBus
 from audio_transcriber.web.paths import WebPaths
+from audio_transcriber.web.processed import mark_processed
 from audio_transcriber.web.results import serialize_result
 from audio_transcriber.web.storage.jobs_db import (
     STATUS_CANCELLED,
@@ -459,6 +460,11 @@ class JobRunner:
             result_path=str(result_path),
             stage_times=timer.timings(),
         )
+        # Успешный прогон убирает исходный файл из основного списка ``/api/files``
+        # (issue #16), не перемещая его: аудио, повторный запуск и стадийный кэш
+        # продолжают работать. Помечаем до публикации ``done``, чтобы клиент,
+        # перечитав список по событию, уже не увидел файл.
+        self._mark_source_processed(config.input_file)
         done_payload: dict[str, object] = {
             "stage": "done",
             "fraction": 1.0,
@@ -474,6 +480,24 @@ class JobRunner:
         """Сбрасывает кэш статистики: завершённый прогон учтётся сразу."""
         if self._estimator is not None:
             self._estimator.invalidate()
+
+    def _mark_source_processed(self, source: Path) -> None:
+        """Помечает исходный файл обработанным после успешного прогона (#16).
+
+        Только для файлов внутри каталога загрузок: он «уходит» из основного
+        списка ``/api/files``, оставаясь на месте для прослушивания и повторного
+        запуска. Ошибка файловой системы не должна ронять успешную задачу —
+        достаточно предупреждения в логе.
+        """
+        try:
+            input_root = self._paths.input_dir.resolve()
+            resolved = source.resolve()
+        except OSError:
+            return
+        if not resolved.is_relative_to(input_root) or not resolved.is_file():
+            return
+        if not mark_processed(resolved):
+            logger.warning("Не удалось пометить файл обработанным: %s", resolved)
 
     def _collect_samples(
         self, config: AppConfig, result: TranscriptionResult

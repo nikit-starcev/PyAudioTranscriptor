@@ -82,6 +82,7 @@ from audio_transcriber.web.models import (
     resolve_target,
 )
 from audio_transcriber.web.paths import STATIC_DIR, WebPaths
+from audio_transcriber.web.processed import clear_processed, is_processed
 from audio_transcriber.web.results import load_result_file, result_summary
 from audio_transcriber.web.runner import ConfigBuilder, JobRunner, PipelineFn
 from audio_transcriber.web.secrets import (
@@ -643,8 +644,14 @@ def register_api(
         return {"deleted": model_id, "removed": removed}
 
     @router.get("/files")
-    def list_files() -> list[dict[str, object]]:
-        return _list_files(paths.input_dir)
+    def list_files(include_processed: bool = False) -> list[dict[str, object]]:
+        """Список загруженных файлов.
+
+        По умолчанию обработанные файлы (issue #16) скрыты; ``include_processed=
+        true`` показывает и их — с полем ``processed``, чтобы UI мог выделить
+        группу «Обработанные» и предложить возврат.
+        """
+        return _list_files(paths.input_dir, include_processed=include_processed)
 
     @router.post("/files/upload", status_code=201)
     async def upload_file(file: Annotated[UploadFile, File()]) -> dict[str, object]:
@@ -670,7 +677,20 @@ def register_api(
             raise HTTPException(
                 status_code=500, detail=f"Не удалось удалить файл: {exc}"
             ) from exc
+        # Удаляем и sidecar-маркер, иначе он останется «висеть» для нового файла
+        # с тем же именем (issue #16).
+        clear_processed(target)
         return {"deleted": target.name}
+
+    @router.post("/files/{name}/restore")
+    def restore_file(name: str) -> dict[str, object]:
+        """Снимает метку «обработан» — возвращает файл в основной список (#16).
+
+        Идемпотентно: повторный вызов для невыделенного файла тоже успешен.
+        """
+        target = _resolve_upload_file(paths, name)
+        clear_processed(target)
+        return {"restored": target.name, "processed": False}
 
     @router.get("/jobs")
     def list_jobs() -> list[dict[str, object]]:
@@ -1419,13 +1439,18 @@ def _index_response() -> Response:
     return HTMLResponse(_PLACEHOLDER_HTML)
 
 
-def _list_files(input_dir: Path) -> list[dict[str, object]]:
+def _list_files(
+    input_dir: Path, *, include_processed: bool = False
+) -> list[dict[str, object]]:
     if not input_dir.is_dir():
         return []
     items: list[dict[str, object]] = []
     for path in sorted(input_dir.iterdir(), key=lambda item: item.name.casefold()):
         try:
             if not path.is_file() or path.suffix.lower() not in MEDIA_EXTENSIONS:
+                continue
+            processed = is_processed(path)
+            if processed and not include_processed:
                 continue
             # Абсолютный путь: клиент шлёт его обратно в ``POST /api/jobs``,
             # и он должен приниматься независимо от текущего рабочего каталога.
@@ -1435,6 +1460,7 @@ def _list_files(input_dir: Path) -> list[dict[str, object]]:
                     "path": str(path.resolve()),
                     "size": path.stat().st_size,
                     "duration": _probe_duration(path),
+                    "processed": processed,
                 }
             )
         except OSError:
@@ -1454,11 +1480,15 @@ async def _save_upload(file: UploadFile, input_dir: Path) -> dict[str, object]:
         target.write_bytes(data)
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Не удалось сохранить файл: {exc}") from exc
+    # Новый файл не может быть «обработан»: снимаем возможный устаревший маркер
+    # от прежде удалённого файла с тем же именем (issue #16).
+    clear_processed(target)
     return {
         "name": target.name,
         "path": str(target.resolve()),
         "size": target.stat().st_size,
         "duration": None,
+        "processed": False,
     }
 
 

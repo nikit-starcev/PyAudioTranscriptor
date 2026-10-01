@@ -14,6 +14,8 @@ export type FileItem = {
   path: string
   size: number
   duration: number | null
+  /** Файл успешно обработан и убран из основного списка (#16). */
+  processed: boolean
 }
 
 export type StageTime = {
