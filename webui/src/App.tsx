@@ -10,6 +10,7 @@ import {
   type ApplyNamesResponse,
   type ConfigInfo,
   type DoctorReport,
+  type Entry,
   type FileItem,
   type Job,
   type JobDetails,
@@ -18,6 +19,7 @@ import {
   type ProtocolResponse,
   type SampleMeta,
   type StageTime,
+  type TranscriptEditsRequest,
   type TranscriptResult,
   type VoiceInfo,
   type WebSettings,
@@ -516,6 +518,18 @@ function App() {
       await refreshSamples(jobId)
     },
     [refreshSamples],
+  )
+
+  const patchTranscript = useCallback(
+    async (jobId: string, body: TranscriptEditsRequest) => {
+      const updated = await api<TranscriptResult>(`/api/jobs/${jobId}/transcript`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      setResult(updated)
+    },
+    [],
   )
 
   const applyNames = useCallback(
@@ -1069,6 +1083,16 @@ function App() {
               jobId={activeJobId}
               entries={filteredEntries}
               speakers={result.speakers}
+              onSaveText={(entry: Entry, text) => {
+                const index = result.entries.indexOf(entry)
+                if (index < 0) return Promise.resolve()
+                return patchTranscript(activeJobId, { edits: [{ index, text }] })
+              }}
+              onResetText={(entry: Entry) => {
+                const index = result.entries.indexOf(entry)
+                if (index < 0) return Promise.resolve()
+                return patchTranscript(activeJobId, { resets: [index] })
+              }}
             />
 
             <div className="rounded-md border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-800/50">

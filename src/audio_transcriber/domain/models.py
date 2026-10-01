@@ -83,6 +83,11 @@ class TranscriptEntry:
     # покрытая сегментами диаризации этого говорящего (0..1). ``None``, если
     # диаризации не было и оценить нечего.
     speaker_confidence: float | None = None
+    # Ручная правка текста в веб-интерфейсе: ``True`` — текст изменён
+    # пользователем; ``original_text`` — исходный текст на момент первой правки
+    # (для сброса). Таймкоды и говорящий при правке не меняются.
+    edited: bool = False
+    original_text: str | None = None
 
     @property
     def speaker_label(self) -> str:

@@ -67,6 +67,7 @@ def result_from_payload(
                 by_id.get(extra_id) or Speaker(id=extra_id, display_name=extra_id)
             )
         text = item.get("text")
+        original_text = item.get("original_text")
         entries.append(
             TranscriptEntry(
                 start=start,
@@ -76,6 +77,8 @@ def result_from_payload(
                 overlap=bool(item.get("overlap")),
                 extra_speakers=extra_speakers,
                 speaker_confidence=_as_float(item.get("speaker_confidence")),
+                edited=bool(item.get("edited")),
+                original_text=str(original_text) if isinstance(original_text, str) else None,
             )
         )
 

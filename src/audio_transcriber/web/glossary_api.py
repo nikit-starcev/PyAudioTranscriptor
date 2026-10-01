@@ -39,6 +39,21 @@ class EntryUpdate(BaseModel):
     note: str | None = None
 
 
+class EntryQuickCreate(BaseModel):
+    """Тело ``POST /api/glossary/quick`` — добавление термина из выделения.
+
+    ``term`` — выделенный в стенограмме фрагмент. Если ``canonical`` не задан,
+    каноном становится сам выделенный текст; если канон отличается от
+    выделения, а ``variant`` пуст, выделение сохраняется как ошибочная форма.
+    """
+
+    term: str
+    canonical: str | None = None
+    variant: str | None = None
+    note: str | None = None
+    source: str | None = None
+
+
 class SourceUpdate(BaseModel):
     """Тело ``PATCH /api/glossary/sources/{name}``."""
 
@@ -129,6 +144,37 @@ def register_glossary_routes(router: APIRouter, *, db_path: Callable[[], Path]) 
             raise HTTPException(status_code=500, detail="Запись не сохранилась")
         return _entry_to_dict(entry, names)
 
+    @router.post("/glossary/quick", status_code=201)
+    def create_entry_quick(payload: EntryQuickCreate) -> dict[str, object]:
+        """Добавляет термин из выделения стенограммы (#17).
+
+        Обрезает пробелы и окружающую пунктуацию, автозаполняет канон
+        выделенным текстом и сохраняет ошибочную форму, если канон изменён.
+        """
+        term = _clean_term(payload.term)
+        if not term:
+            raise HTTPException(status_code=400, detail="Термин не может быть пустым")
+        canonical = _clean_term(payload.canonical) or term
+        variant = _clean_term(payload.variant) or None
+        if variant is None and canonical != term:
+            variant = term
+        note = payload.note.strip() if isinstance(payload.note, str) and payload.note.strip() else None
+        with _open() as db:
+            try:
+                entry_id = db.add_entry(
+                    canonical,
+                    variant=variant,
+                    note=note,
+                    source=payload.source or "manual",
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            names = {item.id: item.name for item in db.list_sources()}
+            entry = db.get_entry(entry_id)
+        if entry is None:
+            raise HTTPException(status_code=500, detail="Запись не сохранилась")
+        return _entry_to_dict(entry, names)
+
     @router.patch("/glossary/entries/{entry_id}")
     def patch_entry(entry_id: int, payload: EntryUpdate) -> dict[str, object]:
         if payload.enabled is None and payload.canonical is None and payload.variant is None and payload.note is None:
@@ -200,6 +246,19 @@ def register_glossary_routes(router: APIRouter, *, db_path: Callable[[], Path]) 
                 "entries": db.count(),
                 "enabled": db.count_enabled(),
             }
+
+
+#: Окружающая пунктуация, которую снимаем с выделенного термина.
+_TERM_PUNCTUATION = "«»\"'`“”„‘’()[]{}<>,;:!?—–-….,"
+
+
+def _clean_term(value: str | None) -> str:
+    """Обрезает пробелы и окружающую пунктуацию, схлопывает пробелы."""
+    if not value:
+        return ""
+    cleaned = value.strip().strip(_TERM_PUNCTUATION).strip()
+    cleaned = cleaned.strip(_TERM_PUNCTUATION).strip()
+    return " ".join(cleaned.split())
 
 
 def _resolve_kind(kind: str | None, filename: str) -> str:

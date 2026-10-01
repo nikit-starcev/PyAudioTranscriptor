@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from audio_transcriber.domain.models import Speaker, TranscriptEntry, TranscriptionResult
@@ -57,6 +57,8 @@ def entry_to_dict(entry: TranscriptEntry, threshold: float | None) -> dict[str, 
         "text": entry.text,
         "low_confidence": _is_low_confidence(entry, threshold),
         "overlap": entry.overlap,
+        "edited": entry.edited,
+        "original_text": entry.original_text,
     }
 
 
@@ -128,3 +130,105 @@ def result_summary(payload: Mapping[str, object]) -> dict[str, object]:
         "speakers": len(speakers) if isinstance(speakers, list) else 0,
         "samples": len(samples) if isinstance(samples, Mapping) else 0,
     }
+
+
+def apply_transcript_edits(
+    payload: Mapping[str, object],
+    *,
+    edits: Mapping[int, str],
+    resets: Sequence[int] = (),
+) -> dict[str, object]:
+    """Копия payload с ручными правками текста реплик (#26).
+
+    ``edits`` — отображение ``индекс реплики -> новый текст``; ``resets`` —
+    индексы реплик, возвращаемых к исходному тексту. Правится только поле
+    ``text``: таймкоды и говорящий не меняются. У изменённых реплик
+    выставляется ``edited=True`` и запоминается ``original_text`` (первый
+    исходный текст); сброс очищает обе пометки. Сброс имеет приоритет над
+    правкой для одного и того же индекса.
+    """
+    entries = payload.get("entries")
+    if not isinstance(entries, list):
+        raise ValueError("В результате нет реплик")
+    reset_set = set(resets)
+    updated_entries: list[object] = []
+    for index, raw in enumerate(entries):
+        if not isinstance(raw, Mapping):
+            updated_entries.append(raw)
+            continue
+        item = dict(raw)
+        if index in reset_set:
+            original = item.get("original_text")
+            if isinstance(original, str):
+                item["text"] = original
+            item["edited"] = False
+            item["original_text"] = None
+        elif index in edits:
+            text = edits[index]
+            current = item.get("text")
+            current_text = current if isinstance(current, str) else ""
+            # Правка, совпадающая с текущим текстом, ничего не меняет — не
+            # помечаем реплику «изменённой вручную» случайно.
+            if text != current_text:
+                if not item.get("edited") or not isinstance(item.get("original_text"), str):
+                    item["original_text"] = current_text
+                item["text"] = text
+                item["edited"] = True
+        updated_entries.append(item)
+    updated = dict(payload)
+    updated["entries"] = updated_entries
+    return updated
+
+
+def merge_transcript_edits(
+    new_payload: Mapping[str, object], previous_payload: Mapping[str, object] | None
+) -> dict[str, object]:
+    """Переносит ручные правки текста из прошлого результата в новый.
+
+    Нужен при повторном прогоне задачи (в том числе из ASR-кэша): свежий
+    результат содержит исходные тексты, а ручные правки пользователя должны
+    сохраниться. Реплики сопоставляются по неизменным таймкодам ``(start,
+    end)`` — при правке они не меняются.
+    """
+    if previous_payload is None:
+        return dict(new_payload)
+    previous: dict[tuple[float, float], Mapping[str, object]] = {}
+    old_entries = previous_payload.get("entries")
+    if isinstance(old_entries, list):
+        for raw in old_entries:
+            if not isinstance(raw, Mapping) or not raw.get("edited"):
+                continue
+            start = _time_key(raw.get("start"))
+            end = _time_key(raw.get("end"))
+            if start is not None and end is not None:
+                previous[(start, end)] = raw
+    if not previous:
+        return dict(new_payload)
+    entries = new_payload.get("entries")
+    if not isinstance(entries, list):
+        return dict(new_payload)
+    updated_entries: list[object] = []
+    for raw in entries:
+        if not isinstance(raw, Mapping):
+            updated_entries.append(raw)
+            continue
+        start = _time_key(raw.get("start"))
+        end = _time_key(raw.get("end"))
+        old = previous.get((start, end)) if start is not None and end is not None else None
+        item = dict(raw)
+        old_text = old.get("text") if old is not None else None
+        if old is not None and isinstance(old_text, str):
+            item["text"] = old_text
+            item["edited"] = True
+            item["original_text"] = old.get("original_text")
+        updated_entries.append(item)
+    updated = dict(new_payload)
+    updated["entries"] = updated_entries
+    return updated
+
+
+def _time_key(value: object) -> float | None:
+    """Ключ сопоставления реплик: таймкод, округлённый до миллисекунд."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return round(float(value), 3)

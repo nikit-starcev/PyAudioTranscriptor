@@ -155,6 +155,24 @@ def test_protocol_uses_current_renamed_result(
     assert captured_results[-1].speakers[0].display_name == "Иван Иванов"
 
 
+def test_protocol_uses_current_edited_text(
+    client: TestClient, captured_results: list[TranscriptionResult]
+) -> None:
+    """Ручная правка текста (#26) попадает в протокол через текущий результат."""
+    uploaded = _upload(client)
+    job_id = _run_job(client, uploaded["name"])
+    client.patch(
+        f"/api/jobs/{job_id}/transcript",
+        json={"edits": [{"index": 0, "text": "правленый текст"}]},
+    )
+
+    assert client.post(f"/api/jobs/{job_id}/protocol").status_code == 200
+
+    assert captured_results
+    assert captured_results[-1].entries[0].text == "правленый текст"
+    assert captured_results[-1].entries[0].edited is True
+
+
 def test_protocol_download(client: TestClient) -> None:
     uploaded = _upload(client)
     job_id = _run_job(client, uploaded["name"])

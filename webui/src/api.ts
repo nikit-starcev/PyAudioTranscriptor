@@ -89,6 +89,10 @@ export type Entry = {
   text: string
   low_confidence: boolean
   overlap: boolean
+  /** Текст изменён вручную в веб-интерфейсе (#26). */
+  edited: boolean
+  /** Исходный текст до первой ручной правки (для сброса). */
+  original_text: string | null
 }
 
 export type Mark = { key: string; symbol: string; label: string }
@@ -322,6 +326,21 @@ export type GlossaryEntry = {
 }
 
 export type GlossaryEntriesPage = { entries: GlossaryEntry[]; total: number }
+
+/** Тело ``POST /api/glossary/quick`` — добавление термина из выделения (#17). */
+export type GlossaryQuickRequest = {
+  term: string
+  canonical?: string | null
+  variant?: string | null
+  note?: string | null
+  source?: string | null
+}
+
+/** Тело ``PATCH /api/jobs/{id}/transcript`` — ручная правка текста реплик (#26). */
+export type TranscriptEditsRequest = {
+  edits?: { index: number; text: string }[]
+  resets?: number[]
+}
 
 export type GlossaryStats = { sources: number; entries: number; enabled: number }
 

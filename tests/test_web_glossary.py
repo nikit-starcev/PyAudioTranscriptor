@@ -165,3 +165,64 @@ def test_import_rejects_bad_kind_and_empty_file(client: TestClient) -> None:
 def test_missing_source_returns_404(client: TestClient) -> None:
     assert client.patch("/api/glossary/sources/none", json={"enabled": False}).status_code == 404
     assert client.delete("/api/glossary/sources/none").status_code == 404
+
+
+def test_quick_add_defaults_canonical_to_selection(client: TestClient) -> None:
+    response = client.post("/api/glossary/quick", json={"term": "  КИСУСС  "})
+
+    assert response.status_code == 201
+    entry = response.json()
+    assert entry["canonical"] == "КИСУСС"
+    assert entry["variant"] is None
+    assert entry["source"] == "manual"
+    assert client.get("/api/glossary/entries").json()["total"] == 1
+
+
+def test_quick_add_changed_canonical_keeps_selection_as_variant(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/glossary/quick",
+        json={"term": "кисус", "canonical": "КИСУСС", "note": "система", "source": "встреча"},
+    )
+
+    assert response.status_code == 201
+    entry = response.json()
+    assert entry["canonical"] == "КИСУСС"
+    assert entry["variant"] == "кисус"
+    assert entry["note"] == "система"
+    assert entry["source"] == "встреча"
+
+
+def test_quick_add_strips_whitespace_and_punctuation(client: TestClient) -> None:
+    response = client.post("/api/glossary/quick", json={"term": "«кисус»,"})
+
+    assert response.status_code == 201
+    assert response.json()["canonical"] == "кисус"
+
+
+def test_quick_add_explicit_variant(client: TestClient) -> None:
+    response = client.post(
+        "/api/glossary/quick",
+        json={"term": "КИСУСС", "canonical": "КИСУСС", "variant": "кисусс"},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["variant"] == "кисусс"
+
+
+def test_quick_add_empty_term_returns_400(client: TestClient) -> None:
+    response = client.post("/api/glossary/quick", json={"term": "   ...  "})
+
+    assert response.status_code == 400
+    assert "пустым" in response.json()["detail"]
+
+
+def test_quick_add_deduplicates_existing_entry(client: TestClient) -> None:
+    first = client.post("/api/glossary/quick", json={"term": "КИСУСС"})
+    second = client.post("/api/glossary/quick", json={"term": "КИСУСС"})
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert first.json()["id"] == second.json()["id"]
+    assert client.get("/api/glossary/entries").json()["total"] == 1

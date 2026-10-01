@@ -1,16 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { MouseEvent as ReactMouseEvent } from 'react'
 
 import { formatTime, speakerName, type Entry, type SpeakerInfo } from '../api'
+import GlossaryQuickModal from './GlossaryQuickModal'
 
 type Props = {
   jobId: string
   entries: Entry[]
   speakers: SpeakerInfo[]
+  /** Сохранить ручную правку текста реплики (#26). */
+  onSaveText?: (entry: Entry, text: string) => Promise<void>
+  /** Сбросить реплику к исходному тексту (#26). */
+  onResetText?: (entry: Entry) => Promise<void>
 }
 
 type Fragment = { key: string; start: number; end: number }
 
 type SpeakerPiece = { id: string | null; name: string; extra: boolean }
+
+type ContextMenu = { x: number; y: number; term: string }
 
 function entryKey(entry: Entry, index: number): string {
   return `${entry.start}-${entry.end}-${index}`
@@ -44,6 +52,15 @@ function PlayerIcon({ paused }: { paused: boolean }) {
   )
 }
 
+//: Карандаш для входа в режим правки текста реплики.
+function PencilIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" aria-hidden="true">
+      <path d="M11.5 1.5a1.6 1.6 0 0 1 2.3 0l.7.7a1.6 1.6 0 0 1 0 2.3l-8 8L3 14l1.5-3.5 8-8zM3.9 11.2l-.7 1.6 1.6-.7 7.6-7.6-0.9-.9-7.6 7.6z" />
+    </svg>
+  )
+}
+
 //: Минимальная длина фрагмента, чтобы не делить на ноль в прогрессе.
 const MIN_FRAGMENT = 0.05
 //: Точность остановки: останавливаемся чуть раньше `end`, чтобы не зацепить
@@ -52,7 +69,7 @@ const STOP_EPSILON = 0.005
 //: Как часто обновлять прогресс (мс), чтобы не ререндерить таблицу каждый кадр.
 const PAINT_INTERVAL_MS = 100
 
-function TranscriptTable({ jobId, entries, speakers }: Props) {
+function TranscriptTable({ jobId, entries, speakers, onSaveText, onResetText }: Props) {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const [playingKey, setPlayingKey] = useState<string | null>(null)
   const [position, setPosition] = useState(0)
@@ -62,6 +79,17 @@ function TranscriptTable({ jobId, entries, speakers }: Props) {
   const rafRef = useRef<number | null>(null)
   const lastPaintRef = useRef(0)
   const playRef = useRef<(fragment: Fragment) => void>(() => {})
+
+  // Ручная правка текста (#26): ключ редактируемой реплики и черновик.
+  const [editingKey, setEditingKey] = useState<string | null>(null)
+  const [draftText, setDraftText] = useState('')
+  const [savingKey, setSavingKey] = useState<string | null>(null)
+  const [editError, setEditError] = useState<string | null>(null)
+
+  // Контекстное меню «Добавить в глоссарий» (#17) и модальное окно быстрого
+  // добавления термина.
+  const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null)
+  const [quickTerm, setQuickTerm] = useState<string | null>(null)
 
   // Актуальные значения для цикла requestAnimationFrame (без пересоздания).
   const entriesRef = useRef(entries)
@@ -74,6 +102,32 @@ function TranscriptTable({ jobId, entries, speakers }: Props) {
   useEffect(() => {
     autoAdvanceRef.current = autoAdvance
   }, [autoAdvance])
+
+  // Закрываем контекстное меню при клике/скролле/смене размера/задач.
+  useEffect(() => {
+    if (!contextMenu) return
+    const close = () => setContextMenu(null)
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') close()
+    }
+    window.addEventListener('click', close)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('resize', close)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('click', close)
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('resize', close)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [contextMenu])
+
+  // При смене задачи выходим из режима правки.
+  useEffect(() => {
+    setEditingKey(null)
+    setEditError(null)
+    setContextMenu(null)
+  }, [jobId])
 
   const cancelLoop = useCallback(() => {
     if (rafRef.current != null) {
@@ -170,6 +224,53 @@ function TranscriptTable({ jobId, entries, speakers }: Props) {
     else playFragment(fragment)
   }
 
+  const beginEdit = useCallback(
+    (key: string, text: string) => {
+      if (!onSaveText) return
+      setEditingKey(key)
+      setDraftText(text)
+      setEditError(null)
+    },
+    [onSaveText],
+  )
+
+  const saveEdit = useCallback(
+    async (entry: Entry, key: string) => {
+      if (!onSaveText) return
+      setSavingKey(key)
+      setEditError(null)
+      try {
+        await onSaveText(entry, draftText)
+        setEditingKey(null)
+      } catch (cause) {
+        setEditError(cause instanceof Error ? cause.message : String(cause))
+      } finally {
+        setSavingKey(null)
+      }
+    },
+    [onSaveText, draftText],
+  )
+
+  const resetEdit = useCallback(
+    async (entry: Entry) => {
+      if (!onResetText) return
+      setEditError(null)
+      try {
+        await onResetText(entry)
+      } catch (cause) {
+        setEditError(cause instanceof Error ? cause.message : String(cause))
+      }
+    },
+    [onResetText],
+  )
+
+  const openContextMenu = useCallback((event: ReactMouseEvent) => {
+    const selected = window.getSelection()?.toString().trim()
+    if (!selected) return
+    event.preventDefault()
+    setContextMenu({ x: event.clientX, y: event.clientY, term: selected })
+  }, [])
+
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
@@ -187,9 +288,15 @@ function TranscriptTable({ jobId, entries, speakers }: Props) {
             воспроизведение фрагмента
           </span>
         ) : (
-          <span>Кнопка воспроизведения проигрывает ровно интервал реплики</span>
+          <span>Двойной клик по тексту — правка; ПКМ по выделению — в глоссарий</span>
         )}
       </div>
+
+      {editError && (
+        <p className="rounded-md bg-red-50 px-3 py-1.5 text-xs text-red-700 dark:bg-red-950/50 dark:text-red-300">
+          {editError}
+        </p>
+      )}
 
       <audio ref={audioRef} preload="metadata" src={`/api/jobs/${jobId}/audio`} className="hidden" />
 
@@ -208,6 +315,7 @@ function TranscriptTable({ jobId, entries, speakers }: Props) {
             {entries.map((entry, index) => {
               const key = entryKey(entry, index)
               const playing = playingKey === key
+              const editing = editingKey === key && onSaveText != null
               const span = Math.max(MIN_FRAGMENT, entry.end - entry.start)
               const percent = playing
                 ? Math.min(100, Math.max(0, (position / span) * 100))
@@ -272,8 +380,83 @@ function TranscriptTable({ jobId, entries, speakers }: Props) {
                     )}
                     {entry.overlap && <span title="наложение речи">⇄</span>}
                   </td>
-                  <td className="px-3 py-1.5">
-                    <div className="break-words">{entry.text}</div>
+                  <td
+                    className="px-3 py-1.5"
+                    onContextMenu={(event) => openContextMenu(event)}
+                  >
+                    {editing ? (
+                      <div className="space-y-1">
+                        <textarea
+                          value={draftText}
+                          onChange={(event) => setDraftText(event.target.value)}
+                          rows={2}
+                          autoFocus
+                          className="w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                        />
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void saveEdit(entry, key)}
+                            disabled={savingKey === key}
+                            className="rounded-md bg-slate-800 px-2.5 py-1 text-xs text-white hover:bg-slate-700 disabled:opacity-40 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-white"
+                          >
+                            {savingKey === key ? 'Сохранение…' : 'Сохранить'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingKey(null)
+                              setEditError(null)
+                            }}
+                            className="rounded-md border border-slate-300 px-2.5 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
+                          >
+                            Отмена
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-start gap-1.5">
+                        <div
+                          className="break-words"
+                          onDoubleClick={() => beginEdit(key, entry.text)}
+                        >
+                          {entry.text}
+                        </div>
+                        {onSaveText && (
+                          <button
+                            type="button"
+                            onClick={() => beginEdit(key, entry.text)}
+                            aria-label="Править текст реплики"
+                            title="Править текст"
+                            className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded border border-slate-300 text-slate-500 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+                          >
+                            <PencilIcon />
+                          </button>
+                        )}
+                        {entry.edited && (
+                          <span
+                            className="mt-0.5 shrink-0 rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950/60 dark:text-amber-300"
+                            title={
+                              entry.original_text
+                                ? `Исходный текст: ${entry.original_text}`
+                                : 'изменено вручную'
+                            }
+                          >
+                            изменено вручную
+                          </span>
+                        )}
+                        {entry.edited && onResetText && (
+                          <button
+                            type="button"
+                            onClick={() => void resetEdit(entry)}
+                            title="Сбросить к исходному тексту"
+                            className="mt-0.5 shrink-0 rounded border border-slate-300 px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+                          >
+                            сбросить
+                          </button>
+                        )}
+                      </div>
+                    )}
                     {playing && (
                       <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-blue-100 dark:bg-blue-900">
                         <div
@@ -294,6 +477,33 @@ function TranscriptTable({ jobId, entries, speakers }: Props) {
           </p>
         )}
       </div>
+
+      {contextMenu && (
+        <div
+          role="menu"
+          className="fixed z-50 min-w-[12rem] rounded-md border border-slate-200 bg-white py-1 text-sm shadow-lg dark:border-slate-700 dark:bg-slate-900"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setQuickTerm(contextMenu.term)
+              setContextMenu(null)
+            }}
+            className="block w-full px-3 py-1.5 text-left hover:bg-slate-100 dark:hover:bg-slate-800"
+          >
+            Добавить в глоссарий: «{contextMenu.term}»
+          </button>
+        </div>
+      )}
+
+      <GlossaryQuickModal
+        open={quickTerm != null}
+        term={quickTerm ?? ''}
+        onClose={() => setQuickTerm(null)}
+      />
     </div>
   )
 }

@@ -29,7 +29,7 @@ from audio_transcriber.web.estimates import StageEstimator, probe_duration
 from audio_transcriber.web.events import JobEventBus
 from audio_transcriber.web.paths import WebPaths
 from audio_transcriber.web.processed import mark_processed
-from audio_transcriber.web.results import serialize_result
+from audio_transcriber.web.results import load_result_file, merge_transcript_edits, serialize_result
 from audio_transcriber.web.storage.jobs_db import (
     STATUS_CANCELLED,
     STATUS_DONE,
@@ -423,6 +423,10 @@ class JobRunner:
         payload = serialize_result(result, samples=samples)
         payload["samples"] = samples
         result_path = self._paths.results_dir / f"{job_id}.json"
+        # Повторный прогон (в том числе из ASR-кэша) не должен затирать ручные
+        # правки текста (#26): переносим их из предыдущего результата по
+        # неизменным таймкодам.
+        payload = merge_transcript_edits(payload, load_result_file(result_path))
         try:
             result_path.parent.mkdir(parents=True, exist_ok=True)
             result_path.write_text(

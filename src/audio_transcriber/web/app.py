@@ -83,7 +83,11 @@ from audio_transcriber.web.models import (
 )
 from audio_transcriber.web.paths import STATIC_DIR, WebPaths
 from audio_transcriber.web.processed import clear_processed, is_processed
-from audio_transcriber.web.results import load_result_file, result_summary
+from audio_transcriber.web.results import (
+    apply_transcript_edits,
+    load_result_file,
+    result_summary,
+)
 from audio_transcriber.web.runner import ConfigBuilder, JobRunner, PipelineFn
 from audio_transcriber.web.secrets import (
     SecretsError,
@@ -242,6 +246,24 @@ class ApplyNamesRequest(BaseModel):
 
     min_similarity: float | None = None
     references: dict[str, str] = Field(default_factory=dict)
+
+
+class TranscriptEdit(BaseModel):
+    """Одна правка текста реплики: ``index`` — позиция в списке реплик."""
+
+    index: int = Field(ge=0)
+    text: str
+
+
+class TranscriptEditsRequest(BaseModel):
+    """Тело ``PATCH /api/jobs/{id}/transcript``.
+
+    ``edits`` — правки текста, ``resets`` — индексы реплик, возвращаемых к
+    исходному тексту. Таймкоды и говорящий не меняются.
+    """
+
+    edits: list[TranscriptEdit] = Field(default_factory=list)
+    resets: list[int] = Field(default_factory=list)
 
 
 class SettingsUpdate(BaseModel):
@@ -798,6 +820,44 @@ def register_api(
         if result is None:
             raise HTTPException(status_code=404, detail="Результат ещё не готов")
         return JSONResponse(result)
+
+    @router.patch("/jobs/{job_id}/transcript")
+    def edit_transcript(job_id: str, payload: TranscriptEditsRequest) -> Response:
+        """Правит текст реплик вручную и перезаписывает JSON результата (#26).
+
+        Меняется только ``text``; таймкоды и говорящий остаются прежними. У
+        изменённых реплик выставляется пометка ``edited``; ``resets``
+        возвращают реплику к сохранённому исходному тексту. Правки сохраняются
+        в файл результата и потому попадают в экспорт и протокол.
+        """
+        job = _require_job(store, job_id)
+        result = _require_result(paths, job)
+        entries = result.get("entries")
+        if not isinstance(entries, list):
+            raise HTTPException(status_code=400, detail="В результате нет реплик")
+        count = len(entries)
+        edits: dict[int, str] = {}
+        for edit in payload.edits:
+            if edit.index >= count:
+                raise HTTPException(
+                    status_code=400, detail=f"Реплика #{edit.index} не найдена"
+                )
+            edits[edit.index] = edit.text
+        resets: list[int] = []
+        for index in payload.resets:
+            if index < 0 or index >= count:
+                raise HTTPException(
+                    status_code=400, detail=f"Реплика #{index} не найдена"
+                )
+            resets.append(index)
+        if not edits and not resets:
+            raise HTTPException(status_code=400, detail="Не указано ни одной правки")
+        try:
+            updated = apply_transcript_edits(result, edits=edits, resets=resets)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _write_result(paths, job, updated)
+        return JSONResponse(updated)
 
     @router.post("/jobs/{job_id}/protocol")
     def job_protocol(job_id: str) -> dict[str, object]:
