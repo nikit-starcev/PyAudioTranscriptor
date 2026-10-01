@@ -101,6 +101,11 @@ function App() {
   const [showProcessed, setShowProcessed] = useState(false)
   const showProcessedRef = useRef(false)
   const [jobs, setJobs] = useState<Job[]>([])
+  // Показывать ли в списке «Задачи» мягко удалённые (#30). По умолчанию скрыты;
+  // значение дублируется в ref, чтобы `refreshJobs` не менял идентичность и не
+  // заставлял переподключать SSE.
+  const [showDeleted, setShowDeleted] = useState(false)
+  const showDeletedRef = useRef(false)
   const [activeJobId, setActiveJobId] = useState<string | null>(null)
   // Счётчик запусков: повторный запуск той же задачи должен переподключить SSE
   // (значение activeJobId при этом не меняется, и эффект не сработал бы).
@@ -139,11 +144,21 @@ function App() {
 
   const refreshJobs = useCallback(async () => {
     try {
-      setJobs(await api<Job[]>('/api/jobs'))
+      const suffix = showDeletedRef.current ? '?include_deleted=true' : ''
+      setJobs(await api<Job[]>(`/api/jobs${suffix}`))
     } catch (cause) {
       setError(errorMessage(cause))
     }
   }, [])
+
+  const toggleDeleted = useCallback(
+    (value: boolean) => {
+      showDeletedRef.current = value
+      setShowDeleted(value)
+      void refreshJobs()
+    },
+    [refreshJobs],
+  )
 
   const refreshFiles = useCallback(async () => {
     try {
@@ -438,11 +453,57 @@ function App() {
     [loadResult, resetTiming],
   )
 
+  // Обычное «Удалить» — мягкое: задача скрывается, артефакты сохраняются (#30).
   const deleteJob = useCallback(
     async (jobId: string) => {
       setError(null)
       try {
-        await api<{ deleted: string }>(`/api/jobs/${jobId}`, { method: 'DELETE' })
+        await api<Job>(`/api/jobs/${jobId}`, { method: 'DELETE' })
+        if (activeJobId === jobId) {
+          setActiveJobId(null)
+          setResult(null)
+          setSummary(null)
+          setProtocol(null)
+          setSamplesMeta({})
+          setProgress(null)
+          resetTiming()
+        }
+        await refreshJobs()
+      } catch (cause) {
+        setError(errorMessage(cause))
+      }
+    },
+    [activeJobId, refreshJobs, resetTiming],
+  )
+
+  const restoreJob = useCallback(
+    async (jobId: string) => {
+      setError(null)
+      try {
+        await api<Job>(`/api/jobs/${jobId}/restore`, { method: 'POST' })
+        await refreshJobs()
+      } catch (cause) {
+        setError(errorMessage(cause))
+      }
+    },
+    [refreshJobs],
+  )
+
+  // «Удалить навсегда» — окончательная очистка записи и артефактов (с подтверждением).
+  const purgeJob = useCallback(
+    async (jobId: string, name: string) => {
+      if (
+        !window.confirm(
+          `Удалить задачу «${name}» навсегда?\nРезультат и образцы говорящих будут удалены безвозвратно.`,
+        )
+      ) {
+        return
+      }
+      setError(null)
+      try {
+        await api<{ purged: string }>(`/api/jobs/${jobId}?purge=true`, {
+          method: 'DELETE',
+        })
         if (activeJobId === jobId) {
           setActiveJobId(null)
           setResult(null)
@@ -881,14 +942,28 @@ function App() {
           </section>
 
           <section className="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-            <div className="mb-3 flex items-center justify-between">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
               <h2 className="font-medium">Задачи</h2>
-              <button
-                onClick={() => void refreshJobs()}
-                className="rounded-md border border-slate-300 px-3 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
-              >
-                Обновить
-              </button>
+              <div className="flex items-center gap-3">
+                <label
+                  className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400"
+                  title="Показать мягко удалённые задачи: их можно восстановить или удалить навсегда"
+                >
+                  <input
+                    type="checkbox"
+                    checked={showDeleted}
+                    onChange={(event) => toggleDeleted(event.target.checked)}
+                    className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-400 dark:border-slate-600 dark:bg-slate-800"
+                  />
+                  Показать удалённые
+                </label>
+                <button
+                  onClick={() => void refreshJobs()}
+                  className="rounded-md border border-slate-300 px-3 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
+                >
+                  Обновить
+                </button>
+              </div>
             </div>
             {jobs.length === 0 ? (
               <p className="py-6 text-center text-sm text-slate-400 dark:text-slate-500">
@@ -899,13 +974,18 @@ function App() {
                 {jobs.map((job) => (
                   <li
                     key={job.id}
-                    className="flex flex-wrap items-center gap-x-3 gap-y-1.5 py-2"
+                    className={`flex flex-wrap items-center gap-x-3 gap-y-1.5 py-2 ${
+                      job.deleted ? 'opacity-60' : ''
+                    }`}
                   >
                     <button
                       onClick={() => void openJob(job.id)}
                       className="min-w-0 w-full text-left sm:w-auto sm:flex-1"
                     >
-                      <p className="truncate text-sm" title={job.name}>
+                      <p
+                        className={`truncate text-sm ${job.deleted ? 'line-through' : ''}`}
+                        title={job.name}
+                      >
                         {job.name}
                       </p>
                       <p className="text-xs text-slate-400 dark:text-slate-500">
@@ -915,44 +995,72 @@ function App() {
                         {formatSpeakerSetting(job)}
                       </p>
                     </button>
-                    <span
-                      className={`whitespace-nowrap rounded-full px-2 py-0.5 text-xs ${
-                        STATUS_STYLES[job.status] ??
-                        'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
-                      }`}
-                    >
-                      {STATUS_LABELS[job.status] ?? job.status}
-                    </span>
-                    {isLiveJob(job) && (
-                      <button
-                        onClick={() => void stopJob(job.id)}
-                        title="Остановить обработку задачи"
-                        className="whitespace-nowrap rounded-md border border-amber-300 px-3 py-1 text-xs text-amber-700 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-950/50"
+                    {job.deleted ? (
+                      <span className="whitespace-nowrap rounded-full bg-red-100 px-2 py-0.5 text-xs text-red-700 dark:bg-red-950/60 dark:text-red-300">
+                        Удалено
+                      </span>
+                    ) : (
+                      <span
+                        className={`whitespace-nowrap rounded-full px-2 py-0.5 text-xs ${
+                          STATUS_STYLES[job.status] ??
+                          'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                        }`}
                       >
-                        Остановить
-                      </button>
+                        {STATUS_LABELS[job.status] ?? job.status}
+                      </span>
                     )}
-                    {(job.status === 'queued' ||
-                      job.status === 'done' ||
-                      job.status === 'error' ||
-                      job.status === 'cancelled' ||
-                      (job.status === 'running' && job.active === false)) && (
-                      <button
-                        onClick={() => void runJob(job.id)}
-                        disabled={readinessBlocked}
-                        title={blockedHint}
-                        className="whitespace-nowrap rounded-md bg-emerald-600 px-3 py-1 text-xs text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
-                      >
-                        {job.status === 'cancelled' ? 'Запустить снова' : 'Запустить'}
-                      </button>
-                    )}
-                    {(job.status !== 'running' || job.active === false) && (
-                      <button
-                        onClick={() => void deleteJob(job.id)}
-                        className="whitespace-nowrap rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:bg-red-50 hover:text-red-600 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-red-950/50 dark:hover:text-red-300"
-                      >
-                        Удалить
-                      </button>
+                    {job.deleted ? (
+                      <>
+                        <button
+                          onClick={() => void restoreJob(job.id)}
+                          title="Вернуть задачу в обычный список"
+                          className="whitespace-nowrap rounded-md border border-emerald-300 px-3 py-1 text-xs text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-950/50"
+                        >
+                          Восстановить
+                        </button>
+                        <button
+                          onClick={() => void purgeJob(job.id, job.name)}
+                          title="Удалить задачу и её артефакты безвозвратно"
+                          className="whitespace-nowrap rounded-md border border-red-300 px-3 py-1 text-xs text-red-700 hover:bg-red-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950/50"
+                        >
+                          Удалить навсегда
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        {isLiveJob(job) && (
+                          <button
+                            onClick={() => void stopJob(job.id)}
+                            title="Остановить обработку задачи"
+                            className="whitespace-nowrap rounded-md border border-amber-300 px-3 py-1 text-xs text-amber-700 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-950/50"
+                          >
+                            Остановить
+                          </button>
+                        )}
+                        {(job.status === 'queued' ||
+                          job.status === 'done' ||
+                          job.status === 'error' ||
+                          job.status === 'cancelled' ||
+                          (job.status === 'running' && job.active === false)) && (
+                          <button
+                            onClick={() => void runJob(job.id)}
+                            disabled={readinessBlocked}
+                            title={blockedHint}
+                            className="whitespace-nowrap rounded-md bg-emerald-600 px-3 py-1 text-xs text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            {job.status === 'cancelled' ? 'Запустить снова' : 'Запустить'}
+                          </button>
+                        )}
+                        {(job.status !== 'running' || job.active === false) && (
+                          <button
+                            onClick={() => void deleteJob(job.id)}
+                            title="Скрыть задачу (мягкое удаление, можно восстановить)"
+                            className="whitespace-nowrap rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:bg-red-50 hover:text-red-600 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-red-950/50 dark:hover:text-red-300"
+                          >
+                            Удалить
+                          </button>
+                        )}
+                      </>
                     )}
                   </li>
                 ))}

@@ -53,6 +53,10 @@ export type Job = {
   stage_times: StageTime[]
   /** Время последнего изменения задачи (ISO) — для оценки «здоровья». */
   updated_at: string | null
+  /** Задача мягко удалена: скрыта из обычного списка, артефакты сохранены (#30). */
+  deleted: boolean
+  /** Момент мягкого удаления (ISO) или null. */
+  deleted_at: string | null
   total_seconds: number | null
   stage_elapsed: number | null
   /** Обрабатывается ли задача текущим воркером (false — осиротевшая running). */

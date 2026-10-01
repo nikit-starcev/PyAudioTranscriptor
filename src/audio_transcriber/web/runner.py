@@ -197,11 +197,12 @@ class JobRunner:
         (например, процесс обработки был убит при перезапуске сервера) и
         никогда не завершится само. Такие записи переводим в ``error``, чтобы
         их можно было удалить или запустить заново, и сбрасываем прогресс.
-        Активные задачи не трогаем.
+        Активные задачи не трогаем. Удалённые тоже проверяем: осиротевшая
+        удалённая задача не должна «зависнуть» в ``running`` навсегда (#30).
         """
         active = self.active_job_ids()
         reconciled: list[str] = []
-        for job in self._store.list():
+        for job in self._store.list(include_deleted=True):
             if job.status not in (STATUS_RUNNING, STATUS_QUEUED):
                 continue
             if job.id in active:
@@ -250,6 +251,13 @@ class JobRunner:
 
     def _process(self, request: JobRequest) -> None:
         job_id = request.job_id
+        # Мягко удалённую задачу не запускаем: если её удалили, пока она ждала
+        # в очереди, воркер должен пропустить её (восстановление вернёт обычное
+        # поведение — задача снова запускаема вручную, #30).
+        job = self._store.get(job_id)
+        if job is None or job.deleted:
+            logger.info("Задача %s удалена — пропускаю запуск", job_id)
+            return
         with self._lock:
             self._current = job_id
             cancel_event = self._cancel_events.get(job_id)

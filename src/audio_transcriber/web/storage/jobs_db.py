@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     max_speakers INTEGER,
     stage_started_at TEXT,
     stage_times TEXT,
-    updated_at TEXT
+    updated_at TEXT,
+    deleted_at TEXT
 )
 """
 
@@ -153,6 +154,13 @@ class Job:
     stage_times: list[StageTiming] = field(default_factory=list)
     #: Момент последнего изменения записи (ISO) — для оценки «здоровья» задачи.
     updated_at: str | None = None
+    #: Момент мягкого удаления (ISO); ``None`` — задача не удалена (#30).
+    deleted_at: str | None = None
+
+    @property
+    def deleted(self) -> bool:
+        """Задача мягко удалена (скрыта из обычного списка, артефакты целы)."""
+        return self.deleted_at is not None
 
     @property
     def name(self) -> str:
@@ -209,6 +217,8 @@ class Job:
             "stage_started_at": self.stage_started_at,
             "stage_times": [timing.as_dict() for timing in self.stage_times],
             "updated_at": self.updated_at,
+            "deleted": self.deleted,
+            "deleted_at": self.deleted_at,
             "total_seconds": self.total_seconds,
             "stage_elapsed": self.stage_elapsed,
         }
@@ -244,8 +254,8 @@ class JobsDB:
 
         ``CREATE TABLE IF NOT EXISTS`` не меняет старую схему, поэтому для баз,
         созданных до появления ``num_speakers``/``min_speakers``/
-        ``max_speakers``/``stage_started_at``/``stage_times``, колонки добавляем
-        отдельно.
+        ``max_speakers``/``stage_started_at``/``stage_times``/``updated_at``/
+        ``deleted_at``, колонки добавляем отдельно.
         """
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
         if "num_speakers" not in columns:
@@ -260,6 +270,8 @@ class JobsDB:
             connection.execute("ALTER TABLE jobs ADD COLUMN stage_times TEXT")
         if "updated_at" not in columns:
             connection.execute("ALTER TABLE jobs ADD COLUMN updated_at TEXT")
+        if "deleted_at" not in columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN deleted_at TEXT")
 
     def create(
         self,
@@ -301,10 +313,18 @@ class JobsDB:
             row = connection.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         return _row_to_job(row) if row is not None else None
 
-    def list(self) -> list[Job]:
-        """Все задачи, новые сверху."""
+    def list(self, *, include_deleted: bool = False) -> list[Job]:
+        """Задачи, новые сверху.
+
+        По умолчанию мягко удалённые скрыты; ``include_deleted=True`` добавляет
+        их в выдачу (#30).
+        """
+        query = "SELECT * FROM jobs"
+        if not include_deleted:
+            query += " WHERE deleted_at IS NULL"
+        query += " ORDER BY created_at DESC, rowid DESC"
         with self._connect() as connection:
-            rows = connection.execute("SELECT * FROM jobs ORDER BY created_at DESC, rowid DESC")
+            rows = connection.execute(query)
             return [_row_to_job(row) for row in rows.fetchall()]
 
     def update(self, job_id: str, **fields: object) -> Job | None:
@@ -324,8 +344,33 @@ class JobsDB:
                 connection.execute(f"UPDATE jobs SET {assignments} WHERE id = ?", values)
         return self.get(job_id)
 
-    def delete(self, job_id: str) -> bool:
-        """Удаляет задачу; возвращает ``True``, если строка существовала."""
+    def soft_delete(self, job_id: str) -> Job | None:
+        """Помечает задачу удалённой, сохраняя запись и артефакты (#30).
+
+        Штамп удаления выставляется один раз (повторный вызов не сдвигает его),
+        но ``updated_at`` обновляется, как у любого изменения. Возвращает
+        обновлённую задачу или ``None``, если её нет.
+        """
+        now = utc_now_iso()
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE jobs SET deleted_at = COALESCE(deleted_at, ?), updated_at = ? "
+                "WHERE id = ?",
+                (now, now, job_id),
+            )
+        return self.get(job_id)
+
+    def restore(self, job_id: str) -> Job | None:
+        """Снимает метку удаления; возвращает задачу или ``None`` (#30)."""
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE jobs SET deleted_at = NULL, updated_at = ? WHERE id = ?",
+                (utc_now_iso(), job_id),
+            )
+        return self.get(job_id)
+
+    def purge(self, job_id: str) -> bool:
+        """Окончательно удаляет запись задачи; ``True`` — если строка была."""
         with self._connect() as connection:
             cursor = connection.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
             return cursor.rowcount > 0
@@ -351,4 +396,5 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         stage_started_at=row["stage_started_at"],
         stage_times=_parse_stage_times(row["stage_times"]),
         updated_at=row["updated_at"],
+        deleted_at=row["deleted_at"],
     )

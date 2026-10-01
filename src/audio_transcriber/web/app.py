@@ -717,8 +717,11 @@ def register_api(
         return {"restored": target.name, "processed": False}
 
     @router.get("/jobs")
-    def list_jobs() -> list[dict[str, object]]:
-        return [job_payload(job) for job in store.list()]
+    def list_jobs(include_deleted: bool = False) -> list[dict[str, object]]:
+        """Список задач; ``include_deleted=true`` — вместе с мягко удалёнными (#30)."""
+        return [
+            job_payload(job) for job in store.list(include_deleted=include_deleted)
+        ]
 
     @router.post("/jobs", status_code=201)
     def create_job(payload: CreateJobRequest) -> dict[str, object]:
@@ -768,6 +771,10 @@ def register_api(
     @router.post("/jobs/{job_id}/run")
     def run_job(job_id: str) -> dict[str, object]:
         job = _require_job(store, job_id)
+        if job.deleted:
+            raise HTTPException(
+                status_code=409, detail="Задача удалена — сначала восстановите её"
+            )
         if job.status == STATUS_RUNNING and runner.is_active(job_id):
             raise HTTPException(status_code=409, detail="Задача уже выполняется")
         source = Path(job.source_path)
@@ -804,16 +811,34 @@ def register_api(
         return {"id": job_id, "status": STATUS_CANCELLED}
 
     @router.delete("/jobs/{job_id}")
-    def delete_job(job_id: str) -> dict[str, object]:
+    def delete_job(job_id: str, purge: bool = False) -> dict[str, object]:
+        """Мягко удаляет задачу; ``?purge=true`` — окончательно с артефактами (#30).
+
+        Мягкое удаление только помечает задачу (``deleted_at``), скрывая её из
+        обычного списка и сохраняя результат/образцы — запись можно вернуть
+        через ``POST /jobs/{id}/restore``. Окончательное удаление (``purge``)
+        стирает запись и её артефакты безвозвратно. Активную задачу (воркер её
+        ведёт) удалять нельзя — сначала остановить (409).
+        """
         job = _require_job(store, job_id)
-        # 409 — только для реально активного прогона. Осиротевшую ``running``-
-        # задачу (воркер её не ведёт) удаляем вместе с артефактами.
-        if job.status == STATUS_RUNNING and runner.is_active(job_id):
+        # 409 — для реально активного прогона (в очереди или в работе). Осиротевшую
+        # ``running``-задачу (воркер её не ведёт) удалять можно.
+        if runner.is_active(job_id):
             raise HTTPException(status_code=409, detail="Нельзя удалить выполняющуюся задачу")
-        _remove_job_artifacts(paths, job)
-        store.delete(job_id)
-        bus.clear(job_id)
-        return {"deleted": job_id}
+        if purge:
+            _remove_job_artifacts(paths, job)
+            store.purge(job_id)
+            bus.clear(job_id)
+            return {"purged": job_id}
+        updated = store.soft_delete(job_id)
+        return job_payload(updated) if updated is not None else job_payload(job)
+
+    @router.post("/jobs/{job_id}/restore")
+    def restore_job(job_id: str) -> dict[str, object]:
+        """Возвращает мягко удалённую задачу в обычный список (#30). Идемпотентно."""
+        job = _require_job(store, job_id)
+        updated = store.restore(job_id)
+        return job_payload(updated) if updated is not None else job_payload(job)
 
     @router.get("/jobs/{job_id}/result")
     def job_result(job_id: str) -> Response:

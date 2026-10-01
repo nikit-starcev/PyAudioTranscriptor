@@ -176,13 +176,57 @@ def test_update_changes_fields_and_ignores_unknown(tmp_path: Path) -> None:
     assert updated.language == "ru"
 
 
-def test_delete_job(tmp_path: Path) -> None:
+def test_purge_job(tmp_path: Path) -> None:
     db = _make_db(tmp_path)
     db.create("job-1", tmp_path / "audio.mp3")
 
-    assert db.delete("job-1") is True
+    assert db.purge("job-1") is True
     assert db.get("job-1") is None
-    assert db.delete("job-1") is False
+    assert db.purge("job-1") is False
+
+
+def test_soft_delete_hides_from_list_and_restore(tmp_path: Path) -> None:
+    """Мягкое удаление скрывает задачу, не стирая запись; restore возвращает."""
+    db = _make_db(tmp_path)
+    db.create("a", tmp_path / "a.mp3")
+    db.create("b", tmp_path / "b.mp3")
+
+    deleted = db.soft_delete("a")
+
+    assert deleted is not None
+    assert deleted.deleted is True
+    assert deleted.deleted_at is not None
+    assert deleted.as_dict()["deleted"] is True
+    # Запись жива, но скрыта из обычного списка; include_deleted её показывает.
+    assert db.get("a") is not None
+    assert {job.id for job in db.list()} == {"b"}
+    assert {job.id for job in db.list(include_deleted=True)} == {"a", "b"}
+
+    restored = db.restore("a")
+
+    assert restored is not None
+    assert restored.deleted is False
+    assert restored.deleted_at is None
+    assert restored.as_dict()["deleted"] is False
+    assert {job.id for job in db.list()} == {"a", "b"}
+
+
+def test_soft_delete_keeps_first_stamp_and_missing_ids(tmp_path: Path) -> None:
+    """Повторное удаление не сдвигает штамп; отсутствующая задача — ``None``."""
+    db = _make_db(tmp_path)
+    db.create("job-1", tmp_path / "a.mp3")
+
+    first = db.soft_delete("job-1")
+    assert first is not None
+    stamp = first.deleted_at
+    assert stamp is not None
+
+    again = db.soft_delete("job-1")
+    assert again is not None
+    assert again.deleted_at == stamp
+
+    assert db.soft_delete("missing") is None
+    assert db.restore("missing") is None
 
 
 def test_job_helpers_and_dict(tmp_path: Path) -> None:
@@ -301,6 +345,41 @@ def test_migration_adds_updated_at_to_existing_table(tmp_path: Path) -> None:
     with sqlite3.connect(path) as connection:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
     assert "updated_at" in columns
+
+
+def test_migration_adds_deleted_at_to_existing_table(tmp_path: Path) -> None:
+    """Старая база без колонки ``deleted_at`` аккуратно мигрируется (#30)."""
+    path = tmp_path / "jobs.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE jobs ("
+            "id TEXT PRIMARY KEY, source_path TEXT NOT NULL, status TEXT NOT NULL, "
+            "created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, "
+            "language TEXT, duration REAL, error TEXT, result_path TEXT, "
+            "stage TEXT, fraction REAL)"
+        )
+        connection.execute(
+            "INSERT INTO jobs (id, source_path, status, created_at) "
+            "VALUES ('old', '/tmp/old.mp3', 'done', '2020-01-01T00:00:00+00:00')"
+        )
+
+    db = JobsDB(path)
+    db.initialize()
+
+    migrated = db.get("old")
+    assert migrated is not None
+    assert migrated.deleted is False
+    assert migrated.deleted_at is None
+
+    # Новая запись и мягкое удаление работают после миграции.
+    db.create("new", tmp_path / "new.mp3")
+    assert db.soft_delete("new") is not None
+    assert {job.id for job in db.list()} == {"old"}
+    assert {job.id for job in db.list(include_deleted=True)} == {"old", "new"}
+
+    with sqlite3.connect(path) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
+    assert "deleted_at" in columns
 
 
 def test_migration_adds_stage_columns(tmp_path: Path) -> None:

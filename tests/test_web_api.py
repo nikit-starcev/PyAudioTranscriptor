@@ -35,6 +35,7 @@ from audio_transcriber.web.storage.jobs_db import (
     STATUS_CANCELLED,
     STATUS_DONE,
     STATUS_ERROR,
+    STATUS_QUEUED,
     STATUS_RUNNING,
     Job,
     JobsDB,
@@ -601,17 +602,45 @@ def test_audio_endpoint_supports_range(client: TestClient) -> None:
     assert full.content == b"0123456789"
 
 
-def test_delete_job(client: TestClient) -> None:
+def test_delete_job_soft_hides_and_restore(client: TestClient) -> None:
+    """Обычное удаление — мягкое: скрывает из списка, запись и артефакты целы."""
     uploaded = _upload(client)
     job_id = client.post("/api/jobs", json={"path": uploaded["name"]}).json()["id"]
 
     assert client.delete(f"/api/jobs/{job_id}").status_code == 200
-    assert client.get(f"/api/jobs/{job_id}").status_code == 404
+
+    # Скрыта из обычного списка, но остаётся доступной по id как удалённая.
+    assert client.get("/api/jobs").json() == []
+    details = client.get(f"/api/jobs/{job_id}")
+    assert details.status_code == 200
+    assert details.json()["deleted"] is True
+    listed = client.get("/api/jobs", params={"include_deleted": "true"}).json()
+    assert [job["id"] for job in listed] == [job_id]
+    assert listed[0]["deleted"] is True
+
+    # Восстановление возвращает задачу в обычный список.
+    assert client.post(f"/api/jobs/{job_id}/restore").status_code == 200
+    restored = client.get(f"/api/jobs/{job_id}").json()
+    assert restored["deleted"] is False
+    assert [job["id"] for job in client.get("/api/jobs").json()] == [job_id]
 
 
-def test_delete_job_removes_artifacts(
+def test_soft_deleted_job_cannot_run_until_restored(client: TestClient) -> None:
+    """Мягко удалённую задачу нельзя запустить; после restore — можно."""
+    uploaded = _upload(client)
+    job_id = client.post("/api/jobs", json={"path": uploaded["name"]}).json()["id"]
+    assert client.delete(f"/api/jobs/{job_id}").status_code == 200
+
+    assert client.post(f"/api/jobs/{job_id}/run").status_code == 409
+
+    assert client.post(f"/api/jobs/{job_id}/restore").status_code == 200
+    assert client.post(f"/api/jobs/{job_id}/run").status_code == 200
+
+
+def test_purge_job_removes_artifacts(
     client: TestClient, web_paths: WebPaths
 ) -> None:
+    """``?purge=true`` стирает запись и артефакты безвозвратно."""
     uploaded = _upload(client)
     job_id = client.post("/api/jobs", json={"path": uploaded["name"]}).json()["id"]
     result_path = web_paths.results_dir / f"{job_id}.json"
@@ -622,24 +651,31 @@ def test_delete_job_removes_artifacts(
     (stage_dir / "stage.wav").write_bytes(b"wav")
     client.app.state.store.update(job_id, result_path=str(result_path))
 
+    # Сначала мягкое удаление — артефакты должны остаться.
     assert client.delete(f"/api/jobs/{job_id}").status_code == 200
+    assert result_path.exists()
+    assert stage_dir.exists()
 
+    response = client.delete(f"/api/jobs/{job_id}", params={"purge": "true"})
+
+    assert response.status_code == 200
+    assert response.json()["purged"] == job_id
     assert not result_path.exists()
     assert not stage_dir.exists()
     assert client.get(f"/api/jobs/{job_id}").status_code == 404
 
 
-def test_delete_job_with_missing_artifacts(
+def test_purge_job_with_missing_artifacts(
     client: TestClient, web_paths: WebPaths
 ) -> None:
     uploaded = _upload(client)
     job_id = client.post("/api/jobs", json={"path": uploaded["name"]}).json()["id"]
-    # ``result_path`` указывает на несуществующий файл — удаление не падает.
+    # ``result_path`` указывает на несуществующий файл — очистка не падает.
     client.app.state.store.update(
         job_id, result_path=str(web_paths.results_dir / "ghost.json")
     )
 
-    assert client.delete(f"/api/jobs/{job_id}").status_code == 200
+    assert client.delete(f"/api/jobs/{job_id}", params={"purge": "true"}).status_code == 200
     assert client.get(f"/api/jobs/{job_id}").status_code == 404
 
 
@@ -740,7 +776,8 @@ def test_delete_orphaned_running_job(client: TestClient) -> None:
     response = client.delete(f"/api/jobs/{job_id}")
 
     assert response.status_code == 200
-    assert client.get(f"/api/jobs/{job_id}").status_code == 404
+    assert client.get(f"/api/jobs/{job_id}").json()["deleted"] is True
+    assert client.get("/api/jobs").json() == []
 
 
 def test_delete_active_running_job_conflicts(
@@ -1114,7 +1151,7 @@ def test_delete_cancelled_job(web_paths: WebPaths, config_builder) -> None:
         _wait_for_status(client, job_id, STATUS_CANCELLED)
 
         assert client.delete(f"/api/jobs/{job_id}").status_code == 200
-        assert client.get(f"/api/jobs/{job_id}").status_code == 404
+        assert client.get(f"/api/jobs/{job_id}").json()["deleted"] is True
 
 
 def test_runner_cancel_inactive_returns_false(
@@ -1126,6 +1163,63 @@ def test_runner_cancel_inactive_returns_false(
     runner = JobRunner(store, JobEventBus(heartbeat=0.05), web_paths, config_builder)
 
     assert runner.cancel("missing") is False
+
+
+def test_runner_skips_soft_deleted_queued_job(
+    web_paths: WebPaths, config_builder
+) -> None:
+    """Мягко удалённую задачу воркер не запускает: она остаётся ``queued`` (#30)."""
+    web_paths.ensure()
+    store = JobsDB(web_paths.jobs_db)
+    store.initialize()
+    source = web_paths.input_dir / "deleted.mp3"
+    source.write_bytes(b"x")
+    job = store.create("deleted-job", source)
+    assert store.soft_delete(job.id) is not None
+
+    runner = JobRunner(store, JobEventBus(heartbeat=0.05), web_paths, config_builder)
+    runner.start()
+    try:
+        assert runner.submit(job.id, source) is True
+        deadline = time.monotonic() + 5.0
+        while runner.is_active(job.id) and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        assert runner.is_active(job.id) is False
+        still = store.get(job.id)
+        assert still is not None
+        # Пропущенная задача не переходит в running/done и остаётся удалённой.
+        assert still.status == STATUS_QUEUED
+        assert still.deleted is True
+    finally:
+        runner.stop()
+
+
+def test_reconcile_marks_soft_deleted_orphan(
+    web_paths: WebPaths, config_builder
+) -> None:
+    """Осиротевшая мягко удалённая задача тоже помечается ``error`` (#30)."""
+    web_paths.ensure()
+    store = JobsDB(web_paths.jobs_db)
+    store.initialize()
+    orphan = store.create("deleted-orphan", web_paths.input_dir / "a.mp3")
+    store.update(
+        orphan.id,
+        status=STATUS_RUNNING,
+        stage="asr",
+        fraction=0.4,
+        stage_started_at=utc_now_iso(),
+    )
+    assert store.soft_delete(orphan.id) is not None
+
+    runner = JobRunner(store, JobEventBus(heartbeat=0.05), web_paths, config_builder)
+    reconciled = runner.reconcile_orphans()
+
+    assert orphan.id in reconciled
+    fixed = store.get(orphan.id)
+    assert fixed is not None
+    assert fixed.status == STATUS_ERROR
+    assert fixed.deleted is True
 
 
 def test_cancel_queued_job_does_not_kill_current_processes(
