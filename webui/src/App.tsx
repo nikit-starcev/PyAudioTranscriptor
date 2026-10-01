@@ -63,6 +63,11 @@ const STATUS_STYLES: Record<string, string> = {
   cancelled: 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
 }
 
+//: Задержка ручного переподключения SSE, когда браузер не ретраит сам
+//: (``EventSource`` фатально закрывается при не-200 ответе). Меньше дефолтных
+//: ~3 с, чтобы UI быстрее подхватывал состояние после короткого сбоя.
+const SSE_RECONNECT_DELAY_MS = 2000
+
 //: Задача реально выполняется: running и её ведёт воркер (``active``).
 //: Осиротевшая running-задача (active=false) «не идёт» — прогресс не тикает.
 function isLiveJob(job: { status: string; active?: boolean }): boolean {
@@ -142,14 +147,23 @@ function App() {
   const wizardAutoShown = useRef(false)
   const exportDefaultApplied = useRef(false)
 
-  const refreshJobs = useCallback(async () => {
-    try {
-      const suffix = showDeletedRef.current ? '?include_deleted=true' : ''
-      setJobs(await api<Job[]>(`/api/jobs${suffix}`))
-    } catch (cause) {
-      setError(errorMessage(cause))
-    }
-  }, [])
+  // Возвращает актуальный список задач или ``null``, если запрос не удался.
+  // ``silent`` подавляет баннер ошибки: используется при восстановлении SSE,
+  // где обрыв сети/рестарт сервера — ожидаемая ситуация, а не ошибка пользователя.
+  const refreshJobs = useCallback(
+    async (options?: { silent?: boolean }): Promise<Job[] | null> => {
+      try {
+        const suffix = showDeletedRef.current ? '?include_deleted=true' : ''
+        const list = await api<Job[]>(`/api/jobs${suffix}`)
+        setJobs(list)
+        return list
+      } catch (cause) {
+        if (!options?.silent) setError(errorMessage(cause))
+        return null
+      }
+    },
+    [],
+  )
 
   const toggleDeleted = useCallback(
     (value: boolean) => {
@@ -299,39 +313,140 @@ function App() {
 
   useEffect(() => {
     if (!activeJobId) return
-    const source = new EventSource(`/api/jobs/${activeJobId}/events`)
-    source.onmessage = (message) => {
-      const event = JSON.parse(message.data) as JobEvent
-      setProgress(event)
-      if (event.stage_times) setStageTimes(event.stage_times)
-      if (isTerminal(event.status)) {
-        source.close()
+    let disposed = false
+    let source: EventSource | null = null
+    let retryTimer: number | undefined
+
+    const clearRetry = () => {
+      if (retryTimer !== undefined) {
+        window.clearTimeout(retryTimer)
+        retryTimer = undefined
+      }
+    }
+
+    // Ручное переподключение на случай, когда браузер не ретраит сам
+    // (``EventSource`` фатально закрывается при не-200 ответе / неверном MIME).
+    const scheduleReconnect = () => {
+      if (disposed || retryTimer !== undefined) return
+      retryTimer = window.setTimeout(() => {
+        retryTimer = undefined
+        if (!disposed) connect()
+      }, SSE_RECONNECT_DELAY_MS)
+    }
+
+    const connect = () => {
+      source?.close()
+      const stream = new EventSource(`/api/jobs/${activeJobId}/events`)
+      source = stream
+
+      // Терминальное состояние: закрываем поток и досинхронизируем UI ровно так
+      // же, как по обычному конечному событию.
+      const finish = (status: string) => {
+        stream.close()
         setLiveStage(null)
         setLiveStageStartedAt(null)
         liveStageRef.current = null
         void refreshJobs()
         void refreshJobTiming(activeJobId)
-        if (event.status === 'done') {
+        if (status === 'done') {
           // Успешный прогон убирает файл из основного списка «Файлы» (#16).
           void refreshFiles()
           void loadResult(activeJobId)
         }
-        return
       }
-      // Живой счётчик текущей стадии: при её смене перезапускаем отсчёт.
-      if (event.stage !== liveStageRef.current) {
-        liveStageRef.current = event.stage
-        setLiveStage(event.stage)
-        setLiveStageStartedAt(Date.now() - (event.stage_elapsed ?? 0) * 1000)
-      } else if (event.stage_elapsed != null) {
-        setLiveStageStartedAt(Date.now() - event.stage_elapsed * 1000)
+
+      // Задача исчезла (удалена/очищена): ретраить нечего, сбрасываем панель.
+      const clearActiveJob = () => {
+        stream.close()
+        setActiveJobId(null)
+        setResult(null)
+        setSummary(null)
+        setProtocol(null)
+        setSamplesMeta({})
+        setProgress(null)
+        setStageTimes([])
+        setFinalTotalSeconds(null)
+        setTotalStartedAt(null)
+        setLiveStage(null)
+        setLiveStageStartedAt(null)
+        liveStageRef.current = null
       }
-      if (event.elapsed != null) {
-        setTotalStartedAt(Date.now() - event.elapsed * 1000)
+
+      stream.onmessage = (message) => {
+        const event = JSON.parse(message.data) as JobEvent
+        setProgress(event)
+        if (event.stage_times) setStageTimes(event.stage_times)
+        if (isTerminal(event.status)) {
+          finish(event.status)
+          return
+        }
+        // Живой счётчик текущей стадии: при её смене перезапускаем отсчёт.
+        if (event.stage !== liveStageRef.current) {
+          liveStageRef.current = event.stage
+          setLiveStage(event.stage)
+          setLiveStageStartedAt(Date.now() - (event.stage_elapsed ?? 0) * 1000)
+        } else if (event.stage_elapsed != null) {
+          setLiveStageStartedAt(Date.now() - event.stage_elapsed * 1000)
+        }
+        if (event.elapsed != null) {
+          setTotalStartedAt(Date.now() - event.elapsed * 1000)
+        }
+      }
+
+      // Обрыв SSE — не повод «зависать». Не закрываем поток безусловно:
+      // подтягиваем актуальное состояние из API и решаем по нему, продолжать ли
+      // слежение. Браузер сам ретраит соединение (readyState CONNECTING); при
+      // фатальном закрытии (CLOSED) переподключаемся вручную.
+      stream.onerror = () => {
+        if (disposed) return
+        void (async () => {
+          const list = await refreshJobs({ silent: true })
+          if (disposed) return
+          if (list == null) {
+            // API недоступен — состояние неизвестно. Не закрываем поток.
+            if (source === stream && stream.readyState === EventSource.CLOSED) {
+              scheduleReconnect()
+            }
+            return
+          }
+          const current = list.find((job) => job.id === activeJobId)
+          if (!current || current.deleted) {
+            clearActiveJob()
+            return
+          }
+          if (isTerminal(current.status)) {
+            // Снимок задачи актуализирует прогресс, если событие было пропущено.
+            setProgress({
+              stage: current.stage ?? current.status,
+              fraction: current.fraction,
+              message: '',
+              status: current.status,
+              active: current.active,
+              stage_times: current.stage_times,
+              progress_percent: current.progress_percent,
+              eta_seconds: current.eta_seconds,
+              eta_by_stage: current.eta_by_stage,
+              health: current.health,
+            })
+            finish(current.status)
+            return
+          }
+          // Задача ещё идёт: синхронизируем тайминги и ждём переподключения.
+          await refreshJobTiming(activeJobId)
+          if (disposed) return
+          if (source === stream && stream.readyState === EventSource.CLOSED) {
+            scheduleReconnect()
+          }
+        })()
       }
     }
-    source.onerror = () => source.close()
-    return () => source.close()
+
+    connect()
+    return () => {
+      disposed = true
+      clearRetry()
+      source?.close()
+    }
   }, [activeJobId, runSeq, refreshJobs, refreshFiles, loadResult, refreshJobTiming])
 
   const enqueue = useCallback(
