@@ -659,8 +659,8 @@ function App() {
         )}
 
         <div className="grid gap-6 lg:grid-cols-2">
-          <section className="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-            <div className="mb-3 flex items-center justify-between">
+          <section className="@container rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
               <h2 className="font-medium">Файлы</h2>
               <div className="flex items-center gap-3">
                 <label
@@ -700,125 +700,165 @@ function App() {
             ) : (
               <ul className="divide-y divide-slate-100 dark:divide-slate-800">
                 {files.map((file) => (
-                  <li key={file.path} className="flex items-center gap-3 py-2">
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm">
+                  <li
+                    key={file.path}
+                    className="grid grid-cols-[minmax(0,1fr)] items-center gap-x-3 gap-y-2 py-3 @xl:grid-cols-[minmax(0,1fr)_4rem_4rem_6.5rem_auto]"
+                  >
+                    {/* Имя файла: до двух строк с переносом, полное — в tooltip.
+                        `minmax(0,1fr)` не даёт кнопкам «съесть» имя. */}
+                    <div className="min-w-0 @xl:col-start-1 @xl:row-start-1 @xl:flex @xl:min-h-[2.5rem] @xl:items-center">
+                      <p
+                        className="line-clamp-2 break-words text-sm leading-snug"
+                        title={file.name}
+                      >
                         {file.name}
-                        {file.processed && (
-                          <span className="ml-2 rounded-full bg-emerald-100 px-2 py-0.5 align-middle text-xs text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
+                      </p>
+                    </div>
+
+                    {/* Мета: на узких — одной строкой под именем, на широких — колонки. */}
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400 dark:text-slate-500 @xl:contents">
+                      <span
+                        className="tabular-nums @xl:col-start-2 @xl:row-start-1 @xl:text-right"
+                        title="Размер файла"
+                      >
+                        {formatSize(file.size)}
+                      </span>
+                      <span
+                        className="tabular-nums @xl:col-start-3 @xl:row-start-1 @xl:text-right"
+                        title="Длительность"
+                      >
+                        {formatDuration(file.duration)}
+                      </span>
+                      <span className="@xl:col-start-4 @xl:row-start-1">
+                        {file.processed ? (
+                          <span className="whitespace-nowrap rounded-full bg-emerald-100 px-2 py-0.5 text-xs text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
                             Обработан
                           </span>
+                        ) : (
+                          <span className="whitespace-nowrap rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                            Не обработан
+                          </span>
                         )}
-                      </p>
-                      <p className="text-xs text-slate-400 dark:text-slate-500">
-                        {file.processed
-                          ? 'Аудио и стенограмма доступны в задаче'
-                          : `${formatSize(file.size)} · ${formatDuration(file.duration)}`}
-                      </p>
+                      </span>
                     </div>
-                    {file.processed ? (
-                      <>
-                        <button
-                          onClick={() => void restoreFile(file.name)}
-                          title="Вернуть файл в основной список «Файлы»"
-                          className="rounded-md border border-emerald-300 px-3 py-1 text-xs text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-950/50"
-                        >
-                          Вернуть
-                        </button>
-                        <button
-                          onClick={() => void deleteFile(file.name)}
-                          title="Удалить загруженный файл"
-                          className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:bg-red-50 hover:text-red-600 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-red-950/50 dark:hover:text-red-300"
-                        >
-                          Удалить
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                    <div className="flex items-center gap-1">
-                      <label
-                        htmlFor={`speakers-${file.path}`}
-                        className="whitespace-nowrap text-xs text-slate-400 dark:text-slate-500"
-                      >
-                        Точно
-                      </label>
-                      <input
-                        id={`speakers-${file.path}`}
-                        type="number"
-                        min={1}
-                        step={1}
-                        placeholder="авто"
-                        title="Точное число говорящих: пусто — автоопределение"
-                        value={speakerCounts[file.path] ?? ''}
-                        onChange={(event) =>
-                          setSpeakerCounts((prev) => ({
-                            ...prev,
-                            [file.path]: event.target.value,
-                          }))
-                        }
-                        className="w-14 rounded-md border border-slate-300 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder-slate-500"
-                      />
-                      <label
-                        htmlFor={`min-speakers-${file.path}`}
-                        className="whitespace-nowrap text-xs text-slate-400 dark:text-slate-500"
-                      >
-                        Мин
-                      </label>
-                      <input
-                        id={`min-speakers-${file.path}`}
-                        type="number"
-                        min={1}
-                        step={1}
-                        placeholder="—"
-                        title="Нижняя граница числа говорящих: пусто — без ограничения"
-                        value={speakerMins[file.path] ?? ''}
-                        onChange={(event) =>
-                          setSpeakerMins((prev) => ({
-                            ...prev,
-                            [file.path]: event.target.value,
-                          }))
-                        }
-                        className="w-14 rounded-md border border-slate-300 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder-slate-500"
-                      />
-                      <label
-                        htmlFor={`max-speakers-${file.path}`}
-                        className="whitespace-nowrap text-xs text-slate-400 dark:text-slate-500"
-                      >
-                        Макс
-                      </label>
-                      <input
-                        id={`max-speakers-${file.path}`}
-                        type="number"
-                        min={1}
-                        step={1}
-                        placeholder="—"
-                        title="Верхняя граница числа говорящих: пусто — без ограничения"
-                        value={speakerMaxs[file.path] ?? ''}
-                        onChange={(event) =>
-                          setSpeakerMaxs((prev) => ({
-                            ...prev,
-                            [file.path]: event.target.value,
-                          }))
-                        }
-                        className="w-14 rounded-md border border-slate-300 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder-slate-500"
-                      />
+
+                    {/* Действия — на месте, переносятся и не перекрывают имя. */}
+                    <div className="flex flex-wrap items-center justify-end gap-1.5 @xl:col-start-5 @xl:row-start-1">
+                      {file.processed ? (
+                        <>
+                          <button
+                            onClick={() => void restoreFile(file.name)}
+                            title="Вернуть файл в основной список «Файлы»"
+                            className="whitespace-nowrap rounded-md border border-emerald-300 px-3 py-1 text-xs text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-950/50"
+                          >
+                            Вернуть
+                          </button>
+                          <button
+                            onClick={() => void deleteFile(file.name)}
+                            title="Удалить загруженный файл"
+                            className="whitespace-nowrap rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:bg-red-50 hover:text-red-600 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-red-950/50 dark:hover:text-red-300"
+                          >
+                            Удалить
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => void enqueue(file.path)}
+                            disabled={readinessBlocked}
+                            title={blockedHint}
+                            className="whitespace-nowrap rounded-md border border-slate-300 px-3 py-1 text-xs hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:hover:bg-slate-800"
+                          >
+                            В очередь
+                          </button>
+                          <button
+                            onClick={() => void deleteFile(file.name)}
+                            title="Удалить загруженный файл"
+                            className="whitespace-nowrap rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:bg-red-50 hover:text-red-600 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-red-950/50 dark:hover:text-red-300"
+                          >
+                            Удалить
+                          </button>
+                        </>
+                      )}
                     </div>
-                    <button
-                      onClick={() => void enqueue(file.path)}
-                      disabled={readinessBlocked}
-                      title={blockedHint}
-                      className="rounded-md border border-slate-300 px-3 py-1 text-xs hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:hover:bg-slate-800"
-                    >
-                      В очередь
-                    </button>
-                    <button
-                      onClick={() => void deleteFile(file.name)}
-                      title="Удалить загруженный файл"
-                      className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:bg-red-50 hover:text-red-600 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-red-950/50 dark:hover:text-red-300"
-                    >
-                      Удалить
-                    </button>
-                      </>
+
+                    {/* Число говорящих — только для необработанных; на широких
+                        экранах отдельной строкой во всю ширину. */}
+                    {!file.processed && (
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 @xl:col-span-full @xl:row-start-2">
+                        <span className="flex items-center gap-1 whitespace-nowrap">
+                          <label
+                            htmlFor={`speakers-${file.path}`}
+                            className="text-xs text-slate-400 dark:text-slate-500"
+                          >
+                            Точно
+                          </label>
+                          <input
+                            id={`speakers-${file.path}`}
+                            type="number"
+                            min={1}
+                            step={1}
+                            placeholder="авто"
+                            title="Точное число говорящих: пусто — автоопределение"
+                            value={speakerCounts[file.path] ?? ''}
+                            onChange={(event) =>
+                              setSpeakerCounts((prev) => ({
+                                ...prev,
+                                [file.path]: event.target.value,
+                              }))
+                            }
+                            className="w-14 rounded-md border border-slate-300 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder-slate-500"
+                          />
+                        </span>
+                        <span className="flex items-center gap-1 whitespace-nowrap">
+                          <label
+                            htmlFor={`min-speakers-${file.path}`}
+                            className="text-xs text-slate-400 dark:text-slate-500"
+                          >
+                            Мин
+                          </label>
+                          <input
+                            id={`min-speakers-${file.path}`}
+                            type="number"
+                            min={1}
+                            step={1}
+                            placeholder="—"
+                            title="Нижняя граница числа говорящих: пусто — без ограничения"
+                            value={speakerMins[file.path] ?? ''}
+                            onChange={(event) =>
+                              setSpeakerMins((prev) => ({
+                                ...prev,
+                                [file.path]: event.target.value,
+                              }))
+                            }
+                            className="w-14 rounded-md border border-slate-300 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder-slate-500"
+                          />
+                        </span>
+                        <span className="flex items-center gap-1 whitespace-nowrap">
+                          <label
+                            htmlFor={`max-speakers-${file.path}`}
+                            className="text-xs text-slate-400 dark:text-slate-500"
+                          >
+                            Макс
+                          </label>
+                          <input
+                            id={`max-speakers-${file.path}`}
+                            type="number"
+                            min={1}
+                            step={1}
+                            placeholder="—"
+                            title="Верхняя граница числа говорящих: пусто — без ограничения"
+                            value={speakerMaxs[file.path] ?? ''}
+                            onChange={(event) =>
+                              setSpeakerMaxs((prev) => ({
+                                ...prev,
+                                [file.path]: event.target.value,
+                              }))
+                            }
+                            className="w-14 rounded-md border border-slate-300 px-2 py-1 text-xs focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder-slate-500"
+                          />
+                        </span>
+                      </div>
                     )}
                   </li>
                 ))}
@@ -843,12 +883,17 @@ function App() {
             ) : (
               <ul className="divide-y divide-slate-100 dark:divide-slate-800">
                 {jobs.map((job) => (
-                  <li key={job.id} className="flex items-center gap-3 py-2">
+                  <li
+                    key={job.id}
+                    className="flex flex-wrap items-center gap-x-3 gap-y-1.5 py-2"
+                  >
                     <button
                       onClick={() => void openJob(job.id)}
-                      className="min-w-0 flex-1 text-left"
+                      className="min-w-0 w-full text-left sm:w-auto sm:flex-1"
                     >
-                      <p className="truncate text-sm">{job.name}</p>
+                      <p className="truncate text-sm" title={job.name}>
+                        {job.name}
+                      </p>
                       <p className="text-xs text-slate-400 dark:text-slate-500">
                         {job.stage ? `${job.stage} · ` : ''}
                         {job.fraction != null ? `${Math.round(job.fraction * 100)}%` : '—'}
@@ -857,7 +902,7 @@ function App() {
                       </p>
                     </button>
                     <span
-                      className={`rounded-full px-2 py-0.5 text-xs ${
+                      className={`whitespace-nowrap rounded-full px-2 py-0.5 text-xs ${
                         STATUS_STYLES[job.status] ??
                         'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
                       }`}
@@ -868,7 +913,7 @@ function App() {
                       <button
                         onClick={() => void stopJob(job.id)}
                         title="Остановить обработку задачи"
-                        className="rounded-md border border-amber-300 px-3 py-1 text-xs text-amber-700 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-950/50"
+                        className="whitespace-nowrap rounded-md border border-amber-300 px-3 py-1 text-xs text-amber-700 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-950/50"
                       >
                         Остановить
                       </button>
@@ -882,7 +927,7 @@ function App() {
                         onClick={() => void runJob(job.id)}
                         disabled={readinessBlocked}
                         title={blockedHint}
-                        className="rounded-md bg-emerald-600 px-3 py-1 text-xs text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
+                        className="whitespace-nowrap rounded-md bg-emerald-600 px-3 py-1 text-xs text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
                       >
                         {job.status === 'cancelled' ? 'Запустить снова' : 'Запустить'}
                       </button>
@@ -890,7 +935,7 @@ function App() {
                     {(job.status !== 'running' || job.active === false) && (
                       <button
                         onClick={() => void deleteJob(job.id)}
-                        className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:bg-red-50 hover:text-red-600 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-red-950/50 dark:hover:text-red-300"
+                        className="whitespace-nowrap rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:bg-red-50 hover:text-red-600 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-red-950/50 dark:hover:text-red-300"
                       >
                         Удалить
                       </button>
@@ -905,14 +950,17 @@ function App() {
         {activeJobId && (
           <section className="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
             <div className="mb-3 flex items-center justify-between gap-3">
-              <h2 className="font-medium">
+              <h2
+                className="min-w-0 truncate font-medium"
+                title={activeJob ? `Прогресс · ${activeJob.name}` : 'Прогресс'}
+              >
                 Прогресс{activeJob ? ` · ${activeJob.name}` : ''}
               </h2>
               {progressRunning && activeJobId && (
                 <button
                   onClick={() => void stopJob(activeJobId)}
                   title="Остановить обработку задачи"
-                  className="rounded-md border border-amber-300 px-3 py-1 text-xs text-amber-700 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-950/50"
+                  className="whitespace-nowrap rounded-md border border-amber-300 px-3 py-1 text-xs text-amber-700 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-300 dark:hover:bg-amber-950/50"
                 >
                   Остановить
                 </button>
@@ -986,7 +1034,7 @@ function App() {
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder="Поиск по тексту..."
-                className="ml-auto w-64 rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder-slate-500"
+                className="w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:border-blue-400 focus:outline-none sm:ml-auto sm:w-64 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder-slate-500"
               />
             </div>
 

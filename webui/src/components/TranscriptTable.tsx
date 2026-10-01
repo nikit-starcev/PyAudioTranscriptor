@@ -243,7 +243,7 @@ function TranscriptTable({ jobId, entries, speakers }: Props) {
                   </td>
                   <td className="px-3 py-1.5">
                     <div
-                      className="max-w-[16rem] truncate"
+                      className="max-w-[9rem] truncate sm:max-w-[16rem]"
                       title={pieces.map((piece) => piece.name).join(' + ')}
                     >
                       {pieces.map((piece, pieceIndex) => (
@@ -273,7 +273,7 @@ function TranscriptTable({ jobId, entries, speakers }: Props) {
                     {entry.overlap && <span title="наложение речи">⇄</span>}
                   </td>
                   <td className="px-3 py-1.5">
-                    <div>{entry.text}</div>
+                    <div className="break-words">{entry.text}</div>
                     {playing && (
                       <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-blue-100 dark:bg-blue-900">
                         <div
