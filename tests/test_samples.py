@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import wave
+from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
@@ -15,11 +16,13 @@ import pytest
 
 from audio_transcriber.diarization import samples
 from audio_transcriber.diarization.samples import (
+    SampleVariant,
     extract_speaker_samples,
     find_speaker_samples,
     normalize_sample,
     samples_directory,
     select_sample_segment,
+    select_sample_variants,
     slice_waveform,
 )
 from audio_transcriber.domain.models import Speaker, TranscriptEntry, TranscriptionResult
@@ -180,6 +183,77 @@ def test_select_sample_segment_without_waveform_falls_back_to_longest() -> None:
     entries = [_entry(0.0, 2.0, IVAN), _entry(5.0, 12.0, IVAN)]
 
     assert select_sample_segment(entries, "SPEAKER_00") == (5.0, 12.0)
+
+
+# --- варианты прослушивания (#25) ------------------------------------------
+
+
+def test_select_sample_variants_returns_multiple_nonoverlapping() -> None:
+    entries = [_entry(0.0, 30.0, IVAN)]
+    waveform = _tone_waveform(duration=60.0, windows=((2.0, 6.0), (10.0, 14.0), (20.0, 24.0)))
+
+    variants = select_sample_variants(entries, "SPEAKER_00", waveform=waveform, count=5)
+
+    assert len(variants) == 3
+    scores = [variant.score for variant in variants]
+    assert scores == sorted(scores, reverse=True)
+    ordered = sorted(variants, key=lambda variant: variant.start)
+    for previous, following in pairwise(ordered):
+        assert previous.end <= following.start
+    for variant in variants:
+        assert any(
+            start - 0.1 <= variant.start and variant.end <= end + 0.1
+            for start, end in ((2.0, 6.0), (10.0, 14.0), (20.0, 24.0))
+        )
+
+
+def test_select_sample_variants_respects_count() -> None:
+    entries = [_entry(0.0, 60.0, IVAN)]
+    waveform = _tone_waveform(duration=60.0, windows=((0.0, 60.0),))
+
+    variants = select_sample_variants(entries, "SPEAKER_00", waveform=waveform, count=2)
+
+    assert len(variants) == 2
+    ordered = sorted(variants, key=lambda variant: variant.start)
+    assert ordered[0].end <= ordered[1].start
+
+
+def test_select_sample_variants_without_waveform_uses_longest_replies() -> None:
+    entries = [_entry(0.0, 2.0, IVAN), _entry(5.0, 12.0, IVAN), _entry(20.0, 21.0, IVAN)]
+
+    variants = select_sample_variants(entries, "SPEAKER_00", count=2)
+
+    assert [(variant.start, variant.end) for variant in variants] == [(5.0, 12.0), (0.0, 2.0)]
+    assert all(variant.score == variant.duration for variant in variants)
+
+
+def test_select_sample_variants_skips_overlap_and_foreign_speech() -> None:
+    entries = [
+        _entry(0.0, 5.0, IVAN, overlap=True),
+        _entry(6.0, 8.0, MARIA),
+        _entry(9.0, 12.0, IVAN),
+    ]
+
+    variants = select_sample_variants(entries, "SPEAKER_00", count=5)
+
+    assert [(variant.start, variant.end) for variant in variants] == [(9.0, 12.0)]
+
+
+def test_select_sample_variants_empty_without_clean_speech() -> None:
+    entries = [_entry(0.0, 5.0, IVAN, overlap=True)]
+
+    assert select_sample_variants(entries, "SPEAKER_00") == []
+
+
+def test_sample_variant_as_dict_rounds_seconds() -> None:
+    variant = SampleVariant(start=1.23456, end=4.98765, score=0.12345678)
+
+    assert variant.as_dict() == {
+        "start": 1.235,
+        "end": 4.988,
+        "duration": 3.753,
+        "score": 0.123457,
+    }
 
 
 def test_slice_waveform_clamps_to_bounds() -> None:

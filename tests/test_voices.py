@@ -5,10 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from audio_transcriber.diarization.voices import (
+    base_sample_name,
     collect_voice_library,
     delete_voice_sample,
+    delete_voice_samples,
     merge_references,
+    sample_index,
     save_speaker_sample,
+    unique_sample_path,
 )
 
 
@@ -37,6 +41,31 @@ def test_collect_voice_library_groups_same_name(tmp_path: Path) -> None:
     library = collect_voice_library(voices)
 
     assert library == {"ivan": (first,), "Иван": (second,)}
+
+
+def test_collect_voice_library_groups_duplicates_by_person(tmp_path: Path) -> None:
+    voices = tmp_path / "voices"
+    voices.mkdir()
+    first = voices / "Иван.wav"
+    second = voices / "Иван (2).wav"
+    third = voices / "Иван (3).wav"
+    maria = voices / "Мария.wav"
+    for path in (first, second, third, maria):
+        path.write_bytes(b"")
+
+    library = collect_voice_library(voices)
+
+    assert library["Иван"] == (first, second, third)
+    assert library["Мария"] == (maria,)
+
+
+def test_base_sample_name_and_index() -> None:
+    assert base_sample_name("Иван") == "Иван"
+    assert base_sample_name("Иван (2)") == "Иван"
+    assert base_sample_name("Иван (12)") == "Иван"
+    assert sample_index("Иван") == 1
+    assert sample_index("Иван (2)") == 2
+    assert sample_index("Иван (12)") == 12
 
 
 def test_collect_voice_library_missing_dir_is_empty(tmp_path: Path) -> None:
@@ -80,6 +109,51 @@ def test_save_speaker_sample_copies_and_sanitizes(tmp_path: Path) -> None:
 
     assert target == voices / "Иван_Тест_ 1.wav"
     assert target.read_bytes() == b"audio"
+
+
+def test_save_speaker_sample_appends_duplicates(tmp_path: Path) -> None:
+    voices = tmp_path / "voices"
+    first_source = tmp_path / "first.wav"
+    second_source = tmp_path / "second.wav"
+    first_source.write_bytes(b"first")
+    second_source.write_bytes(b"second")
+
+    first = save_speaker_sample(first_source, voices, "Иван")
+    second = save_speaker_sample(second_source, voices, "Иван")
+    third = save_speaker_sample(second_source, voices, "Иван")
+
+    assert first == voices / "Иван.wav"
+    assert second == voices / "Иван (2).wav"
+    assert third == voices / "Иван (3).wav"
+    # Существующие образцы не перезаписываются.
+    assert first.read_bytes() == b"first"
+    assert second.read_bytes() == b"second"
+
+
+def test_unique_sample_path_skips_taken_names(tmp_path: Path) -> None:
+    voices = tmp_path / "voices"
+    voices.mkdir()
+    (voices / "Иван.wav").write_bytes(b"")
+    (voices / "Иван (2).wav").write_bytes(b"")
+
+    assert unique_sample_path(voices, "Иван") == voices / "Иван (3).wav"
+    assert unique_sample_path(voices, "Пётр") == voices / "Пётр.wav"
+
+
+def test_delete_voice_samples_removes_whole_group(tmp_path: Path) -> None:
+    voices = tmp_path / "voices"
+    voices.mkdir()
+    for name in ("Иван.wav", "Иван (2).wav", "Иван (3).wav", "Мария.wav"):
+        (voices / name).write_bytes(b"audio")
+
+    deleted = delete_voice_samples(voices, "Иван")
+
+    assert deleted == 3
+    assert not (voices / "Иван.wav").exists()
+    assert not (voices / "Иван (2).wav").exists()
+    assert (voices / "Мария.wav").is_file()
+    # Имя с суффиксом указывает на ту же группу, повторное удаление — не ошибка.
+    assert delete_voice_samples(voices, "Иван (2)") == 0
 
 
 # --- Удаление образцов из библиотеки ---------------------------------------

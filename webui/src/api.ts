@@ -86,6 +86,17 @@ export type SampleMeta = { speaker_id: string; duration: number; size: number }
 
 export type VoiceInfo = { name: string; filename: string; duration: number; size: number }
 
+/** Группа образцов одного человека (имя → список образцов). */
+export type VoiceGroup = { name: string; count: number; samples: VoiceInfo[] }
+
+/** Один вариант прослушивания говорящего: окно исходного аудио [start, end). */
+export type SampleVariant = { start: number; end: number; duration: number; score: number }
+
+export type SpeakerVariants = { speaker_id: string; variants: SampleVariant[] }
+
+/** Окно исходного аудио для сохранения в библиотеку как образец. */
+export type LibraryWindow = { start: number; end: number }
+
 export type BestCandidate = { name: string; score: number }
 
 export type ApplyNamesResponse = {

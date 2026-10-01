@@ -4,10 +4,12 @@ import {
   errorMessage,
   formatDuration,
   type ApplyNamesResponse,
+  type LibraryWindow,
   type SampleMeta,
   type TranscriptResult,
   type VoiceInfo,
 } from '../api'
+import SpeakerVariants from './SpeakerVariants'
 
 type Props = {
   jobId: string
@@ -15,7 +17,7 @@ type Props = {
   sampleMeta: Record<string, SampleMeta>
   onRename: (speakerId: string, name: string) => Promise<void>
   onMerge: (source: string, target: string) => Promise<void>
-  onToLibrary: (speakerId: string, name: string) => Promise<VoiceInfo>
+  onToLibrary: (speakerId: string, name: string, window?: LibraryWindow) => Promise<VoiceInfo>
   onApplyNames: () => Promise<ApplyNamesResponse>
   onOpenVoices: () => void
 }
@@ -311,6 +313,13 @@ function SpeakersPanel({
                   src={`/api/jobs/${jobId}/samples/${encodeURIComponent(speaker.id)}`}
                 />
               )}
+
+              <SpeakerVariants
+                jobId={jobId}
+                speakerId={speaker.id}
+                speakerName={speaker.display_name}
+                onToLibrary={onToLibrary}
+              />
             </li>
           )
         })}

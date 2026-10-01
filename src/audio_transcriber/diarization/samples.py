@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +31,7 @@ from audio_transcriber.diarization.energy import (
     median_energy,
     prefix_squares,
     speech_window_around_peak,
+    window_energy,
 )
 from audio_transcriber.domain.models import TranscriptEntry, TranscriptionResult
 from audio_transcriber.utils.audio import SAMPLE_RATE, load_waveform, write_wav
@@ -61,8 +63,43 @@ DEFAULT_MAX_NORMALIZE_GAIN = 10.0
 #: Суффикс каталога образцов рядом с результатами: ``<файл>.speakers``.
 SPEAKER_SAMPLES_SUFFIX = ".speakers"
 
+#: Сколько вариантов прослушивания говорящего отдавать по умолчанию.
+DEFAULT_VARIANT_COUNT = 5
+
+#: Минимальный разнос между выбранными вариантами (секунды). Защищает от выдачи
+#: почти одинаковых окон, сдвинутых на кадр анализа.
+DEFAULT_VARIANT_MIN_SEPARATION_SECONDS = 0.5
+
 #: Временной интервал в секундах.
 Interval = tuple[float, float]
+
+
+@dataclass(frozen=True, slots=True)
+class SampleVariant:
+    """Один вариант прослушивания говорящего: окно исходного аудио ``[start, end)``.
+
+    ``score`` — средняя энергия окна (для ранжирования и показа в UI); для
+    вырожденного пути без waveform (только реплики) равен длительности, чтобы
+    варианты тоже были упорядочены по «полезности».
+    """
+
+    start: float
+    end: float
+    score: float
+
+    @property
+    def duration(self) -> float:
+        """Длительность окна в секундах."""
+        return self.end - self.start
+
+    def as_dict(self) -> dict[str, object]:
+        """Плоское представление для API (секунды, округлённые до миллисекунд)."""
+        return {
+            "start": round(self.start, 3),
+            "end": round(self.end, 3),
+            "duration": round(self.duration, 3),
+            "score": round(self.score, 6),
+        }
 
 
 def samples_directory(output_dir: Path, source_path: Path) -> Path:
@@ -218,6 +255,111 @@ def select_sample_segment(
         min_duration=DEFAULT_MIN_SPEECH_SECONDS,
         frame_seconds=step,
     )
+
+
+def select_sample_variants(
+    entries: Sequence[TranscriptEntry],
+    speaker_id: str,
+    *,
+    waveform: np.ndarray | None = None,
+    count: int = DEFAULT_VARIANT_COUNT,
+    max_duration: float = DEFAULT_MAX_SAMPLE_SECONDS,
+    sample_rate: int = SAMPLE_RATE,
+    step: float = DEFAULT_WINDOW_STEP_SECONDS,
+    min_separation: float = DEFAULT_VARIANT_MIN_SEPARATION_SECONDS,
+) -> list[SampleVariant]:
+    """Выбирает несколько неперекрывающихся вариантов прослушивания говорящего.
+
+    Возвращает до ``count`` окон ``[start, end)`` исходного аудио, отсортированных
+    по убыванию «полезности». С ``waveform`` варианты — это лучшие по энергии
+    участки чистой речи говорящего: каждый следующий ищется вне уже выбранных
+    (и с разносом ``min_separation``), поэтому окна не пересекаются и не
+    дублируются, а их длина/энергия естественно различаются. Без ``waveform``
+    (аудио недоступно) берутся самые длинные чистые реплики — как запасной путь.
+
+    Непересекаемость гарантируется и по чужим/наложенным интервалам: варианты
+    выбираются только из чистой речи говорящего.
+    """
+    if count <= 0:
+        return []
+    own = _clean_intervals(entries, speaker_id)
+    if not own:
+        return []
+    allowed = _subtract_intervals(
+        _merge_intervals(own), _merge_intervals(_forbidden_intervals(entries, speaker_id))
+    )
+    if not allowed:
+        return []
+    if waveform is None:
+        return _variants_from_intervals(allowed, count=count, max_duration=max_duration)
+    return _variants_by_energy(
+        allowed,
+        waveform,
+        count=count,
+        max_duration=max_duration,
+        sample_rate=sample_rate,
+        step=step,
+        min_separation=min_separation,
+    )
+
+
+def _variants_from_intervals(
+    allowed: Sequence[Interval], *, count: int, max_duration: float
+) -> list[SampleVariant]:
+    """Запасной путь без waveform: самые длинные чистые интервалы, обрезанные по max."""
+    candidates: list[tuple[float, float, float]] = []
+    for start, end in allowed:
+        window_end = min(end, start + max_duration)
+        if window_end <= start:
+            continue
+        candidates.append((end - start, start, window_end))
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+    return [
+        SampleVariant(start=start, end=end, score=end - start)
+        for _, start, end in candidates[:count]
+    ]
+
+
+def _variants_by_energy(
+    allowed: Sequence[Interval],
+    waveform: np.ndarray,
+    *,
+    count: int,
+    max_duration: float,
+    sample_rate: int,
+    step: float,
+    min_separation: float,
+) -> list[SampleVariant]:
+    """Итеративно выбирает лучшие по энергии окна вне уже выбранных."""
+    prefix = prefix_squares(waveform)
+    threshold = energy_threshold(median_energy(prefix, sample_rate=sample_rate))
+    remaining = list(allowed)
+    variants: list[SampleVariant] = []
+    while remaining and len(variants) < count:
+        segment = speech_window_around_peak(
+            prefix,
+            remaining,
+            sample_rate=sample_rate,
+            threshold=threshold,
+            max_duration=max_duration,
+            min_duration=DEFAULT_MIN_SPEECH_SECONDS,
+            frame_seconds=step,
+        )
+        if segment is None:
+            break
+        start, end = segment
+        if end <= start:
+            break
+        score = window_energy(prefix, round(start * sample_rate), round(end * sample_rate))
+        variants.append(SampleVariant(start=start, end=end, score=score))
+        # Убираем выбранное окно вместе с окрестностью: следующий вариант ищется
+        # не ближе ``min_separation``, поэтому почти одинаковые окна не попадают.
+        hole = [(max(0.0, start - min_separation), end + min_separation)]
+        updated = _subtract_intervals(remaining, hole)
+        if not updated or updated == remaining:
+            break
+        remaining = updated
+    return variants
 
 
 def normalize_sample(

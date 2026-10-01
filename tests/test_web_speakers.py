@@ -11,6 +11,7 @@ import time
 import wave
 from collections.abc import Iterator
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
@@ -412,3 +413,129 @@ def test_voice_delete_cannot_escape_library(
     assert response.status_code == 404
     assert outside.is_file()
     assert not (voices_dir / "secret.wav").exists()
+
+
+# --- несколько образцов на человека (#19) ----------------------------------
+
+
+def test_voices_list_groups_duplicates(client: TestClient, voices_dir: Path) -> None:
+    _write_wav(voices_dir / "Иван.wav")
+    _write_wav(voices_dir / "Иван (2).wav")
+    _write_wav(voices_dir / "Мария.wav")
+
+    groups = client.get("/api/voices").json()
+
+    assert [group["name"] for group in groups] == ["Иван", "Мария"]
+    ivan = next(group for group in groups if group["name"] == "Иван")
+    assert ivan["count"] == 2
+    assert [sample["filename"] for sample in ivan["samples"]] == ["Иван.wav", "Иван (2).wav"]
+
+
+def test_voices_upload_appends_to_existing_person(client: TestClient) -> None:
+    first = client.post(
+        "/api/voices",
+        files={"file": ("voice.wav", _wav_bytes(), "audio/wav")},
+        data={"name": "Анна"},
+    )
+    second = client.post(
+        "/api/voices",
+        files={"file": ("voice.wav", _wav_bytes(), "audio/wav")},
+        data={"name": "Анна"},
+    )
+
+    assert first.json()["filename"] == "Анна.wav"
+    assert second.json()["filename"] == "Анна (2).wav"
+    groups = client.get("/api/voices").json()
+    assert len(groups) == 1
+    assert groups[0]["count"] == 2
+
+
+def test_voice_delete_sample_by_filename_and_person(client: TestClient, voices_dir: Path) -> None:
+    for name in ("Иван.wav", "Иван (2).wav", "Иван (3).wav"):
+        _write_wav(voices_dir / name)
+
+    one = client.delete(f"/api/voices/samples/{quote('Иван (2).wav', safe='')}")
+    assert one.status_code == 200
+    assert one.json()["deleted"] == "Иван (2).wav"
+    assert not (voices_dir / "Иван (2).wav").exists()
+
+    remaining = client.get("/api/voices").json()
+    assert remaining[0]["count"] == 2
+
+    all_deleted = client.delete("/api/voices/people/Иван")
+    assert all_deleted.status_code == 200
+    assert all_deleted.json()["count"] == 2
+    assert client.get("/api/voices").json() == []
+    assert client.delete("/api/voices/people/Иван").status_code == 404
+
+
+def test_apply_names_uses_all_samples_of_person(
+    client: TestClient, voices_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job_id, _ = _prepared_job(client)
+    _write_wav(voices_dir / "Иван.wav")
+    _write_wav(voices_dir / "Иван (2).wav")
+    captured: dict[str, object] = {}
+
+    def fake_enroll(**kwargs) -> EnrollmentOutcome:
+        captured.update(kwargs)
+        return EnrollmentOutcome(mapping={}, best_candidates={}, speaker_count=2)
+
+    monkeypatch.setattr("audio_transcriber.web.speakers.enroll_speakers", fake_enroll)
+    response = client.post(f"/api/jobs/{job_id}/apply-names", json={})
+
+    assert response.status_code == 200
+    references = captured["references"]
+    assert isinstance(references, dict)
+    assert len(references["Иван"]) == 2
+
+
+# --- варианты прослушивания (#25) ------------------------------------------
+
+
+def test_speaker_variants_fall_back_without_audio(client: TestClient) -> None:
+    job_id, _ = _prepared_job(client)
+
+    response = client.get(f"/api/jobs/{job_id}/speakers/SPEAKER_00/variants")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["speaker_id"] == "SPEAKER_00"
+    assert [(item["start"], item["end"]) for item in body["variants"]] == [(0.0, 1.0), (2.0, 3.0)]
+    assert all(item["duration"] > 0 for item in body["variants"])
+
+
+def test_speaker_variants_unknown_speaker_is_404(client: TestClient) -> None:
+    job_id, _ = _prepared_job(client)
+
+    response = client.get(f"/api/jobs/{job_id}/speakers/SPEAKER_99/variants")
+
+    assert response.status_code == 404
+
+
+def test_to_library_from_variant_window(client: TestClient, voices_dir: Path) -> None:
+    uploaded = _upload(client, "source.wav", _wav_bytes(1.0))
+    job_id = _run_job(client, uploaded["name"])
+
+    response = client.post(
+        f"/api/jobs/{job_id}/speakers/SPEAKER_00/to-library",
+        json={"name": "Тест", "start": 0.2, "end": 0.6},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["name"] == "Тест"
+    assert body["filename"] == "Тест.wav"
+    assert body["duration"] == pytest.approx(0.4, abs=0.05)
+    assert (voices_dir / "Тест.wav").is_file()
+
+
+def test_to_library_rejects_invalid_window(client: TestClient) -> None:
+    job_id, _ = _prepared_job(client)
+
+    response = client.post(
+        f"/api/jobs/{job_id}/speakers/SPEAKER_00/to-library",
+        json={"name": "Тест", "start": 0.6, "end": 0.2},
+    )
+
+    assert response.status_code == 400

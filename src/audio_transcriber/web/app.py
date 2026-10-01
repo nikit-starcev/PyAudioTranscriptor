@@ -13,6 +13,7 @@ CORS не нужен: фронт и API раздаёт один и тот же o
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 import shutil
 import tempfile
@@ -39,10 +40,18 @@ from starlette.background import BackgroundTask
 from audio_transcriber import __version__
 from audio_transcriber.config.defaults import DEFAULT_ENROLLMENT_MIN_SIMILARITY
 from audio_transcriber.config.settings import AppConfig
+from audio_transcriber.diarization.samples import (
+    normalize_sample,
+    select_sample_variants,
+    slice_waveform,
+)
 from audio_transcriber.diarization.voices import (
+    base_sample_name,
     collect_voice_library,
     delete_voice_sample,
+    delete_voice_samples,
     save_speaker_sample,
+    unique_sample_path,
 )
 from audio_transcriber.domain.enums import ExportFormat
 from audio_transcriber.export.factory import create_exporter
@@ -104,13 +113,16 @@ from audio_transcriber.web.storage.jobs_db import (
 from audio_transcriber.web.voices import (
     VoiceSample,
     find_voice_sample,
-    list_voice_samples,
+    find_voice_sample_file,
+    list_voice_groups,
 )
 
 #: Функция формирования протокола (совместима с ``generate_protocol``).
 ProtocolFn = Callable[..., ProtocolArtifacts]
 #: Провайдер каталога библиотеки голосов (читает актуальные настройки).
 VoicesResolver = Callable[[], Path]
+
+logger = logging.getLogger(__name__)
 
 #: Заголовки SSE: без кэша и без буферизации прокси.
 SSE_HEADERS = {
@@ -211,9 +223,16 @@ class SpeakerEditsRequest(BaseModel):
 
 
 class ToLibraryRequest(BaseModel):
-    """Тело ``POST /api/jobs/{id}/speakers/{sid}/to-library``."""
+    """Тело ``POST /api/jobs/{id}/speakers/{sid}/to-library``.
+
+    ``start``/``end`` — необязательное окно исходного аудио: если заданы, в
+    библиотеку сохраняется именно выбранный вариант говорящего (#25), а не
+    готовый образец задачи.
+    """
 
     name: str
+    start: float | None = None
+    end: float | None = None
 
 
 class ApplyNamesRequest(BaseModel):
@@ -946,27 +965,74 @@ def register_api(
             }
         )
 
+    @router.get("/jobs/{job_id}/speakers/{speaker_id}/variants")
+    def speaker_variants(job_id: str, speaker_id: str, count: int = 5) -> dict[str, object]:
+        """Варианты прослушивания говорящего — неперекрывающиеся окна аудио.
+
+        Окна ``[start, end)`` исходного аудио, отсортированные по убыванию
+        «полезности» (энергия речи; без аудио — длительность чистых реплик).
+        Звук отдаётся существующим ``GET /jobs/{id}/audio`` с Range, поэтому
+        фронтенд проигрывает окно, выставляя ``currentTime = start``.
+        """
+        job = _require_job(store, job_id)
+        payload = _require_result(paths, job)
+        source = Path(job.source_path)
+        result = result_from_payload(payload, source_path=source)
+        if speaker_id not in {speaker.id for speaker in result.speakers}:
+            raise HTTPException(status_code=404, detail="Говорящий не найден")
+        limit = max(1, min(count, 20))
+        waveform = None
+        if source.is_file():
+            try:
+                waveform = load_waveform(source)
+            except Exception as exc:  # noqa: BLE001 — без аудио деградируем к репликам
+                logger.warning(
+                    "Варианты говорящего: не удалось прочитать аудио %s: %s", source, exc
+                )
+        variants = select_sample_variants(
+            result.entries, speaker_id, waveform=waveform, count=limit
+        )
+        return {"speaker_id": speaker_id, "variants": [variant.as_dict() for variant in variants]}
+
     @router.post("/jobs/{job_id}/speakers/{speaker_id}/to-library", status_code=201)
     def speaker_to_library(
         job_id: str, speaker_id: str, payload: ToLibraryRequest
     ) -> dict[str, object]:
-        """Копирует образец говорящего задачи в библиотеку голосов под именем."""
+        """Сохраняет образец говорящего в библиотеку голосов под именем.
+
+        Без окна копируется готовый образец задачи; при заданных ``start``/``end``
+        в библиотеку вырезается выбранный вариант прослушивания (#25).
+        """
         job = _require_job(store, job_id)
         result = _require_result(paths, job)
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Не указано имя образца")
+        directory = resolve_voices()
+        if payload.start is not None or payload.end is not None:
+            window = _variant_window(payload.start, payload.end)
+            source = Path(job.source_path)
+            if not source.is_file():
+                raise HTTPException(status_code=404, detail="Исходное аудио не найдено")
+            try:
+                target = _save_window_to_library(source, window, directory, name)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=500, detail=f"Не удалось сохранить образец: {exc}"
+                ) from exc
+            return VoiceSample(name=base_sample_name(target.stem), path=target).as_dict()
+
         relative = _result_samples(result).get(speaker_id)
         sample_path = _sample_path(paths, relative) if relative else None
         if sample_path is None or not sample_path.is_file():
             raise HTTPException(status_code=404, detail="Образец говорящего не найден")
-        name = payload.name.strip()
-        if not name:
-            raise HTTPException(status_code=400, detail="Не указано имя образца")
         try:
-            target = save_speaker_sample(sample_path, resolve_voices(), name)
+            target = save_speaker_sample(sample_path, directory, name)
         except OSError as exc:
             raise HTTPException(
                 status_code=500, detail=f"Не удалось сохранить образец: {exc}"
             ) from exc
-        return VoiceSample(name=sanitize_filename(name), path=target).as_dict()
+        return VoiceSample(name=base_sample_name(target.stem), path=target).as_dict()
 
     @router.get("/jobs/{job_id}/audio")
     def job_audio(job_id: str, request: Request) -> Response:
@@ -1019,14 +1085,19 @@ def register_api(
 
     @router.get("/voices")
     def voices_list() -> list[dict[str, object]]:
-        return [sample.as_dict() for sample in list_voice_samples(resolve_voices())]
+        """Библиотека, сгруппированная по человеку: имя → список образцов."""
+        return [group.as_dict() for group in list_voice_groups(resolve_voices())]
 
     @router.post("/voices", status_code=201)
     async def voices_upload(
         file: Annotated[UploadFile, File()],
         name: Annotated[str, Form()],
     ) -> dict[str, object]:
-        """Сохранить загруженный файл как образец библиотеки ``<имя>.wav``."""
+        """Добавить образец библиотеки: ``<имя>.wav`` или ``<имя> (N).wav``.
+
+        Существующие образцы не перезаписываются — новый файл получает свободный
+        номер в группе имени.
+        """
         raw_name = name.strip()
         clean = sanitize_filename(raw_name)
         if not raw_name or not clean:
@@ -1041,7 +1112,7 @@ def register_api(
             raise HTTPException(
                 status_code=500, detail=f"Не удалось создать библиотеку: {exc}"
             ) from exc
-        target = directory / f"{clean}.wav"
+        target = unique_sample_path(directory, raw_name)
         suffix = Path(file.filename or "").suffix.lower()
         if suffix == ".wav":
             try:
@@ -1052,8 +1123,46 @@ def register_api(
                 ) from exc
         else:
             _write_converted_wav(data, suffix, target)
-        sample = find_voice_sample(directory, clean) or VoiceSample(name=clean, path=target)
-        return sample.as_dict()
+        return VoiceSample(name=base_sample_name(target.stem), path=target).as_dict()
+
+    @router.get("/voices/samples/{filename}/audio")
+    def voice_sample_audio(filename: str) -> Response:
+        """Звук конкретного образца по имени файла (поддерживает дубликаты)."""
+        sample = find_voice_sample_file(resolve_voices(), filename)
+        if sample is None:
+            raise HTTPException(status_code=404, detail="Образец не найден")
+        return FileResponse(sample.path, media_type="audio/wav", filename=sample.path.name)
+
+    @router.get("/voices/samples/{filename}/envelope")
+    def voice_sample_envelope(filename: str, columns: int = 120) -> dict[str, object]:
+        sample = find_voice_sample_file(resolve_voices(), filename)
+        if sample is None:
+            raise HTTPException(status_code=404, detail="Образец не найден")
+        width = max(1, min(columns, 2000))
+        return {
+            "name": sample.name,
+            "filename": sample.filename,
+            "duration": round(read_duration(sample.path), 2),
+            "columns": width,
+            "envelope": amplitude_envelope(sample.path, width),
+        }
+
+    @router.delete("/voices/samples/{filename}")
+    def voice_sample_delete(filename: str) -> dict[str, object]:
+        sample = find_voice_sample_file(resolve_voices(), filename)
+        if sample is None:
+            raise HTTPException(status_code=404, detail="Образец не найден")
+        if not delete_voice_sample(sample.path, resolve_voices()):
+            raise HTTPException(status_code=404, detail="Образец не найден")
+        return {"deleted": sample.filename}
+
+    @router.delete("/voices/people/{name}")
+    def voice_person_delete(name: str) -> dict[str, object]:
+        """Удаляет **все** образцы человека (всю группу имени)."""
+        deleted = delete_voice_samples(resolve_voices(), name)
+        if deleted == 0:
+            raise HTTPException(status_code=404, detail="Образцы не найдены")
+        return {"deleted": name, "count": deleted}
 
     @router.get("/voices/{name}/audio")
     def voice_audio(name: str) -> Response:
@@ -1082,7 +1191,7 @@ def register_api(
             raise HTTPException(status_code=404, detail="Образец не найден")
         if not delete_voice_sample(sample.path, resolve_voices()):
             raise HTTPException(status_code=404, detail="Образец не найден")
-        return {"deleted": sample.name}
+        return {"deleted": sample.filename}
 
 
 def _format_size(num_bytes: int) -> str:
@@ -1245,6 +1354,31 @@ def _write_converted_wav(data: bytes, suffix: str, target: Path) -> None:
         if temp_path is not None:
             Path(temp_path).unlink(missing_ok=True)
 
+
+def _variant_window(start: float | None, end: float | None) -> tuple[float, float]:
+    """Проверяет и нормализует окно варианта ``[start, end)`` (оба конца заданы)."""
+    if start is None or end is None:
+        raise HTTPException(status_code=400, detail="Нужны обе границы окна: start и end")
+    if start < 0 or end <= start:
+        raise HTTPException(status_code=400, detail="Некорректное окно: end должен быть больше start")
+    return float(start), float(end)
+
+
+def _save_window_to_library(
+    source: Path, window: tuple[float, float], directory: Path, name: str
+) -> Path:
+    """Вырезает окно исходного аудио и сохраняет его как новый образец библиотеки."""
+    start, end = window
+    window_wave = normalize_sample(slice_waveform(load_waveform(source), start, end))
+    if window_wave.size == 0:
+        raise ValueError("пустое окно образца")
+    tmp_dir = Path(tempfile.mkdtemp(prefix="audio-transcriber-window-"))
+    try:
+        tmp = tmp_dir / "window.wav"
+        write_wav(tmp, window_wave)
+        return save_speaker_sample(tmp, directory, name)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def _index_response() -> Response:

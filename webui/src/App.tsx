@@ -14,6 +14,7 @@ import {
   type Job,
   type JobDetails,
   type JobEvent,
+  type LibraryWindow,
   type ProtocolResponse,
   type SampleMeta,
   type StageTime,
@@ -476,11 +477,16 @@ function App() {
   )
 
   const saveToLibrary = useCallback(
-    async (jobId: string, speakerId: string, name: string): Promise<VoiceInfo> => {
+    async (
+      jobId: string,
+      speakerId: string,
+      name: string,
+      window?: LibraryWindow,
+    ): Promise<VoiceInfo> => {
       return api<VoiceInfo>(`/api/jobs/${jobId}/speakers/${speakerId}/to-library`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, start: window?.start, end: window?.end }),
       })
     },
     [],
@@ -878,7 +884,9 @@ function App() {
               onMerge={(source, target) =>
                 patchSpeakers(activeJobId, { merges: [{ source, target }] })
               }
-              onToLibrary={(speakerId, name) => saveToLibrary(activeJobId, speakerId, name)}
+              onToLibrary={(speakerId, name, window) =>
+                saveToLibrary(activeJobId, speakerId, name, window)
+              }
               onApplyNames={() => applyNames(activeJobId)}
               onOpenVoices={() => setVoicesOpen(true)}
             />

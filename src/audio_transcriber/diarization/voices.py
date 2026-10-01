@@ -2,12 +2,15 @@
 
 В каталоге-библиотеке (``voices_dir``, по умолчанию ``./voices``) файлы
 ``Иван.wav``, ``Мария.wav`` и т.п. трактуются как образцы голоса: имя участника
-— это имя файла без расширения (stem). Такие образцы **добавляются** к явно
-заданным ``--speaker-reference`` и вместе с ними участвуют в enrollment.
+— это имя файла без расширения (stem). У одного человека может быть несколько
+образцов: ``Иван.wav`` — первый, ``Иван (2).wav``, ``Иван (3).wav`` и т.д. —
+дополнительные; они группируются под общим именем. Такие образцы
+**добавляются** к явно заданным ``--speaker-reference`` и вместе с ними
+участвуют в enrollment.
 
 Приоритет и дедупликация: явные образцы идут первыми; файлы библиотеки
 дописываются к одноимённому имени; полностью одинаковые пути не дублируются.
-Одноимённые образцы (явные + из библиотеки) усредняются при сопоставлении —
+Все образцы человека (явные + из библиотеки) усредняются при сопоставлении —
 это повышает устойчивость эмбеддинга. Отсутствие каталога — не ошибка:
 библиотека просто пуста.
 """
@@ -15,6 +18,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -23,12 +27,36 @@ from audio_transcriber.utils.text import sanitize_filename
 
 logger = logging.getLogger(__name__)
 
+#: Суффикс-дубликат в имени файла: ``Иван (2).wav`` — второй образец «Иван».
+_DUPLICATE_SUFFIX = re.compile(r"^(?P<base>.+?)\s*\((?P<index>\d+)\)$")
+
+
+def base_sample_name(stem: str) -> str:
+    """Базовое (человеческое) имя образца: ``Иван (2)`` → ``Иван``.
+
+    Соглашение о нескольких образцах: ``Иван.wav`` — первый, ``Иван (2).wav``,
+    ``Иван (3).wav`` и т.д. — дополнительные. Имя без суффикса ``(N)``
+    возвращается как есть, поэтому старые файлы ``Иван.wav`` читаются как раньше.
+    """
+    name = stem.strip()
+    match = _DUPLICATE_SUFFIX.match(name)
+    return match.group("base").strip() if match else name
+
+
+def sample_index(stem: str) -> int:
+    """Порядковый номер образца в группе: без суффикса — 1, ``(N)`` → ``N``."""
+    match = _DUPLICATE_SUFFIX.match(stem.strip())
+    return int(match.group("index")) if match else 1
+
 
 def collect_voice_library(directory: Path | None) -> dict[str, tuple[Path, ...]]:
-    """Собирает образцы из каталога: ``stem файла -> кортеж путей``.
+    """Собирает образцы из каталога: ``базовое имя -> кортеж путей``.
 
-    Учитываются только ``*.wav`` верхнего уровня (регистр расширения не важен).
-    Отсутствующий или недоступный каталог даёт пустой словарь (мягкая деградация).
+    Несколько файлов одного человека (``Иван.wav``, ``Иван (2).wav``, …)
+    группируются под общим именем; внутри группы порядок — основной образец,
+    затем дубликаты по возрастанию номера. Учитываются только ``*.wav`` верхнего
+    уровня (регистр расширения не важен). Отсутствующий или недоступный каталог
+    даёт пустой словарь (мягкая деградация).
     """
     if directory is None:
         return {}
@@ -44,11 +72,14 @@ def collect_voice_library(directory: Path | None) -> dict[str, tuple[Path, ...]]
     for path in files:
         if path.suffix.lower() != ".wav":
             continue
-        name = path.stem.strip()
+        name = base_sample_name(path.stem)
         if not name:
             continue
         library.setdefault(name, []).append(path)
-    return {name: tuple(paths) for name, paths in library.items()}
+    return {
+        name: tuple(sorted(paths, key=lambda path: (sample_index(path.stem), path.name.casefold())))
+        for name, paths in library.items()
+    }
 
 
 def merge_references(
@@ -80,13 +111,30 @@ def merge_references(
     return {name: tuple(paths) for name, paths in merged.items() if paths}
 
 
-def save_speaker_sample(source: Path, directory: Path, name: str) -> Path:
-    """Копирует образец говорящего в библиотеку как ``<имя>.wav``.
+def unique_sample_path(directory: Path, name: str) -> Path:
+    """Свободный путь для нового образца: ``<имя>.wav`` или ``<имя> (N).wav``.
 
-    Создаёт каталог при необходимости и возвращает путь сохранённого файла.
-    Ошибки ввода-вывода (нет прав, диск) пробрасываются вызывающему.
+    Существующие файлы не перезаписываются: второй образец «Иван» сохраняется как
+    ``Иван (2).wav``, третий — ``Иван (3).wav`` и т.д.
     """
-    target = Path(directory) / f"{sanitize_filename(name)}.wav"
+    stem = sanitize_filename(name)
+    candidate = Path(directory) / f"{stem}.wav"
+    counter = 2
+    while candidate.exists():
+        candidate = Path(directory) / f"{stem} ({counter}).wav"
+        counter += 1
+    return candidate
+
+
+def save_speaker_sample(source: Path, directory: Path, name: str) -> Path:
+    """Копирует образец говорящего в библиотеку, не перезаписывая существующие.
+
+    Первый образец имени сохраняется как ``<имя>.wav``, последующие — как
+    ``<имя> (2).wav``, ``<имя> (3).wav`` и т.д. Создаёт каталог при
+    необходимости и возвращает путь сохранённого файла. Ошибки ввода-вывода (нет
+    прав, диск) пробрасываются вызывающему.
+    """
+    target = unique_sample_path(Path(directory), name)
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, target)
     return target
@@ -126,3 +174,21 @@ def delete_voice_sample(path: Path, directory: Path | None = None) -> bool:
         return False
     logger.info("Библиотека голосов: удалён образец %s", target)
     return True
+
+
+def delete_voice_samples(directory: Path | None, name: str) -> int:
+    """Удаляет **все** образцы человека (все файлы группы ``name``).
+
+    Возвращает число успешно удалённых файлов. Имя нормализуется
+    (:func:`base_sample_name`), поэтому ``Иван (2)`` и ``Иван`` указывают на
+    одну группу. Отсутствие каталога/имени — не ошибка (возвращается 0).
+    """
+    library = collect_voice_library(directory)
+    paths = library.get(base_sample_name(name), ())
+    if not paths:
+        return 0
+    deleted = 0
+    for path in paths:
+        if delete_voice_sample(path, directory):
+            deleted += 1
+    return deleted
