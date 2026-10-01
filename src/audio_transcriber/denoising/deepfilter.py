@@ -148,6 +148,21 @@ class DeepFilterDenoiser:
             raise ValueError("output_sample_rate должен быть положительным")
         self._output_sample_rate = output_sample_rate
         self._tmpdir: tempfile.TemporaryDirectory[str] | None = None
+        #: Декодированный waveform последнего успешного ``denoise`` (частота
+        #: конвейера). Нужен, чтобы диаризация переиспользовала уже декодированное
+        #: аудио и не читала временный WAV повторно.
+        self._last_waveform: np.ndarray | None = None
+
+    @property
+    def last_waveform(self) -> np.ndarray | None:
+        """Моно waveform 16 кГц последнего успешного :meth:`denoise` или ``None``.
+
+        Отдаётся следующей стадии (диаризации) для переиспользования: исходный
+        файл уже декодирован и отресемплен в частоту конвейера, повторное чтение
+        временного WAV не требуется. ``None`` — денойз пропущен/не удался или
+        еще не запускался; потребитель в этом случае декодирует файл сам.
+        """
+        return self._last_waveform
 
     def denoise(self, input_path: Path) -> Path:
         """Возвращает путь к очищенному аудио 16 кГц моно WAV.
@@ -156,6 +171,7 @@ class DeepFilterDenoiser:
         инференса) возвращает ``input_path`` без исключения.
         """
 
+        self._last_waveform = None
         try:
             waveform = load_waveform(input_path, sample_rate=DF_SAMPLE_RATE)
         except Exception as exc:  # noqa: BLE001 — любая ошибка ведёт к мягкому пропуску
@@ -175,10 +191,13 @@ class DeepFilterDenoiser:
             return input_path
 
     def close(self) -> None:
-        """Удаляет временные файлы (идемпотентно)."""
+        """Удаляет временные файлы (идемпотентно) и освобождает waveform."""
         if self._tmpdir is not None:
             self._tmpdir.cleanup()
             self._tmpdir = None
+        # Диаризация к этому моменту уже получила waveform (или её нет) —
+        # удерживать декодированный массив нет смысла.
+        self._last_waveform = None
 
     def __enter__(self) -> DeepFilterDenoiser:
         return self
@@ -208,6 +227,10 @@ class DeepFilterDenoiser:
             self._tmpdir = tempfile.TemporaryDirectory(prefix="audio-transcriber-denoise-")
         target = Path(self._tmpdir.name) / f"{input_path.stem}.denoised.wav"
         write_wav(target, resampled, sample_rate=self._output_sample_rate)
+        # Запоминаем waveform, из которого записан WAV (сэмплы совпадают с
+        # точностью до s16-квантования): диаризация возьмёт его напрямую, и
+        # временные метки останутся согласованы с ASR.
+        self._last_waveform = resampled
         duration = resampled.shape[0] / self._output_sample_rate
         logger.info("Шумоподавление: %s → %s (%.1f с)", input_path.name, target.name, duration)
         return target

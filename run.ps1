@@ -50,6 +50,15 @@ Get-Content $configPath -Encoding UTF8 | ForEach-Object {
     }
 }
 
+# Экспортируем все значения из config.env в окружение процесса — так же, как
+# это делает run.sh (`set -a; source config.env`). Благодаря этому переменные,
+# которые код читает напрямую из окружения (WHISPER_CPP_VAD_MODEL,
+# WHISPER_CPP_CHUNK_SECONDS/OVERLAP, GLOSSARY_DB и т.п.), работают на Windows
+# так же, как на Linux/macOS. Пустое значение снимает переменную.
+foreach ($entry in $config.GetEnumerator()) {
+    [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value)
+}
+
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
     Write-Host "uv не найден — устанавливаю..."
     powershell -ExecutionPolicy ByPass -Command "irm https://astral.sh/uv/install.ps1 | iex"
@@ -138,6 +147,7 @@ $cliArgs += Get-ValueArg "--llm-binary" "LLM_BINARY"
 $cliArgs += Get-ValueArg "--llm-lib-path" "LLM_LIB_PATH"
 if ($config["LLM_GPU"] -eq "false") { $cliArgs += "--llm-cpu" }
 $cliArgs += Get-ValueArg "--llm-context" "LLM_CONTEXT"
+$cliArgs += Get-ValueArg "--llm-request-timeout" "LLM_REQUEST_TIMEOUT"
 if ($config["LLM_EXTRACT_NAMES"] -eq "false") { $cliArgs += "--llm-no-names" }
 if ($config["LLM_SUMMARY"] -eq "false") { $cliArgs += "--no-llm-summary" }
 if ($config["LLM_SUGGEST_TERMS"] -eq "true") { $cliArgs += "--llm-suggest-terms" }

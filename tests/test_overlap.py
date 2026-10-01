@@ -192,6 +192,7 @@ class _OverlapDiarizer:
         num_speakers: int | None = None,
         min_speakers: int | None = None,
         max_speakers: int | None = None,
+        waveform: np.ndarray | None = None,
     ):
         return [SpeakerSegment(start=0.0, end=2.0, speaker_id="SPEAKER_00")]
 
@@ -255,6 +256,7 @@ def test_pipeline_degrades_without_overlap_method(audio_file: Path, tmp_path: Pa
             num_speakers: int | None = None,
             min_speakers: int | None = None,
             max_speakers: int | None = None,
+            waveform: np.ndarray | None = None,
         ):
             return [SpeakerSegment(start=0.0, end=2.0, speaker_id="SPEAKER_00")]
 
@@ -416,6 +418,7 @@ class _DisjointOverlapDiarizer:
         num_speakers: int | None = None,
         min_speakers: int | None = None,
         max_speakers: int | None = None,
+        waveform: np.ndarray | None = None,
     ):
         return [
             SpeakerSegment(start=0.0, end=1.0, speaker_id="SPEAKER_00"),
@@ -481,6 +484,7 @@ def test_pipeline_old_cache_overlaps_mark_without_names(
             num_speakers: int | None = None,
             min_speakers: int | None = None,
             max_speakers: int | None = None,
+            waveform: np.ndarray | None = None,
         ):
             return [SpeakerSegment(start=0.0, end=2.0, speaker_id="SPEAKER_00")]
 

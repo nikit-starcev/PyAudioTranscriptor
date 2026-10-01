@@ -114,6 +114,7 @@ fi
 [ -n "${LLM_LIB_PATH:-}" ] && ARGS+=(--llm-lib-path "$LLM_LIB_PATH")
 [ "${LLM_GPU:-true}" = "false" ] && ARGS+=(--llm-cpu)
 [ -n "${LLM_CONTEXT:-}" ] && ARGS+=(--llm-context "$LLM_CONTEXT")
+[ -n "${LLM_REQUEST_TIMEOUT:-}" ] && ARGS+=(--llm-request-timeout "$LLM_REQUEST_TIMEOUT")
 [ "${LLM_EXTRACT_NAMES:-true}" = "false" ] && ARGS+=(--llm-no-names)
 [ "${LLM_SUMMARY:-true}" = "false" ] && ARGS+=(--no-llm-summary)
 [ "${LLM_SUGGEST_TERMS:-false}" = "true" ] && ARGS+=(--llm-suggest-terms)

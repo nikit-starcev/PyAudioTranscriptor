@@ -17,6 +17,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_ENROLLMENT_MIN_SIMILARITY,
     DEFAULT_GLOSSARY_DB,
+    DEFAULT_LLM_REQUEST_TIMEOUT,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
 )
 from audio_transcriber.config.settings import AppConfig
@@ -469,6 +470,14 @@ def transcribe(
         min=128,
         help=(f"Размер контекста LLM в токенах (по умолчанию {DEFAULT_LLM_CONTEXT_SIZE})."),
     ),
+    llm_request_timeout: float = typer.Option(
+        DEFAULT_LLM_REQUEST_TIMEOUT,
+        "--llm-request-timeout",
+        help=(
+            "Таймаут одного запроса к llama-server в секундах "
+            f"(по умолчанию {DEFAULT_LLM_REQUEST_TIMEOUT:g})."
+        ),
+    ),
     llm_suggest_terms: bool = typer.Option(
         False,
         "--llm-suggest-terms",
@@ -615,6 +624,7 @@ def transcribe(
             llm_lib_path=llm_lib_path,
             llm_gpu=llm_gpu,
             llm_context_size=llm_context,
+            llm_request_timeout=llm_request_timeout,
             llm_suggest_terms=llm_suggest_terms,
             llm_extract_names=llm_extract_names,
             llm_summary=llm_summary,

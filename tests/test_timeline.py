@@ -189,6 +189,7 @@ class _Diarizer:
         num_speakers: int | None = None,
         min_speakers: int | None = None,
         max_speakers: int | None = None,
+        waveform: object = None,
     ):
         return [SpeakerSegment(start=0.0, end=2.0, speaker_id="SPEAKER_00")]
 

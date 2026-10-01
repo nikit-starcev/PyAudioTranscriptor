@@ -67,6 +67,7 @@ def _recompute_summary(
             library_path=config.llm_lib_path,
             gpu=config.llm_gpu,
             context_size=config.llm_context_size,
+            request_timeout=config.llm_request_timeout,
         )
     if client is None:
         logger.warning(

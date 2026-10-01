@@ -49,6 +49,7 @@ class RecordingRecognizer:
 class RecordingDiarizer:
     def __init__(self) -> None:
         self.calls = 0
+        self.waveforms: list[object] = []
 
     def diarize(
         self,
@@ -57,8 +58,10 @@ class RecordingDiarizer:
         num_speakers: int | None = None,
         min_speakers: int | None = None,
         max_speakers: int | None = None,
+        waveform: object = None,
     ):
         self.calls += 1
+        self.waveforms.append(waveform)
         return [SpeakerSegment(0.0, 1.0, "SPEAKER_00")]
 
 
@@ -234,6 +237,45 @@ def test_denoise_result_is_reused(audio_file: Path, tmp_path: Path) -> None:
     assert first_denoiser.calls == 1
     assert second_denoiser.calls == 0  # кэш денойза
     assert second_rec.calls == 0  # кэш ASR
+
+
+def test_denoise_waveform_forwarded_on_miss_and_dropped_on_cache_hit(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    import numpy as np
+
+    denoised = tmp_path / "denoised.wav"
+    denoised.write_bytes(b"RIFF-cleaned-audio")
+    waveform = np.arange(4, dtype=np.float32)
+    config = _config(audio_file, tmp_path, denoise=True)
+
+    class WaveformDenoiser(RecordingDenoiser):
+        def __init__(self, output: Path, wave: np.ndarray) -> None:
+            super().__init__(output)
+            self.last_waveform = wave
+
+    # Промах кэша: обёртка пробрасывает waveform внутреннего денойзера.
+    first_dia = RecordingDiarizer()
+    _run(
+        config,
+        RecordingRecognizer(),
+        first_dia,
+        denoiser=WaveformDenoiser(denoised, waveform),
+    )
+    assert first_dia.waveforms == [waveform]
+
+    # Попадание в кэш денойза: массив с диска не декодируется, waveform не
+    # передан. Меняем число говорящих — ключ диаризации становится другим,
+    # поэтому диаризация выполняется заново (а не берётся из кэша).
+    second_config = replace(config, num_speakers=2)
+    second_dia = RecordingDiarizer()
+    _run(
+        second_config,
+        RecordingRecognizer(),
+        second_dia,
+        denoiser=WaveformDenoiser(denoised, waveform),
+    )
+    assert second_dia.waveforms == [None]
 
 
 def test_soft_denoise_degradation_is_not_cached(audio_file: Path, tmp_path: Path) -> None:

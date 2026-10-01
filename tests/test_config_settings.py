@@ -170,6 +170,29 @@ def test_llm_context_must_be_at_least_128(audio_file: Path) -> None:
         AppConfig(input_file=audio_file, llm_context_size=64)
 
 
+def test_llm_request_timeout_defaults_to_600(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file)
+
+    assert config.llm_request_timeout == 600.0
+
+
+def test_llm_request_timeout_accepts_positive_value(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file, llm_request_timeout=30.0)
+
+    assert config.llm_request_timeout == 30.0
+
+
+@pytest.mark.parametrize("value", [0.0, -5.0])
+def test_llm_request_timeout_must_be_positive(audio_file: Path, value: float) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, llm_request_timeout=value)
+
+
+def test_llm_request_timeout_rejects_non_number(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, llm_request_timeout="быстро")  # type: ignore[arg-type]
+
+
 def test_llm_extract_names_defaults_to_false(audio_file: Path) -> None:
     # определение имён — экспериментальная функция, по умолчанию выключена
     assert AppConfig(input_file=audio_file).llm_extract_names is False

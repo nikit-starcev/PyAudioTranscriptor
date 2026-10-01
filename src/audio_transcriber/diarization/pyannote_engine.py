@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from audio_transcriber.config.defaults import DEFAULT_DIARIZATION_MIN_DURATION_OFF
 from audio_transcriber.diarization.overlap import compute_overlap_regions
 from audio_transcriber.domain.enums import Device
@@ -146,13 +148,17 @@ class PyannoteSpeakerDiarizer:
         num_speakers: int | None = None,
         min_speakers: int | None = None,
         max_speakers: int | None = None,
+        waveform: np.ndarray | None = None,
     ) -> list[SpeakerSegment]:
         pipeline = self._load_pipeline()
 
         import torch
         from pyannote.audio.pipelines.utils.hook import ProgressHook
 
-        waveform = load_waveform(audio_path)
+        # Переданный waveform (например, результат денойза) позволяет не
+        # декодировать тот же файл повторно. Иначе декодируем сами — как раньше.
+        if waveform is None:
+            waveform = load_waveform(audio_path)
         audio_input = {
             "waveform": torch.from_numpy(waveform).unsqueeze(0),
             "sample_rate": SAMPLE_RATE,

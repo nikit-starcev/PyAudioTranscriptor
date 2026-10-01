@@ -37,6 +37,7 @@ class SingleSpeakerDiarizer:
         num_speakers: int | None = None,
         min_speakers: int | None = None,
         max_speakers: int | None = None,
+        waveform: object = None,
     ) -> list[SpeakerSegment]:
         return [SpeakerSegment(start=0.0, end=15.0, speaker_id="SPEAKER_00")]
 

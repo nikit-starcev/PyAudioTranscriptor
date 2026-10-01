@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from audio_transcriber.config.defaults import DEFAULT_CONTEXT_SIZE
+from audio_transcriber.config.defaults import DEFAULT_CONTEXT_SIZE, DEFAULT_LLM_REQUEST_TIMEOUT
 from audio_transcriber.utils.env import with_library_path
 from audio_transcriber.utils.exceptions import LlmError
 from audio_transcriber.utils.subprocess_registry import (
@@ -60,7 +60,10 @@ DEFAULT_GPU_LAYERS = 99
 DEFAULT_PARTIAL_GPU_LAYERS = 16
 # Загрузка 7B-модели на Vulkan и прогрев занимают заметное время.
 DEFAULT_READY_TIMEOUT = 600.0
-DEFAULT_REQUEST_TIMEOUT = 600.0
+# Таймаут одного запроса к серверу. Значение по умолчанию вынесено в
+# ``config.defaults`` (единый источник с AppConfig/CLI); алиас сохранён для
+# обратной совместимости импортов.
+DEFAULT_REQUEST_TIMEOUT = DEFAULT_LLM_REQUEST_TIMEOUT
 
 _OFFLOAD_RE = re.compile(r"offloaded\s+(\d+)\s*/\s*(\d+)\s+layers?\s+to\s+GPU", re.IGNORECASE)
 
@@ -195,6 +198,7 @@ class LlamaServerClient:
         context_size: int = DEFAULT_CONTEXT_SIZE,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         ready_timeout: float = DEFAULT_READY_TIMEOUT,
+        request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
         gpu_layers: int = DEFAULT_GPU_LAYERS,
         partial_gpu_layers: int = DEFAULT_PARTIAL_GPU_LAYERS,
     ) -> None:
@@ -208,6 +212,7 @@ class LlamaServerClient:
         self._context_size = context_size
         self._max_tokens = max_tokens
         self._ready_timeout = ready_timeout
+        self._request_timeout = request_timeout
         self._gpu_layers = gpu_layers
         self._partial_gpu_layers = partial_gpu_layers
 
@@ -428,7 +433,7 @@ class LlamaServerClient:
         )
 
         try:
-            with urllib.request.urlopen(request, timeout=DEFAULT_REQUEST_TIMEOUT) as resp:
+            with urllib.request.urlopen(request, timeout=self._request_timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")[-1000:]
@@ -489,6 +494,7 @@ def create_llm_client(
     gpu: bool,
     context_size: int = DEFAULT_CONTEXT_SIZE,
     max_tokens: int = DEFAULT_MAX_TOKENS,
+    request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
 ) -> LlamaServerClient | None:
     """Создаёт LLM-клиент по настройкам конфигурации.
 
@@ -504,4 +510,5 @@ def create_llm_client(
         gpu=gpu,
         context_size=context_size,
         max_tokens=max_tokens,
+        request_timeout=request_timeout,
     )

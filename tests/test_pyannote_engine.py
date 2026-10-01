@@ -28,6 +28,7 @@ class _FakePipeline:
         # Аргументы числа говорящих, с которыми пайплайн реально вызвали
         # (не указанные ключи отсутствуют — как в вызове движка).
         self.speaker_kwargs: list[dict[str, object]] = []
+        self.audio: dict[str, object] | None = None
 
     def to(self, *args: object, **kwargs: object) -> _FakePipeline:
         return self
@@ -35,6 +36,7 @@ class _FakePipeline:
     def __call__(self, audio: object, *, hook=None, **kwargs: object):
         # Воспроизводим вызов pyannote: file= передаётся по ключу.
         assert hook is not None
+        self.audio = audio  # type: ignore[assignment]
         self.speaker_kwargs.append(dict(kwargs))
         hook("segmentation", None, file={"uri": "test"}, total=2, completed=1)
         hook("embeddings", None, file={"uri": "test"}, total=None, completed=None)
@@ -72,6 +74,30 @@ def test_diarize_progress_hook_accepts_file_keyword(monkeypatch: pytest.MonkeyPa
     # хук отработал без TypeError и эмитил события прогресса
     assert events
     assert all(event.stage == "diarization" for event in events)
+
+
+def test_diarize_reuses_provided_waveform_without_decoding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    diarizer = PyannoteSpeakerDiarizer(Device.CPU)
+    pipeline = _FakePipeline()
+    monkeypatch.setattr(diarizer, "_load_pipeline", lambda: pipeline)
+
+    def _unexpected_decode(*_args: object, **_kwargs: object) -> np.ndarray:
+        raise AssertionError("load_waveform не должен вызываться при переданном waveform")
+
+    monkeypatch.setattr(
+        "audio_transcriber.diarization.pyannote_engine.load_waveform",
+        _unexpected_decode,
+    )
+    waveform = np.zeros(16000, dtype=np.float32)
+
+    segments = diarizer.diarize(Path("audio.wav"), waveform=waveform)
+
+    assert [segment.speaker_id for segment in segments] == ["SPEAKER_00"]
+    # Переданный массив ушёл в pyannote как есть, без чтения файла.
+    assert pipeline.audio is not None
+    assert pipeline.audio["waveform"].shape == (1, 16000)
 
 
 def test_hyperparameters_default_include_min_duration_off() -> None:

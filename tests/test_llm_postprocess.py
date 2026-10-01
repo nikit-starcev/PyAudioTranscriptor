@@ -16,6 +16,7 @@ from audio_transcriber.domain.models import Speaker, TranscriptEntry
 from audio_transcriber.llm import postprocess as postprocess_module
 from audio_transcriber.llm.glossary import Glossary
 from audio_transcriber.llm.postprocess import (
+    _ordered_correction_keys,
     _verify_terms_with_llm,
     apply_participant_names,
     build_transcript_for_llm,
@@ -473,6 +474,42 @@ def test_verify_terms_replaces_when_llm_returns_lowercase_key() -> None:
     result = _verify_terms_with_llm(entries, glossary, llm=llm)
 
     assert result[0].text == "Обсуждали ОИБ."
+
+
+def test_ordered_correction_keys_longest_first_and_deterministic() -> None:
+    first = {"аиб": "ОИБ", "аибс": "ОИБС", "мк": "МК"}
+    second = {"мк": "МК", "аибс": "ОИБС", "аиб": "ОИБ"}
+
+    assert _ordered_correction_keys(first) == _ordered_correction_keys(second)
+    # Длинные ключи раньше: иначе короткий «аиб» перехватил бы «аибс».
+    assert _ordered_correction_keys(first) == ["аибс", "аиб", "мк"]
+
+
+def test_ordered_correction_keys_tie_break_is_lexicographic() -> None:
+    # При равной длине порядок задаёт сам ключ, а не порядок ответа LLM.
+    assert _ordered_correction_keys({"б": "x", "а": "y"}) == ["б", "а"]
+    assert _ordered_correction_keys({"а": "y", "б": "x"}) == ["б", "а"]
+
+
+def test_verify_terms_result_is_independent_of_llm_order() -> None:
+    """Перестановка правок в ответе LLM не меняет итоговую стенограмму."""
+    glossary = Glossary(terms=["ОИБ", "АИБС"])
+    entries = [TranscriptEntry(start=0.0, end=1.0, text="Обсуждали АИБС.")]
+    corrections_a = [
+        {"before": "АИБ", "after": "ОИБ"},
+        {"before": "АИБС", "after": "АИБС"},
+    ]
+    corrections_b = list(reversed(corrections_a))
+
+    first = _verify_terms_with_llm(
+        entries, glossary, llm=_TermCorrectionClient(corrections_a)
+    )
+    second = _verify_terms_with_llm(
+        entries, glossary, llm=_TermCorrectionClient(corrections_b)
+    )
+
+    # «АИБС» не распадается на «ОИБ» + «С»: длинный ключ имеет приоритет.
+    assert first[0].text == second[0].text == "Обсуждали АИБС."
 
 
 def test_verify_terms_chunks_long_transcript() -> None:

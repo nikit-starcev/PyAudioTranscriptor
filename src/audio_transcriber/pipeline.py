@@ -14,6 +14,8 @@ import os
 import threading
 from pathlib import Path
 
+import numpy as np
+
 from audio_transcriber.cache.denoiser import CachingDenoiser
 from audio_transcriber.cache.serialization import (
     asr_from_payload,
@@ -308,6 +310,9 @@ def run_pipeline(
     if denoiser is not None and config.use_cache:
         denoiser = CachingDenoiser(denoiser, cache, source=config.input_file)
     audio_path = config.input_file
+    # Декодированный 16-кГц waveform денойза (если он его посчитал): передаём
+    # в диаризацию, чтобы та не декодировала тот же файл второй раз.
+    denoised_waveform: np.ndarray | None = None
     overlaps: list[SpeakerOverlap] = []
     # Имена, сопоставленные говорящим по образцам голоса (enrollment).
     # Приоритетнее переименования по индексу (``--speaker-name``).
@@ -318,6 +323,11 @@ def run_pipeline(
             logger.info("Шумоподавление (DeepFilterNet)...")
             emit(ProgressEvent("denoise", "Шумоподавление", fraction=None))
             audio_path = denoiser.denoise(config.input_file)
+            # Если денойз уже декодировал аудио — переиспользуем на диаризации.
+            # При попадании в кэш массива в памяти нет (``last_waveform`` = None),
+            # тогда диаризация декодирует WAV сама, как и раньше.
+            if config.diarization_enabled:
+                denoised_waveform = getattr(denoiser, "last_waveform", None)
             # Явный сигнал попадания в кэш: веб-слой помечает такие стадии как
             # «из кэша» (по ``detail``), не полагаясь на эвристику по времени.
             if getattr(denoiser, "last_hit", False):
@@ -399,6 +409,7 @@ def run_pipeline(
                         num_speakers=config.num_speakers,
                         min_speakers=config.min_speakers,
                         max_speakers=config.max_speakers,
+                        waveform=denoised_waveform,
                     )
                 except Exception:
                     # Диаризация не порождает дочерних процессов, но отмена во

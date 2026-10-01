@@ -15,9 +15,11 @@ import pytest
 from audio_transcriber.llm import client as client_module
 from audio_transcriber.llm.client import (
     DEFAULT_CONTEXT_SIZE,
+    DEFAULT_REQUEST_TIMEOUT,
     LlamaServerClient,
     _args_have_option,
     _port_in_use,
+    create_llm_client,
 )
 from audio_transcriber.utils.exceptions import LlmError
 
@@ -87,6 +89,52 @@ def patch_popen(monkeypatch: pytest.MonkeyPatch):
 
 def test_default_context_size_is_4096() -> None:
     assert DEFAULT_CONTEXT_SIZE == 4096
+
+
+def test_request_timeout_defaults_to_constant(model_file: Path) -> None:
+    assert LlamaServerClient(model_file)._request_timeout == DEFAULT_REQUEST_TIMEOUT
+
+
+def test_create_llm_client_passes_request_timeout(model_file: Path) -> None:
+    client = create_llm_client(
+        model_path=model_file,
+        binary="llama-server",
+        library_path=None,
+        gpu=False,
+        request_timeout=12.5,
+    )
+
+    assert client is not None
+    assert client._request_timeout == 12.5
+
+
+class _FakeUrlopenResponse:
+    def __enter__(self) -> _FakeUrlopenResponse:
+        return self
+
+    def __exit__(self, *_exc: object) -> bool:
+        return False
+
+    def read(self) -> bytes:
+        return b'{"choices": [{"message": {"content": "ok"}}]}'
+
+
+def test_chat_uses_configured_request_timeout(
+    monkeypatch: pytest.MonkeyPatch, model_file: Path
+) -> None:
+    client = LlamaServerClient(model_file, request_timeout=42.0)
+    monkeypatch.setattr(client, "_ensure_started", lambda: None)
+    client._base_url = "http://127.0.0.1:1"
+    captured: dict[str, float | None] = {}
+
+    def fake_urlopen(_request: object, timeout: float | None = None) -> _FakeUrlopenResponse:
+        captured["timeout"] = timeout
+        return _FakeUrlopenResponse()
+
+    monkeypatch.setattr(client_module.urllib.request, "urlopen", fake_urlopen)
+
+    assert client.chat([{"role": "user", "content": "привет"}]) == "ok"
+    assert captured["timeout"] == 42.0
 
 
 def test_offload_attempts_go_from_full_gpu_to_cpu(model_file: Path) -> None:

@@ -401,6 +401,17 @@ def _term_check_user_prompt(terms_block: str, chunk: str) -> str:
     )
 
 
+def _ordered_correction_keys(mapping: dict[str, str]) -> list[str]:
+    """Ключи правок в детерминированном порядке.
+
+    Сначала длинные ключи — иначе короткий «аиб» перехватит «аибс» в регулярном
+    выражении. При равной длине порядок задаёт сам ключ (лексикографически), а
+    не порядок, в котором LLM вернула правки: иначе итоговый паттерн (и лог)
+    «плавали» бы между прогонами при том же входе.
+    """
+    return sorted(mapping, key=lambda key: (len(key), key), reverse=True)
+
+
 def _fit_terms_block(terms: list[str], *, max_chars: int, start: int) -> tuple[str, int]:
     """Собирает блок терминов не длиннее ``max_chars`` (циклически от ``start``).
 
@@ -511,9 +522,10 @@ def _verify_terms_with_llm(
         return mapping.get(match.group(0).casefold(), match.group(0))
 
     result: list[TranscriptEntry] = []
-    # Длинные ключи раньше коротких — иначе «АИБ» перехватит «АИБС».
+    # Длинные ключи раньше коротких — иначе «АИБ» перехватит «АИБС»;
+    # при равной длине порядок детерминированный (см. _ordered_correction_keys).
     pattern = re.compile(
-        "|".join(re.escape(before) for before in sorted(mapping, key=len, reverse=True)),
+        "|".join(re.escape(before) for before in _ordered_correction_keys(mapping)),
         flags=re.IGNORECASE,
     )
     for entry in entries:
@@ -589,6 +601,7 @@ def run_llm_postprocess(
             library_path=config.llm_lib_path,
             gpu=config.llm_gpu,
             context_size=config.llm_context_size,
+            request_timeout=config.llm_request_timeout,
         )
         # Клиент создан здесь — этот вызов владеет им и обязан закрыть,
         # иначе llama-server останется висеть и держать VRAM.

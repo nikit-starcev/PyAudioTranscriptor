@@ -23,6 +23,7 @@ from audio_transcriber.config.defaults import (
 from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_ENROLLMENT_MIN_SIMILARITY,
+    DEFAULT_LLM_REQUEST_TIMEOUT,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
     DEFAULT_VOICES_DIR,
 )
@@ -153,6 +154,9 @@ class AppConfig:
     llm_lib_path: str | None = None
     llm_gpu: bool = True
     llm_context_size: int = DEFAULT_LLM_CONTEXT_SIZE
+    # Таймаут одного HTTP-запроса к llama-server (секунды). Раньше был зашит в
+    # клиенте (600 с); теперь настраивается через LLM_REQUEST_TIMEOUT/CLI.
+    llm_request_timeout: float = DEFAULT_LLM_REQUEST_TIMEOUT
     llm_suggest_terms: bool = False
     # Определять имена участников через LLM (независимо от правки терминов).
     llm_extract_names: bool = False
@@ -281,6 +285,13 @@ class AppConfig:
 
         if self.llm_context_size < 128:
             raise ConfigurationError("LLM_CONTEXT должно быть целым числом >= 128")
+
+        if isinstance(self.llm_request_timeout, bool) or not isinstance(
+            self.llm_request_timeout, (int, float)
+        ):
+            raise ConfigurationError("LLM_REQUEST_TIMEOUT должно быть числом")
+        if self.llm_request_timeout <= 0.0:
+            raise ConfigurationError("LLM_REQUEST_TIMEOUT должно быть положительным числом")
 
         if not isinstance(self.llm_extract_names, bool):
             raise ConfigurationError("LLM_EXTRACT_NAMES должно быть true или false")

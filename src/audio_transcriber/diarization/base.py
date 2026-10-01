@@ -10,6 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+import numpy as np
+
 from audio_transcriber.domain.models import SpeakerOverlap, SpeakerSegment
 
 
@@ -24,6 +26,7 @@ class SpeakerDiarizer(Protocol):
         num_speakers: int | None = None,
         min_speakers: int | None = None,
         max_speakers: int | None = None,
+        waveform: np.ndarray | None = None,
     ) -> list[SpeakerSegment]:
         """Определяет говорящих в аудиофайле.
 
@@ -35,6 +38,10 @@ class SpeakerDiarizer(Protocol):
             ``None`` — без ограничения.
         :param max_speakers: верхняя граница числа говорящих (включительно);
             ``None`` — без ограничения.
+        :param waveform: уже декодированный моно waveform 16 кГц float32.
+            Позволяет переиспользовать результат предыдущей стадии (например,
+            шумоподавления) и не декодировать файл повторно. ``None`` —
+            декодировать ``audio_path``.
         :return: список временных интервалов, отнесённых к говорящим.
         """
         ...

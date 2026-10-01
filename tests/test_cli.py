@@ -260,6 +260,29 @@ def test_transcribe_names_can_be_enabled(
     assert captured["config"].llm_extract_names is True
 
 
+def test_transcribe_llm_request_timeout(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(
+        app,
+        [
+            "transcribe",
+            str(audio_file),
+            "-o",
+            str(tmp_path / "out"),
+            "--llm-request-timeout",
+            "45",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["config"].llm_request_timeout == 45.0
+
+
 def test_transcribe_llm_no_names_flag(
     audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

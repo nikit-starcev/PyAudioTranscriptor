@@ -38,6 +38,7 @@ class FakeDiarizer:
         num_speakers: int | None = None,
         min_speakers: int | None = None,
         max_speakers: int | None = None,
+        waveform: object = None,
     ):
         return [SpeakerSegment(start=0.0, end=1.0, speaker_id="SPEAKER_00")]
 
@@ -307,6 +308,7 @@ class RecordingDiarizer:
 
     def __init__(self) -> None:
         self.seen: list[Path] = []
+        self.seen_waveform: object = None
 
     def diarize(
         self,
@@ -315,8 +317,10 @@ class RecordingDiarizer:
         num_speakers: int | None = None,
         min_speakers: int | None = None,
         max_speakers: int | None = None,
+        waveform: object = None,
     ):
         self.seen.append(audio_path)
+        self.seen_waveform = waveform
         return [SpeakerSegment(start=0.0, end=1.0, speaker_id="SPEAKER_00")]
 
 
@@ -363,6 +367,55 @@ def test_run_pipeline_feeds_denoised_audio_to_asr_and_diarization(
     assert recognizer.seen == [denoised]
     assert diarizer.seen == [denoised]
     # Временный файл освобождается по завершении этапов ASR/диаризации.
+    assert denoiser.closed == 1
+
+
+class WaveformDenoiser:
+    """Денойзер, отдающий уже декодированный waveform (как DeepFilterDenoiser)."""
+
+    def __init__(self, output: Path, waveform: object) -> None:
+        self.output = output
+        self.last_waveform = waveform
+        self.closed = 0
+
+    def denoise(self, input_path: Path) -> Path:
+        return self.output
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+def test_run_pipeline_reuses_denoised_waveform_for_diarization(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    import numpy as np
+
+    denoised = tmp_path / "denoised.wav"
+    denoised.write_bytes(b"")
+    waveform = np.arange(4, dtype=np.float32)
+    denoiser = WaveformDenoiser(denoised, waveform)
+    diarizer = RecordingDiarizer()
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+        # Без кэша — проверяем прямой проброс waveform от денойзера.
+        use_cache=False,
+    )
+
+    run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=FakeRecognizer(),
+        diarizer=diarizer,
+        merger=FakeMerger(),
+        denoiser=denoiser,
+    )
+
+    # Диаризация получила и путь, и уже декодированный массив — повторного
+    # декодирования WAV не будет (внутри pyannote load_waveform не вызовется).
+    assert diarizer.seen == [denoised]
+    assert diarizer.seen_waveform is waveform
     assert denoiser.closed == 1
 
 
