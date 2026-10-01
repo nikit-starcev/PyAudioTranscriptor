@@ -1192,6 +1192,7 @@ function App() {
               jobId={activeJobId}
               entries={filteredEntries}
               speakers={result.speakers}
+              sourceName={activeJob?.name}
               onSaveText={(entry: Entry, text) => {
                 const index = result.entries.indexOf(entry)
                 if (index < 0) return Promise.resolve()

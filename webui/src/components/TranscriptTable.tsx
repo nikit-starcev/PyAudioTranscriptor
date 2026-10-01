@@ -8,6 +8,8 @@ type Props = {
   jobId: string
   entries: Entry[]
   speakers: SpeakerInfo[]
+  /** Имя записи/файла активной задачи — «источник» по умолчанию (#31). */
+  sourceName?: string
   /** Сохранить ручную правку текста реплики (#26). */
   onSaveText?: (entry: Entry, text: string) => Promise<void>
   /** Сбросить реплику к исходному тексту (#26). */
@@ -69,7 +71,14 @@ const STOP_EPSILON = 0.005
 //: Как часто обновлять прогресс (мс), чтобы не ререндерить таблицу каждый кадр.
 const PAINT_INTERVAL_MS = 100
 
-function TranscriptTable({ jobId, entries, speakers, onSaveText, onResetText }: Props) {
+function TranscriptTable({
+  jobId,
+  entries,
+  speakers,
+  sourceName,
+  onSaveText,
+  onResetText,
+}: Props) {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const [playingKey, setPlayingKey] = useState<string | null>(null)
   const [position, setPosition] = useState(0)
@@ -502,6 +511,7 @@ function TranscriptTable({ jobId, entries, speakers, onSaveText, onResetText }: 
       <GlossaryQuickModal
         open={quickTerm != null}
         term={quickTerm ?? ''}
+        source={sourceName}
         onClose={() => setQuickTerm(null)}
       />
     </div>

@@ -4,8 +4,10 @@ import { api, errorMessage, type GlossaryEntry, type GlossaryQuickRequest } from
 
 type Props = {
   open: boolean
-  /** Выделенный в стенограмме фрагмент — предзаполняет канон (#17). */
+  /** Выделенный в стенограмме фрагмент — предзаполняет «ошибочную форму» (#31). */
   term: string
+  /** Источник по умолчанию — имя записи/файла активной задачи (#31). */
+  source?: string
   onClose: () => void
   /** Термин сохранён в глоссарии — можно обновить список. */
   onSaved?: (entry: GlossaryEntry) => void
@@ -14,28 +16,29 @@ type Props = {
 /**
  * Модальное окно быстрого добавления термина в глоссарий из выделения.
  *
- * Поля: канон (предзаполнен выделением), ошибочная форма, источник, заметка.
- * Пустой канон означает «канон = выделение»; если канон отличается от
- * выделения, а ошибочная форма не задана, выделение сохраняется как вариант.
+ * Выделение подставляется в «ошибочную форму» (как распозналось), а канон
+ * (правильное написание) вводит пользователь — пустой канон не сохраняется.
+ * Поле «источник» по умолчанию заполнено именем записи активной задачи,
+ * чтобы термин привязывался к встрече (#31).
  */
-function GlossaryQuickModal({ open, term, onClose, onSaved }: Props) {
-  const [canonical, setCanonical] = useState(term)
-  const [variant, setVariant] = useState('')
+function GlossaryQuickModal({ open, term, source, onClose, onSaved }: Props) {
+  const [canonical, setCanonical] = useState('')
+  const [variant, setVariant] = useState(term)
   const [note, setNote] = useState('')
-  const [source, setSource] = useState('')
+  const [sourceName, setSourceName] = useState(source ?? '')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState<GlossaryEntry | null>(null)
 
   useEffect(() => {
     if (!open) return
-    setCanonical(term)
-    setVariant('')
+    setCanonical('')
+    setVariant(term)
     setNote('')
-    setSource('')
+    setSourceName(source ?? '')
     setError(null)
     setSaved(null)
-  }, [open, term])
+  }, [open, term, source])
 
   useEffect(() => {
     if (!open) return
@@ -47,9 +50,9 @@ function GlossaryQuickModal({ open, term, onClose, onSaved }: Props) {
   }, [open, onClose])
 
   const submit = useCallback(async () => {
-    const trimmed = canonical.trim() || term.trim()
-    if (!trimmed) {
-      setError('Укажите канонический термин')
+    const canonicalValue = canonical.trim()
+    if (!canonicalValue) {
+      setError('Укажите канон (правильное написание)')
       return
     }
     setBusy(true)
@@ -57,10 +60,10 @@ function GlossaryQuickModal({ open, term, onClose, onSaved }: Props) {
     try {
       const body: GlossaryQuickRequest = {
         term,
-        canonical: canonical.trim() || null,
+        canonical: canonicalValue,
         variant: variant.trim() || null,
         note: note.trim() || null,
-        source: source.trim() || null,
+        source: sourceName.trim() || null,
       }
       const entry = await api<GlossaryEntry>('/api/glossary/quick', {
         method: 'POST',
@@ -74,7 +77,7 @@ function GlossaryQuickModal({ open, term, onClose, onSaved }: Props) {
     } finally {
       setBusy(false)
     }
-  }, [canonical, term, variant, note, source, onSaved])
+  }, [canonical, term, variant, note, sourceName, onSaved])
 
   if (!open) return null
 
@@ -121,17 +124,18 @@ function GlossaryQuickModal({ open, term, onClose, onSaved }: Props) {
           )}
 
           <label className="block text-xs text-slate-500 dark:text-slate-400">
-            Канон
+            Канон (правильно)
             <input
               value={canonical}
               onChange={(event) => setCanonical(event.target.value)}
               placeholder="Правильное написание"
+              autoFocus
               className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-800 focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
             />
           </label>
 
           <label className="block text-xs text-slate-500 dark:text-slate-400">
-            Ошибочная форма
+            Ошибочная форма (как распозналось)
             <input
               value={variant}
               onChange={(event) => setVariant(event.target.value)}
@@ -144,8 +148,8 @@ function GlossaryQuickModal({ open, term, onClose, onSaved }: Props) {
             <label className="block text-xs text-slate-500 dark:text-slate-400">
               Источник
               <input
-                value={source}
-                onChange={(event) => setSource(event.target.value)}
+                value={sourceName}
+                onChange={(event) => setSourceName(event.target.value)}
                 placeholder="Например, встреча"
                 className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-800 focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
               />

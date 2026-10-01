@@ -42,9 +42,12 @@ class EntryUpdate(BaseModel):
 class EntryQuickCreate(BaseModel):
     """Тело ``POST /api/glossary/quick`` — добавление термина из выделения.
 
-    ``term`` — выделенный в стенограмме фрагмент. Если ``canonical`` не задан,
-    каноном становится сам выделенный текст; если канон отличается от
-    выделения, а ``variant`` пуст, выделение сохраняется как ошибочная форма.
+    ``term`` — выделенный в стенограмме фрагмент; он попадает в «ошибочную
+    форму» (``variant``), а правильное написание вводит пользователь в
+    ``canonical``. Пустой канон отклоняется — сохранять термин без канона
+    нельзя. Если ``variant`` не задан отдельно, но канон отличается от
+    выделения, выделение сохраняется как ошибочная форма. ``source`` — имя
+    записи/встречи, к которой привязывается термин.
     """
 
     term: str
@@ -146,15 +149,20 @@ def register_glossary_routes(router: APIRouter, *, db_path: Callable[[], Path]) 
 
     @router.post("/glossary/quick", status_code=201)
     def create_entry_quick(payload: EntryQuickCreate) -> dict[str, object]:
-        """Добавляет термин из выделения стенограммы (#17).
+        """Добавляет термин из выделения стенограммы (#17, #31).
 
-        Обрезает пробелы и окружающую пунктуацию, автозаполняет канон
-        выделенным текстом и сохраняет ошибочную форму, если канон изменён.
+        Выделение (``term``) сохраняется как «ошибочная форма», а канон
+        (правильное написание) вводит пользователь: пустой ``canonical``
+        отклоняется с 400. Пробелы и окружающая пунктуация обрезаются.
         """
         term = _clean_term(payload.term)
         if not term:
             raise HTTPException(status_code=400, detail="Термин не может быть пустым")
-        canonical = _clean_term(payload.canonical) or term
+        canonical = _clean_term(payload.canonical)
+        if not canonical:
+            raise HTTPException(
+                status_code=400, detail="Укажите канон (правильное написание)"
+            )
         variant = _clean_term(payload.variant) or None
         if variant is None and canonical != term:
             variant = term
