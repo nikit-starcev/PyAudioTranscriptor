@@ -1,6 +1,6 @@
 [project]
 name = "audio-transcriber"
-version = "0.2.0"
+version = "0.3.0"
 description = "Локальная CLI-утилита для транскрибации аудиозаписей с разделением говорящих (speaker diarization)"
 readme = "README.md"
 requires-python = ">=3.14"

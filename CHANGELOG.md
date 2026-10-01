@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-01
+
 ### Added
 
 - Мягкое удаление задач с просмотром удалённых (#30): `DELETE /api/jobs/{id}`
@@ -42,6 +44,30 @@
   пробелы/пунктуацию, автозаполняет канон выделением и сохраняет выделение
   как ошибочную форму, если канон изменён. В UI: ПКМ по выделению →
   «Добавить в глоссарий» → модальное окно с показом результата.
+- Внешняя LLM как провайдер постобработки (#21): `LLM_PROVIDER=llama|openai`
+  (OpenAI-совместимый `chat/completions` — OpenAI, Ollama, vLLM, LM Studio,
+  OpenRouter), `LLM_BASE_URL`/`LLM_MODEL_NAME`/`LLM_API_KEY` (ключ хранится как
+  секрет, наружу не отдаётся), таймаут и ретраи, поля в настройках веба и
+  **предупреждение о приватности** (текст уходит за пределы машины). Локальный
+  `llama.cpp` остаётся провайдером по умолчанию.
+- Имя файла в панели «Файлы» + адаптивная вёрстка (#28): имя видно (перенос/
+  обрезка + tooltip), строка на CSS-grid с резиновой колонкой имени и
+  фиксированными размер/длительность/статус/действия, единая высота строк.
+- Настраиваемые гиперпараметры диаризации и диапазон числа говорящих
+  (`--min-duration-off` дефолт 0.5, `--clustering-threshold/-fb`,
+  `--min-speakers`/`--max-speakers`; поля у задачи в вебе).
+
+### Fixed
+
+- Воспроизведение «вариантов прослушивания говорящего»: `<audio>` теперь
+  `preload="metadata"` (+ принудительный `load()`), из-за чего воспроизведение
+  окна больше не «залипает».
+
+### Performance
+
+- Единое декодирование аудио (#8): уже декодированный waveform из шумоподавления
+  переиспользуется диаризацией, enrollment и извлечением образцов — устранены
+  повторные декоды (было 2–3, стало 0–1).
 
 ## [0.2.0] - 2026-10-01
 
@@ -218,6 +244,7 @@
   аудио.
 - Ruff и mypy проходят без замечаний.
 
-[Unreleased]: https://github.com/nikit-starcev/PyAudioTranscriptor/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/nikit-starcev/PyAudioTranscriptor/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/nikit-starcev/PyAudioTranscriptor/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/nikit-starcev/PyAudioTranscriptor/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/nikit-starcev/PyAudioTranscriptor/releases/tag/v0.1.0
