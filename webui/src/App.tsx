@@ -24,6 +24,7 @@ import {
 } from './api'
 import GlossaryModal from './components/GlossaryModal'
 import ModelsModal from './components/ModelsModal'
+import ProgressSummary from './components/ProgressSummary'
 import ReadinessBanner from './components/ReadinessBanner'
 import SettingsModal from './components/SettingsModal'
 import SetupWizard from './components/SetupWizard'
@@ -521,6 +522,12 @@ function App() {
   }, [result, query])
 
   const activeJob = jobs.find((job) => job.id === activeJobId) ?? null
+  // Идёт ли прогон прямо сейчас: running и задачу ведёт воркер (``active``).
+  const progressRunning =
+    progress != null && !isTerminal(progress.status) && progress.active !== false
+  // Полоса показывает сводный процент прогона (fallback — доля текущей стадии).
+  const overallPercent =
+    progress?.progress_percent ?? (progress?.fraction != null ? progress.fraction * 100 : 0)
   const readinessBlocked = (doctor?.summary.critical_failures ?? 0) > 0
   const blockedHint = readinessBlocked
     ? 'Запуск заблокирован: сначала устраните критичные проблемы Готовности'
@@ -796,17 +803,18 @@ function App() {
             <div className="mb-2 h-2 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
               <div
                 className={`h-full rounded-full bg-blue-500 transition-all ${
-                  progress?.fraction == null ? 'animate-pulse' : ''
+                  progressRunning && progress?.progress_percent == null ? 'animate-pulse' : ''
                 }`}
-                style={{ width: `${Math.round((progress?.fraction ?? 0) * 100)}%` }}
+                style={{ width: `${Math.round(overallPercent)}%` }}
               />
             </div>
-            <p className="mb-3 text-sm text-slate-600 dark:text-slate-300">
+            <p className="mb-1 text-sm text-slate-600 dark:text-slate-300">
               {progress
                 ? STATUS_LABELS[progress.status] ?? progress.status
                 : 'Ожидание...'}
               {progress?.message ? ` — ${progress.message}` : ''}
             </p>
+            <ProgressSummary progress={progress} running={progressRunning} />
             <ol className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
               {STAGES.map((stage, index) => {
                 const state =
@@ -839,7 +847,7 @@ function App() {
             </ol>
             <StageTimes
               times={stageTimes}
-              running={progress != null && !isTerminal(progress.status) && progress.active !== false}
+              running={progressRunning}
               totalStartedAt={totalStartedAt}
               finalTotalSeconds={finalTotalSeconds}
               currentStage={liveStage}

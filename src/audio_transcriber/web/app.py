@@ -25,7 +25,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
-import av
 from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import (
     FileResponse,
@@ -65,6 +64,7 @@ from audio_transcriber.web.doctor_api import (
     check_hf_access,
     doctor_report,
 )
+from audio_transcriber.web.estimates import StageEstimator, probe_duration
 from audio_transcriber.web.events import JobEventBus
 from audio_transcriber.web.glossary_api import register_glossary_routes
 from audio_transcriber.web.models import (
@@ -305,6 +305,8 @@ def create_app(
     store.initialize()
     bus = JobEventBus(heartbeat=heartbeat)
     download_bus = DownloadBus(heartbeat=heartbeat)
+    # Оценки прогресса/ETA/здоровья по истории завершённых задач (#15/#24).
+    estimator = StageEstimator(store)
 
     def resolve_model_target(entry: ModelEntry) -> Path:
         return resolve_target(
@@ -344,6 +346,7 @@ def create_app(
         resolved_paths,
         effective_builder,
         pipeline_fn=pipeline_fn,
+        estimator=estimator,
     )
 
     @asynccontextmanager
@@ -368,6 +371,7 @@ def create_app(
     app.state.store = store
     app.state.bus = bus
     app.state.runner = runner
+    app.state.estimator = estimator
     app.state.settings_store = settings_store
     app.state.secrets_store = secrets_store
     app.state.voices_dir = resolve_voices()
@@ -380,6 +384,7 @@ def create_app(
         store=store,
         bus=bus,
         runner=runner,
+        estimator=estimator,
         paths=resolved_paths,
         settings_store=settings_store,
         secrets_store=secrets_store,
@@ -417,6 +422,7 @@ def register_api(
     store: JobsDB,
     bus: JobEventBus,
     runner: JobRunner,
+    estimator: StageEstimator,
     paths: WebPaths,
     settings_store: SettingsStore,
     secrets_store: SecretsStore,
@@ -440,10 +446,14 @@ def register_api(
 
         ``active=False`` у ``running``-задачи означает, что её никто не ведёт
         (осиротевшая): клиенту не стоит показывать «живой» прогресс и можно
-        предлагать удаление/перезапуск.
+        предлагать удаление/перезапуск. Сюда же добавляются оценки прогресса
+        (``progress_percent``), ETA (``eta_seconds``/``eta_by_stage``) и
+        «здоровье» задачи (``health``) — см. #15/#24.
         """
         payload = job.as_dict()
-        payload["active"] = runner.is_active(job.id)
+        active = runner.is_active(job.id)
+        payload["active"] = active
+        payload.update(estimator.snapshot(job, active=active))
         return payload
 
     register_glossary_routes(router, db_path=_glossary_db_path)
@@ -1047,13 +1057,14 @@ def register_api(
     async def job_events(job_id: str) -> StreamingResponse:
         job = _require_job(store, job_id)
         if job.is_terminal:
-            event = {
+            event: dict[str, object] = {
                 "stage": job.stage or job.status,
                 "fraction": job.fraction,
                 "message": _terminal_message(job),
                 "status": job.status,
                 "stage_times": [timing.as_dict() for timing in job.stage_times],
             }
+            event.update(estimator.snapshot(job, active=False))
 
             async def immediate() -> AsyncIterator[str]:
                 yield _sse(event)
@@ -1064,18 +1075,18 @@ def register_api(
 
         async def stream() -> AsyncIterator[str]:
             active = runner.is_active(job_id)
-            yield _sse(
-                {
-                    "stage": job.stage or STATUS_QUEUED,
-                    "fraction": job.fraction,
-                    "message": "Подключено",
-                    "status": job.status,
-                    "active": active,
-                    "elapsed": job.total_seconds if active else None,
-                    "stage_elapsed": job.stage_elapsed if active else None,
-                    "stage_times": [timing.as_dict() for timing in job.stage_times],
-                }
-            )
+            initial: dict[str, object] = {
+                "stage": job.stage or STATUS_QUEUED,
+                "fraction": job.fraction,
+                "message": "Подключено",
+                "status": job.status,
+                "active": active,
+                "elapsed": job.total_seconds if active else None,
+                "stage_elapsed": job.stage_elapsed if active else None,
+                "stage_times": [timing.as_dict() for timing in job.stage_times],
+            }
+            initial.update(estimator.snapshot(job, active=active))
+            yield _sse(initial)
             async for event in bus.subscribe(job_id):
                 yield ": ping\n\n" if event is None else _sse(event)
 
@@ -1590,13 +1601,7 @@ def _remove_job_artifacts(paths: WebPaths, job: Job) -> None:
 
 def _probe_duration(path: Path) -> float | None:
     """Длительность аудио из контейнера без декодирования (``None`` при ошибке)."""
-    try:
-        with av.open(str(path)) as container:
-            if container.duration is None:
-                return None
-            return round(container.duration / av.time_base, 2)
-    except Exception:  # noqa: BLE001 — длительность не критична для списка
-        return None
+    return probe_duration(path)
 
 
 def _range_response(path: Path, range_header: str | None, *, media_type: str) -> Response:

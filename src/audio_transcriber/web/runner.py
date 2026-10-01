@@ -22,6 +22,7 @@ from audio_transcriber.diarization.samples import find_speaker_samples, samples_
 from audio_transcriber.domain.models import TranscriptionResult
 from audio_transcriber.pipeline import run_pipeline
 from audio_transcriber.progress import ProgressEvent
+from audio_transcriber.web.estimates import StageEstimator, probe_duration
 from audio_transcriber.web.events import JobEventBus
 from audio_transcriber.web.paths import WebPaths
 from audio_transcriber.web.results import serialize_result
@@ -30,6 +31,7 @@ from audio_transcriber.web.storage.jobs_db import (
     STATUS_ERROR,
     STATUS_QUEUED,
     STATUS_RUNNING,
+    Job,
     JobsDB,
     utc_now_iso,
 )
@@ -66,12 +68,15 @@ class JobRunner:
         config_builder: ConfigBuilder,
         *,
         pipeline_fn: PipelineFn | None = None,
+        estimator: StageEstimator | None = None,
     ) -> None:
         self._store = store
         self._bus = bus
         self._paths = paths
         self._config_builder = config_builder
         self._pipeline_fn = pipeline_fn or run_pipeline
+        #: Оценки прогресса/ETA/здоровья; ``None`` — отключены (тесты, минимальный режим).
+        self._estimator = estimator
         self._queue: queue.Queue[JobRequest | None] = queue.Queue()
         self._lock = threading.Lock()
         self._active: set[str] = set()
@@ -176,6 +181,9 @@ class JobRunner:
         job_id = request.job_id
         # Монотонный таймер стадий живёт ровно один прогон задачи.
         timer = StageTimer()
+        # Длительность аудио нужна для ETA уже во время прогона: результат
+        # сообщит её только в конце, поэтому пробуем контейнер заранее.
+        duration = probe_duration(request.source_path)
         self._store.update(
             job_id,
             status=STATUS_RUNNING,
@@ -184,6 +192,7 @@ class JobRunner:
             error=None,
             stage="queued",
             fraction=0.0,
+            duration=duration,
             stage_started_at=None,
             stage_times=[],
         )
@@ -215,23 +224,23 @@ class JobRunner:
         except Exception as exc:
             logger.exception("Задача %s завершилась ошибкой", job_id)
             timer.close()
-            self._store.update(
+            failed = self._store.update(
                 job_id,
                 status=STATUS_ERROR,
                 finished_at=utc_now_iso(),
                 error=str(exc),
                 stage_times=timer.timings(),
             )
-            self._bus.publish(
-                job_id,
-                {
-                    "stage": "error",
-                    "fraction": None,
-                    "message": str(exc),
-                    "status": STATUS_ERROR,
-                    "stage_times": timer.snapshot(),
-                },
-            )
+            failed_payload: dict[str, object] = {
+                "stage": "error",
+                "fraction": None,
+                "message": str(exc),
+                "status": STATUS_ERROR,
+                "stage_times": timer.snapshot(),
+            }
+            self._merge_estimate(failed_payload, failed, active=False)
+            self._bus.publish(job_id, failed_payload)
+            self._invalidate_estimates()
             return
 
         # Стадия ``export`` закрывается здесь: ``done`` от конвейера воркер
@@ -262,21 +271,28 @@ class JobRunner:
             if len(timer.timings()) != before:
                 # Стадия закрылась — сохраняем накопленные тайминги.
                 fields["stage_times"] = timer.timings()
-            self._store.update(job_id, **fields)
-            self._bus.publish(
-                job_id,
-                {
-                    "stage": event.stage,
-                    "fraction": event.fraction,
-                    "message": event.message,
-                    "status": STATUS_RUNNING,
-                    "elapsed": round(timer.elapsed(), 3),
-                    "stage_elapsed": round(timer.current_elapsed(), 3),
-                    "stage_times": timer.snapshot(),
-                },
-            )
+            updated = self._store.update(job_id, **fields)
+            payload: dict[str, object] = {
+                "stage": event.stage,
+                "fraction": event.fraction,
+                "message": event.message,
+                "status": STATUS_RUNNING,
+                "elapsed": round(timer.elapsed(), 3),
+                "stage_elapsed": round(timer.current_elapsed(), 3),
+                "stage_times": timer.snapshot(),
+            }
+            self._merge_estimate(payload, updated, active=True)
+            self._bus.publish(job_id, payload)
 
         return callback
+
+    def _merge_estimate(
+        self, payload: dict[str, object], job: Job | None, *, active: bool
+    ) -> None:
+        """Добавляет в событие/ответ оценки прогресса, ETA и здоровья (#15/#24)."""
+        if self._estimator is None or job is None:
+            return
+        payload.update(self._estimator.snapshot(job, active=active))
 
     def _finish_success(
         self,
@@ -296,26 +312,26 @@ class JobRunner:
             )
         except OSError as exc:
             logger.exception("Не удалось сохранить результат задачи %s", job_id)
-            self._store.update(
+            failed = self._store.update(
                 job_id,
                 status=STATUS_ERROR,
                 finished_at=utc_now_iso(),
                 error=f"Не удалось сохранить результат: {exc}",
                 stage_times=timer.timings(),
             )
-            self._bus.publish(
-                job_id,
-                {
-                    "stage": "error",
-                    "fraction": None,
-                    "message": "Не удалось сохранить результат",
-                    "status": STATUS_ERROR,
-                    "stage_times": timer.snapshot(),
-                },
-            )
+            failed_payload: dict[str, object] = {
+                "stage": "error",
+                "fraction": None,
+                "message": "Не удалось сохранить результат",
+                "status": STATUS_ERROR,
+                "stage_times": timer.snapshot(),
+            }
+            self._merge_estimate(failed_payload, failed, active=False)
+            self._bus.publish(job_id, failed_payload)
+            self._invalidate_estimates()
             return
 
-        self._store.update(
+        finished = self._store.update(
             job_id,
             status=STATUS_DONE,
             finished_at=utc_now_iso(),
@@ -326,16 +342,21 @@ class JobRunner:
             result_path=str(result_path),
             stage_times=timer.timings(),
         )
-        self._bus.publish(
-            job_id,
-            {
-                "stage": "done",
-                "fraction": 1.0,
-                "message": "Готово",
-                "status": STATUS_DONE,
-                "stage_times": timer.snapshot(),
-            },
-        )
+        done_payload: dict[str, object] = {
+            "stage": "done",
+            "fraction": 1.0,
+            "message": "Готово",
+            "status": STATUS_DONE,
+            "stage_times": timer.snapshot(),
+        }
+        self._merge_estimate(done_payload, finished, active=False)
+        self._bus.publish(job_id, done_payload)
+        self._invalidate_estimates()
+
+    def _invalidate_estimates(self) -> None:
+        """Сбрасывает кэш статистики: завершённый прогон учтётся сразу."""
+        if self._estimator is not None:
+            self._estimator.invalidate()
 
     def _collect_samples(
         self, config: AppConfig, result: TranscriptionResult

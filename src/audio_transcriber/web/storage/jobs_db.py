@@ -64,7 +64,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     min_speakers INTEGER,
     max_speakers INTEGER,
     stage_started_at TEXT,
-    stage_times TEXT
+    stage_times TEXT,
+    updated_at TEXT
 )
 """
 
@@ -150,6 +151,8 @@ class Job:
     stage_started_at: str | None = None
     #: Длительности завершённых стадий в порядке выполнения.
     stage_times: list[StageTiming] = field(default_factory=list)
+    #: Момент последнего изменения записи (ISO) — для оценки «здоровья» задачи.
+    updated_at: str | None = None
 
     @property
     def name(self) -> str:
@@ -205,6 +208,7 @@ class Job:
             "max_speakers": self.max_speakers,
             "stage_started_at": self.stage_started_at,
             "stage_times": [timing.as_dict() for timing in self.stage_times],
+            "updated_at": self.updated_at,
             "total_seconds": self.total_seconds,
             "stage_elapsed": self.stage_elapsed,
         }
@@ -254,6 +258,8 @@ class JobsDB:
             connection.execute("ALTER TABLE jobs ADD COLUMN stage_started_at TEXT")
         if "stage_times" not in columns:
             connection.execute("ALTER TABLE jobs ADD COLUMN stage_times TEXT")
+        if "updated_at" not in columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN updated_at TEXT")
 
     def create(
         self,
@@ -270,13 +276,14 @@ class JobsDB:
         with self._connect() as connection:
             connection.execute(
                 "INSERT INTO jobs "
-                "(id, source_path, status, created_at, language, num_speakers, "
-                "min_speakers, max_speakers) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(id, source_path, status, created_at, updated_at, language, "
+                "num_speakers, min_speakers, max_speakers) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     job_id,
                     str(source_path),
                     STATUS_QUEUED,
+                    created_at,
                     created_at,
                     language,
                     num_speakers,
@@ -308,6 +315,9 @@ class JobsDB:
             if key in _UPDATABLE_FIELDS
         }
         if allowed:
+            # Любое изменение записи обновляет штамп времени — по нему веб-слой
+            # определяет давность последнего события («здоровье» задачи).
+            allowed["updated_at"] = utc_now_iso()
             assignments = ", ".join(f"{key} = ?" for key in allowed)
             values = [*allowed.values(), job_id]
             with self._connect() as connection:
@@ -340,4 +350,5 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         max_speakers=row["max_speakers"],
         stage_started_at=row["stage_started_at"],
         stage_times=_parse_stage_times(row["stage_times"]),
+        updated_at=row["updated_at"],
     )

@@ -261,6 +261,48 @@ def test_garbage_stage_times_are_ignored(tmp_path: Path) -> None:
     assert fetched.stage_times == []
 
 
+def test_updated_at_set_on_create_and_refresh_on_update(tmp_path: Path) -> None:
+    db = _make_db(tmp_path)
+    created = db.create("job-1", tmp_path / "a.mp3")
+
+    assert created.updated_at == created.created_at
+    assert created.as_dict()["updated_at"] == created.created_at
+
+    db.update("job-1", status=STATUS_RUNNING, stage="asr")
+    updated = db.get("job-1")
+    assert updated is not None
+    assert updated.updated_at is not None
+    # Штамп времени есть и он не пустой после любого изменения.
+    assert updated.as_dict()["updated_at"] == updated.updated_at
+
+
+def test_migration_adds_updated_at_to_existing_table(tmp_path: Path) -> None:
+    path = tmp_path / "jobs.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE jobs ("
+            "id TEXT PRIMARY KEY, source_path TEXT NOT NULL, status TEXT NOT NULL, "
+            "created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, "
+            "language TEXT, duration REAL, error TEXT, result_path TEXT, "
+            "stage TEXT, fraction REAL)"
+        )
+        connection.execute(
+            "INSERT INTO jobs (id, source_path, status, created_at) "
+            "VALUES ('old', '/tmp/old.mp3', 'done', '2020-01-01T00:00:00+00:00')"
+        )
+
+    db = JobsDB(path)
+    db.initialize()
+
+    migrated = db.get("old")
+    assert migrated is not None
+    assert migrated.updated_at is None  # колонка есть, у старой записи NULL
+
+    with sqlite3.connect(path) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
+    assert "updated_at" in columns
+
+
 def test_migration_adds_stage_columns(tmp_path: Path) -> None:
     """Старая база без колонок таймингов аккуратно мигрируется."""
     path = tmp_path / "jobs.db"

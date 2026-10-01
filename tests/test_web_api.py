@@ -31,11 +31,13 @@ from audio_transcriber.web.events import JobEventBus
 from audio_transcriber.web.paths import WebPaths
 from audio_transcriber.web.runner import ORPHAN_ERROR_MESSAGE, JobRunner
 from audio_transcriber.web.storage.jobs_db import (
+    STATUS_DONE,
     STATUS_ERROR,
     STATUS_RUNNING,
     JobsDB,
     utc_now_iso,
 )
+from audio_transcriber.web.timings import StageTiming
 
 
 @pytest.fixture
@@ -910,3 +912,75 @@ def test_rerun_clears_stale_sse_history(
     history = bus.history("rerun-job")
     assert not any(e.get("message") == ORPHAN_ERROR_MESSAGE for e in history), history
     assert not any(e.get("status") == STATUS_ERROR for e in history), history
+
+
+# --- #15/#24: оценки прогресса, ETA и здоровье ---------------------------
+
+
+def test_job_payload_includes_estimate_fields(client: TestClient) -> None:
+    """API отдаёт процент/ETA/здоровье даже для незапущенной задачи."""
+    uploaded = _upload(client)
+    job_id = client.post("/api/jobs", json={"path": uploaded["name"]}).json()["id"]
+
+    payload = client.get(f"/api/jobs/{job_id}").json()
+
+    assert payload["progress_percent"] == 0.0
+    assert payload["eta_seconds"] is None
+    assert payload["eta_by_stage"] is None
+    assert payload["health"] is None
+    # Поле ``updated_at`` заполняется при создании.
+    assert payload["updated_at"]
+
+
+def test_running_job_estimates_from_history(
+    client: TestClient, web_paths: WebPaths
+) -> None:
+    """Процент, ETA и здоровье считаются по таймингам завершённых задач."""
+    store = client.app.state.store
+    store.create("history", web_paths.input_dir / "h.mp3")
+    store.update(
+        "history",
+        status=STATUS_DONE,
+        duration=100.0,
+        stage_times=[
+            StageTiming("denoise", 10.0),
+            StageTiming("asr", 50.0),
+            StageTiming("merge", 20.0),
+        ],
+    )
+    live = store.create("live", web_paths.input_dir / "live.mp3")
+    store.update(
+        live.id,
+        status=STATUS_RUNNING,
+        stage="asr",
+        fraction=0.25,
+        duration=100.0,
+        stage_started_at=utc_now_iso(),
+        stage_times=[],
+    )
+    client.app.state.estimator.invalidate()
+
+    payload = client.get(f"/api/jobs/{live.id}").json()
+
+    # Веса: denoise 0.1, asr 0.5, merge 0.2, остальные — запасной 0.2; сумма 1.8.
+    # denoise пройдена (позиция), asr — 0.5 * 0.25 = 0.125. Итого 0.225 / 1.8 → 12.5%.
+    assert payload["progress_percent"] == pytest.approx(12.5)
+    # asr: остаток 0.75 * 50 = 37.5; merge 20; пять стадий по 20 = 100 → 157.5.
+    assert payload["eta_seconds"] == pytest.approx(157.5)
+    assert payload["eta_by_stage"]["asr"] == pytest.approx(37.5)
+    # Задачу никто не ведёт (== активного воркера нет) — она «зависла».
+    assert payload["health"]["status"] == "stalled"
+    assert payload["health"]["last_update_seconds"] is not None
+
+
+def test_events_after_done_include_estimates(client: TestClient) -> None:
+    """Терминальное SSE-событие тоже содержит процент/ETA/здоровье."""
+    uploaded = _upload(client)
+    job_id, _ = _run_job(client, uploaded["name"])
+
+    response = client.get(f"/api/jobs/{job_id}/events")
+
+    assert response.status_code == 200
+    assert '"progress_percent": 100.0' in response.text
+    assert '"eta_seconds": 0.0' in response.text
+    assert '"health": null' in response.text

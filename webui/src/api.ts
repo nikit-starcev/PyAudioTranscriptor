@@ -22,6 +22,15 @@ export type StageTime = {
   cached: boolean
 }
 
+/** «Здоровье» задачи: ok — идёт нормально, slow — замедление, stalled — нет активности. */
+export type HealthStatus = 'ok' | 'slow' | 'stalled'
+
+export type JobHealth = {
+  status: HealthStatus
+  /** Сколько секунд назад последний раз обновлялось состояние задачи. */
+  last_update_seconds: number | null
+}
+
 export type Job = {
   id: string
   name: string
@@ -40,10 +49,20 @@ export type Job = {
   max_speakers: number | null
   stage_started_at: string | null
   stage_times: StageTime[]
+  /** Время последнего изменения задачи (ISO) — для оценки «здоровья». */
+  updated_at: string | null
   total_seconds: number | null
   stage_elapsed: number | null
   /** Обрабатывается ли задача текущим воркером (false — осиротевшая running). */
   active: boolean
+  /** Сводный процент прогона с учётом весов стадий. */
+  progress_percent: number
+  /** Ожидаемый остаток всего прогона в секундах (null — нет данных/истории). */
+  eta_seconds: number | null
+  /** Остаток по стадиям (секунды) или null. */
+  eta_by_stage: Record<string, number> | null
+  /** «Здоровье» задачи (null вне статуса running). */
+  health: JobHealth | null
 }
 
 export type Summary = {
@@ -116,6 +135,11 @@ export type JobEvent = {
   elapsed?: number | null
   stage_elapsed?: number | null
   stage_times?: StageTime[]
+  /** Сводный процент прогона, ETA и «здоровье» (см. #15/#24). */
+  progress_percent?: number
+  eta_seconds?: number | null
+  eta_by_stage?: Record<string, number> | null
+  health?: JobHealth | null
 }
 
 export type WebSettings = {
