@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-01
+
 ### Added
 
 - Обработанные файлы убираются из списка «Файлы» (#16): после успешного
@@ -176,9 +178,10 @@
 
 ### Tests
 
-- 866+ тестов pytest: юнит-тесты, веб-API и интеграционный тест на реальном
+- 980+ тестов pytest: юнит-тесты, веб-API и интеграционный тест на реальном
   аудио.
 - Ruff и mypy проходят без замечаний.
 
-[Unreleased]: https://github.com/nikit-starcev/PyAudioTranscriptor/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/nikit-starcev/PyAudioTranscriptor/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/nikit-starcev/PyAudioTranscriptor/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/nikit-starcev/PyAudioTranscriptor/releases/tag/v0.1.0
