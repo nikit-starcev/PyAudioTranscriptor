@@ -84,7 +84,11 @@ function SpeakerVariants({ jobId, speakerId, speakerName, onToLibrary }: Props) 
       })
     }
     if (audio.readyState >= 1) begin()
-    else audio.addEventListener('loadedmetadata', begin, { once: true })
+    else {
+      // metadata ещё не загружены — форсируем загрузку и ждём loadedmetadata.
+      audio.load()
+      audio.addEventListener('loadedmetadata', begin, { once: true })
+    }
   }
 
   const onTimeUpdate = () => {
@@ -132,7 +136,7 @@ function SpeakerVariants({ jobId, speakerId, speakerName, onToLibrary }: Props) 
         <div className="mt-2 rounded-md border border-slate-200 bg-white p-2 dark:border-slate-700 dark:bg-slate-900">
           <audio
             ref={audioRef}
-            preload="none"
+            preload="metadata"
             src={`/api/jobs/${jobId}/audio`}
             onTimeUpdate={onTimeUpdate}
             onEnded={stop}
