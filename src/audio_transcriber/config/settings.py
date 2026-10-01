@@ -23,9 +23,11 @@ from audio_transcriber.config.defaults import (
 from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_ENROLLMENT_MIN_SIMILARITY,
+    DEFAULT_LLM_PROVIDER,
     DEFAULT_LLM_REQUEST_TIMEOUT,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
     DEFAULT_VOICES_DIR,
+    VALID_LLM_PROVIDERS,
 )
 from audio_transcriber.correction.defaults import (
     DEFAULT_CORRECTION_MAX_CANDIDATES,
@@ -149,6 +151,16 @@ class AppConfig:
     whisper_cpp_lib_path: str | None = None
     whisper_cpp_threads: int | None = None
     llm_enabled: bool = False
+    # Провайдер LLM-постобработки: ``llama`` — локальный llama-server
+    # (по умолчанию), ``openai`` — внешний OpenAI-совместимый API.
+    llm_provider: str = DEFAULT_LLM_PROVIDER
+    # Параметры внешнего провайдера (``openai``). Для локального llama-server
+    # не используются; ``llm_model`` остаётся путём к GGUF-модели.
+    llm_base_url: str | None = None
+    llm_model_name: str | None = None
+    # API-ключ внешнего провайдера. Секрет: в веб-интерфейсе хранится отдельно
+    # (``web-data/secrets.json``) и не попадает в открытом виде в API/логи.
+    llm_api_key: str | None = None
     llm_model: Path | None = None
     llm_binary: str = "llama-server"
     llm_lib_path: str | None = None
@@ -317,11 +329,7 @@ class AppConfig:
                 "(--whisper-cpp-model)"
             )
 
-        if self.llm_enabled and self.llm_model is None:
-            logger.warning(
-                "LLM включена, но модель не задана (LLM_MODEL/--llm-model) — "
-                "LLM-постобработка будет пропущена"
-            )
+        self._validate_llm_provider()
 
         for glossary_path in self.glossary_path:
             if not glossary_path.is_file():
@@ -408,6 +416,63 @@ class AppConfig:
                 raise ConfigurationError("DIARIZATION_CLUSTERING_FB должно быть числом")
             if fb <= 0.0:
                 raise ConfigurationError("DIARIZATION_CLUSTERING_FB должно быть положительным числом")
+
+    def _validate_llm_provider(self) -> None:
+        """Проверяет провайдера LLM и параметры внешнего API.
+
+        Провайдер обязан быть известным (``llama``/``openai``) — иначе это
+        опечатка, которую лучше поймать сразу. Параметры внешнего провайдера
+        (``base_url``/имя модели/ключ) нормализуются: пустые строки — ``None``.
+        Нехватка параметров — предупреждение (мягкая деградация), как и для
+        локальной модели: конвейер пропустит постобработку, но не упадёт.
+        """
+        provider = (self.llm_provider or "").strip().casefold()
+        if provider not in VALID_LLM_PROVIDERS:
+            raise ConfigurationError(
+                f"Неизвестный провайдер LLM: {self.llm_provider!r} "
+                f"(допустимо: {', '.join(VALID_LLM_PROVIDERS)})"
+            )
+        self.llm_provider = provider
+
+        if isinstance(self.llm_base_url, str):
+            stripped = self.llm_base_url.strip()
+            self.llm_base_url = stripped or None
+        if isinstance(self.llm_model_name, str):
+            stripped = self.llm_model_name.strip()
+            self.llm_model_name = stripped or None
+        if isinstance(self.llm_api_key, str):
+            stripped = self.llm_api_key.strip()
+            self.llm_api_key = stripped or None
+
+        if not self.llm_enabled:
+            return
+
+        if provider == "llama":
+            if self.llm_model is None:
+                logger.warning(
+                    "LLM включена, но модель не задана (LLM_MODEL/--llm-model) — "
+                    "LLM-постобработка будет пропущена"
+                )
+            return
+
+        # Внешний провайдер: текст стенограммы уходит за пределы машины —
+        # это осознанный выбор пользователя, поэтому фиксируем в логе.
+        logger.warning(
+            "LLM-провайдер «%s»: стенограмма отправляется на внешний сервер %s — "
+            "текст покидает локальную машину (проект заявлен как «100%% локально»).",
+            provider,
+            self.llm_base_url or "<base_url не задан>",
+        )
+        if not self.llm_base_url:
+            logger.warning(
+                "LLM включена с провайдером openai, но не задан base_url "
+                "(LLM_BASE_URL/--llm-base-url) — LLM-постобработка будет пропущена"
+            )
+        if not self.llm_model_name:
+            logger.warning(
+                "LLM включена с провайдером openai, но не задано имя модели "
+                "(LLM_MODEL_NAME/--llm-model-name) — LLM-постобработка будет пропущена"
+            )
 
     def resolved_cache_dir(self) -> Path:
         """Каталог постадийного кэша: ``cache_dir`` или ``<output_dir>/.cache``."""

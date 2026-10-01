@@ -9,11 +9,13 @@
 # Разбор config.env выполняется без bash: строки вида КЛЮЧ=значение, пустые
 # строки и комментарии (#) пропускаются, окружающие кавычки у значений
 # снимаются. Поддерживаются те же переменные, что и в run.sh, в том числе
-# ASR_BACKEND, WHISPER_CPP_MODEL/BINARY/LIB_PATH, LLM_* (LLM_ENABLED, LLM_MODEL,
-# LLM_BINARY, LLM_LIB_PATH, LLM_GPU, LLM_CONTEXT, LLM_EXTRACT_NAMES,
-# LLM_SUMMARY, LLM_SUGGEST_TERMS, LLM_PROMPT_EXTRA, LLM_PROMPT_FILE) и
+# ASR_BACKEND, WHISPER_CPP_MODEL/BINARY/LIB_PATH, LLM_* (LLM_ENABLED,
+# LLM_PROVIDER, LLM_MODEL, LLM_BASE_URL, LLM_MODEL_NAME, LLM_API_KEY, LLM_BINARY,
+# LLM_LIB_PATH, LLM_GPU, LLM_CONTEXT, LLM_EXTRACT_NAMES, LLM_SUMMARY,
+# LLM_SUGGEST_TERMS, LLM_PROMPT_EXTRA, LLM_PROMPT_FILE) и
 # GLOSSARY_PATH — поэтому гибрид whisper.cpp/Vulkan и LLM-постобработка
-# работают через config.env так же, как на Linux/macOS.
+# (локальная llama.cpp или внешний OpenAI-совместимый API) работают через
+# config.env так же, как на Linux/macOS.
 #
 # Использование (PowerShell):
 #   .\run.ps1 путь\к\записи.mp3
@@ -140,8 +142,12 @@ $cliArgs += Get-ValueArg "--correction-max-candidates" "CORRECTION_MAX_CANDIDATE
 $cliArgs += Get-ValueArg "--hotwords" "HOTWORDS"
 if ($config["VERBOSE"] -eq "true") { $cliArgs += "--verbose" }
 
-# --- LLM-постобработка (llama.cpp) ---
+# --- LLM-постобработка (llama.cpp локально или внешний OpenAI-совместимый API) ---
 if ($config["LLM_ENABLED"] -eq "true") { $cliArgs += "--llm" }
+$cliArgs += Get-ValueArg "--llm-provider" "LLM_PROVIDER"
+$cliArgs += Get-ValueArg "--llm-base-url" "LLM_BASE_URL"
+$cliArgs += Get-ValueArg "--llm-model-name" "LLM_MODEL_NAME"
+$cliArgs += Get-ValueArg "--llm-api-key" "LLM_API_KEY"
 $cliArgs += Get-ValueArg "--llm-model" "LLM_MODEL"
 $cliArgs += Get-ValueArg "--llm-binary" "LLM_BINARY"
 $cliArgs += Get-ValueArg "--llm-lib-path" "LLM_LIB_PATH"

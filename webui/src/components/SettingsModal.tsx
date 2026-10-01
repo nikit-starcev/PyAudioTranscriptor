@@ -7,8 +7,10 @@ import {
   errorMessage,
   EXPORT_FORMATS,
   HF_TOKEN_URL,
+  LLM_PROVIDERS,
   PYANNOTE_MODEL_URL,
   type HfCheckResult,
+  type LlmCheckResult,
   type WebSettings,
 } from '../api'
 
@@ -57,6 +59,10 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
   const [hfTokenTouched, setHfTokenTouched] = useState(false)
   const [hfCheck, setHfCheck] = useState<HfCheckResult | null>(null)
   const [hfChecking, setHfChecking] = useState(false)
+  const [llmApiKey, setLlmApiKey] = useState('')
+  const [llmApiKeyTouched, setLlmApiKeyTouched] = useState(false)
+  const [llmCheck, setLlmCheck] = useState<LlmCheckResult | null>(null)
+  const [llmChecking, setLlmChecking] = useState(false)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -65,6 +71,9 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
       setHfToken('')
       setHfTokenTouched(false)
       setHfCheck(null)
+      setLlmApiKey('')
+      setLlmApiKeyTouched(false)
+      setLlmCheck(null)
       setError(null)
     } catch (cause) {
       setError(errorMessage(cause))
@@ -101,6 +110,17 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
 
   const save = async () => {
     if (!settings) return
+    // Внешний провайдер отправляет текст за пределы машины — не включаем молча.
+    if (
+      settings.llm_enabled &&
+      settings.llm_provider === 'openai' &&
+      !window.confirm(
+        'Внешний провайдер LLM: текст стенограммы будет отправлен на внешний сервер ' +
+          'за пределы вашей машины. Проект заявлен как «100% локально». Продолжить?',
+      )
+    ) {
+      return
+    }
     setBusy(true)
     setError(null)
     setStatus(null)
@@ -123,8 +143,12 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
         whisper_cpp_binary: settings.whisper_cpp_binary,
         llm_model: settings.llm_model,
         llm_binary: settings.llm_binary,
+        llm_provider: settings.llm_provider,
+        llm_base_url: settings.llm_base_url,
+        llm_model_name: settings.llm_model_name,
         pyannote_local_model: settings.pyannote_local_model,
         ...(hfTokenTouched ? { hf_token: hfToken } : {}),
+        ...(llmApiKeyTouched ? { llm_api_key: llmApiKey } : {}),
       }
       const saved = await api<WebSettings>('/api/settings', {
         method: 'PUT',
@@ -135,12 +159,38 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
       setHfToken('')
       setHfTokenTouched(false)
       setHfCheck(null)
+      setLlmApiKey('')
+      setLlmApiKeyTouched(false)
+      setLlmCheck(null)
       setStatus('Настройки сохранены')
       onSaved?.(saved)
     } catch (cause) {
       setError(errorMessage(cause))
     } finally {
       setBusy(false)
+    }
+  }
+
+  const checkLlm = async () => {
+    if (!settings) return
+    setLlmChecking(true)
+    setLlmCheck(null)
+    try {
+      const apiKey = llmApiKey.trim()
+      const result = await api<LlmCheckResult>('/api/llm/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          base_url: settings.llm_base_url,
+          model_name: settings.llm_model_name,
+          ...(apiKey ? { api_key: apiKey } : {}),
+        }),
+      })
+      setLlmCheck(result)
+    } catch (cause) {
+      setLlmCheck({ status: 'error', message: errorMessage(cause), models: [] })
+    } finally {
+      setLlmChecking(false)
     }
   }
 
@@ -382,6 +432,117 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
                     Если указан существующий каталог — pyannote грузится офлайн, токен HF не нужен.
                   </span>
                 </label>
+              </fieldset>
+
+              <fieldset className="space-y-3 rounded-md border border-slate-200 p-3 dark:border-slate-800">
+                <legend className="px-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+                  LLM-постобработка (провайдер)
+                </legend>
+                <label className="block text-sm">
+                  <span className="text-slate-600 dark:text-slate-300">Провайдер LLM</span>
+                  <select
+                    value={settings.llm_provider}
+                    onChange={(event) => {
+                      update({ llm_provider: event.target.value })
+                      setLlmCheck(null)
+                    }}
+                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                  >
+                    {LLM_PROVIDERS.map((provider) => (
+                      <option key={provider} value={provider}>
+                        {provider === 'llama' ? 'llama (локально, llama.cpp)' : 'openai (внешний API)'}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                {settings.llm_provider === 'llama' ? (
+                  <p className="rounded-md bg-slate-50 px-3 py-1.5 text-xs text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">
+                    Локальный llama.cpp: модель GGUF и бинарник задаются выше, в блоке
+                    «Распознавание: бэкенд и модели». Текст не покидает машину.
+                  </p>
+                ) : (
+                  <>
+                    <p
+                      role="alert"
+                      className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200"
+                    >
+                      <strong>Внимание: приватность.</strong> При внешнем провайдере текст
+                      стенограммы отправляется на сторонний сервер и покидает вашу машину.
+                      Проект заявлен как «100% локально» — включайте осознанно.
+                    </p>
+                    <label className="block text-sm">
+                      <span className="text-slate-600 dark:text-slate-300">
+                        Базовый URL (LLM_BASE_URL)
+                      </span>
+                      <input
+                        value={settings.llm_base_url}
+                        onChange={(event) => update({ llm_base_url: event.target.value })}
+                        placeholder="https://api.openai.com/v1"
+                        className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                      />
+                      <span className="mt-0.5 block text-xs text-slate-400 dark:text-slate-500">
+                        OpenAI, Ollama, vLLM, LM Studio, OpenRouter. Префикс /v1 подставляется
+                        автоматически, если не указан.
+                      </span>
+                    </label>
+                    <label className="block text-sm">
+                      <span className="text-slate-600 dark:text-slate-300">
+                        Имя модели (LLM_MODEL_NAME)
+                      </span>
+                      <input
+                        value={settings.llm_model_name}
+                        onChange={(event) => update({ llm_model_name: event.target.value })}
+                        placeholder="gpt-4o-mini"
+                        className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                      />
+                    </label>
+                    <label className="block text-sm">
+                      <span className="text-slate-600 dark:text-slate-300">
+                        API-ключ (LLM_API_KEY)
+                      </span>
+                      <input
+                        type="password"
+                        autoComplete="off"
+                        value={llmApiKey}
+                        onChange={(event) => {
+                          setLlmApiKey(event.target.value)
+                          setLlmApiKeyTouched(true)
+                          setLlmCheck(null)
+                        }}
+                        placeholder={settings.llm_api_key_set ? 'сохранён' : 'sk-...'}
+                        className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                      />
+                      <span className="mt-0.5 block text-xs text-slate-400 dark:text-slate-500">
+                        {settings.llm_api_key_set
+                          ? `Ключ сохранён (${settings.llm_api_key_masked ?? '…'}). Введите новый, чтобы заменить, или очистите поле и сохраните, чтобы удалить.`
+                          : 'Необязателен для локальных серверов. Хранится в отдельном файле с правами 0600.'}
+                      </span>
+                    </label>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => void checkLlm()}
+                        disabled={llmChecking}
+                        className="rounded-md border border-slate-300 px-3 py-1 text-xs hover:bg-slate-100 disabled:opacity-40 dark:border-slate-600 dark:hover:bg-slate-800"
+                      >
+                        {llmChecking ? 'Проверка…' : 'Проверить доступность'}
+                      </button>
+                    </div>
+                    {llmCheck && (
+                      <p
+                        role="status"
+                        className={`rounded-md px-3 py-1.5 text-xs ${
+                          llmCheck.status === 'ok'
+                            ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300'
+                            : 'bg-red-50 text-red-700 dark:bg-red-950/50 dark:text-red-300'
+                        }`}
+                      >
+                        {llmCheck.message}
+                      </p>
+                    )}
+                  </>
+                )}
               </fieldset>
 
               <fieldset className="space-y-3 rounded-md border border-slate-200 p-3 dark:border-slate-800">

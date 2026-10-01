@@ -386,7 +386,7 @@ def test_run_llm_postprocess_closes_internally_created_client(
     """Если клиент создан внутри — он обязан быть закрыт (иначе утечка VRAM)."""
     created: list[_EmptyChatClient] = []
 
-    def fake_create(**kwargs):
+    def fake_create(*_args, **_kwargs):
         client = _EmptyChatClient()
         created.append(client)
         return client
@@ -428,7 +428,7 @@ def test_run_llm_postprocess_closes_internal_client_even_on_error(
         raise RuntimeError("модель недоступна")
 
     client.chat = fake_chat  # type: ignore[method-assign]
-    monkeypatch.setattr(postprocess_module, "create_llm_client", lambda **_kw: client)
+    monkeypatch.setattr(postprocess_module, "create_llm_client", lambda *_a, **_kw: client)
     config = AppConfig(input_file=audio_file, output_dir=tmp_path / "out", llm_enabled=True)
 
     run_llm_postprocess(config, _entries(), _speakers())

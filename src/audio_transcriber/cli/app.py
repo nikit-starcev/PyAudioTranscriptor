@@ -17,6 +17,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_ENROLLMENT_MIN_SIMILARITY,
     DEFAULT_GLOSSARY_DB,
+    DEFAULT_LLM_PROVIDER,
     DEFAULT_LLM_REQUEST_TIMEOUT,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
 )
@@ -484,6 +485,45 @@ def transcribe(
             f"(по умолчанию {DEFAULT_LLM_REQUEST_TIMEOUT:g})."
         ),
     ),
+    llm_provider: str = typer.Option(
+        DEFAULT_LLM_PROVIDER,
+        "--llm-provider",
+        envvar="LLM_PROVIDER",
+        help=(
+            "Провайдер LLM-постобработки: llama (локальный llama.cpp, по "
+            "умолчанию) или openai (внешний OpenAI-совместимый API — OpenAI, "
+            "Ollama, vLLM, LM Studio, OpenRouter). При openai текст уходит за "
+            "пределы машины."
+        ),
+    ),
+    llm_base_url: str | None = typer.Option(
+        None,
+        "--llm-base-url",
+        envvar="LLM_BASE_URL",
+        help=(
+            "Базовый URL внешней OpenAI-совместимой LLM (например, "
+            "https://api.openai.com/v1 или http://localhost:11434/v1). "
+            "Только для --llm-provider openai."
+        ),
+    ),
+    llm_model_name: str | None = typer.Option(
+        None,
+        "--llm-model-name",
+        envvar="LLM_MODEL_NAME",
+        help=(
+            "Имя модели внешней LLM (например, gpt-4o-mini или llama3.1). "
+            "Только для --llm-provider openai."
+        ),
+    ),
+    llm_api_key: str | None = typer.Option(
+        None,
+        "--llm-api-key",
+        envvar="LLM_API_KEY",
+        help=(
+            "API-ключ внешней LLM (передаётся заголовком Authorization: Bearer). "
+            "Необязателен для локальных серверов. По умолчанию — из окружения LLM_API_KEY."
+        ),
+    ),
     llm_suggest_terms: bool = typer.Option(
         False,
         "--llm-suggest-terms",
@@ -625,6 +665,10 @@ def transcribe(
             whisper_cpp_lib_path=whisper_cpp_lib_path,
             whisper_cpp_threads=whisper_cpp_threads,
             llm_enabled=llm,
+            llm_provider=llm_provider,
+            llm_base_url=llm_base_url,
+            llm_model_name=llm_model_name,
+            llm_api_key=llm_api_key,
             llm_model=llm_model,
             llm_binary=llm_binary,
             llm_lib_path=llm_lib_path,

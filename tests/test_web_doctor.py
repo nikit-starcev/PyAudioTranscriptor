@@ -19,7 +19,13 @@ from audio_transcriber.doctor import DoctorCheck
 from audio_transcriber.web import doctor_api
 from audio_transcriber.web.app import create_app
 from audio_transcriber.web.paths import WebPaths
-from audio_transcriber.web.secrets import SecretsStore, effective_hf_token, mask_hf_token
+from audio_transcriber.web.secrets import (
+    SecretsStore,
+    effective_hf_token,
+    effective_llm_api_key,
+    mask_hf_token,
+    mask_secret,
+)
 from audio_transcriber.web.settings import SettingsStore
 
 
@@ -281,3 +287,58 @@ def test_build_doctor_env_prefers_secret(
     assert config_path is None
     assert env["HF_TOKEN"] == "hf_secret"
     assert env["OUTPUT_DIR"] == str(web_paths.results_dir)
+
+
+def test_llm_api_key_saved_as_secret_file_with_mode_0600(
+    client: TestClient, web_paths: WebPaths
+) -> None:
+    secret = "sk-supersecretllmkey9999"
+
+    response = client.put("/api/settings", json={"llm_api_key": secret})
+
+    assert response.status_code == 200
+    assert secret not in response.text
+    body = response.json()
+    assert body["llm_api_key_set"] is True
+    assert body["llm_api_key_masked"] is not None
+    assert secret not in str(body["llm_api_key_masked"])
+
+    # Ключ лежит в отдельном файле секретов, а не в settings.json.
+    data = json.loads(web_paths.secrets_json.read_text(encoding="utf-8"))
+    assert data["llm_api_key"] == secret
+    mode = web_paths.secrets_json.stat().st_mode & 0o777
+    assert mode == 0o600
+    assert secret not in web_paths.settings_json.read_text(encoding="utf-8")
+
+    # GET никогда не отдаёт сам ключ — только флаг и маску.
+    got = client.get("/api/settings")
+    assert got.status_code == 200
+    assert secret not in got.text
+    payload = got.json()
+    assert "llm_api_key" not in payload
+    assert payload["llm_api_key_set"] is True
+
+
+def test_llm_api_key_can_be_cleared(client: TestClient, web_paths: WebPaths) -> None:
+    client.put("/api/settings", json={"llm_api_key": "sk_abc12345"})
+    assert client.get("/api/settings").json()["llm_api_key_set"] is True
+
+    response = client.put("/api/settings", json={"llm_api_key": ""})
+
+    assert response.json()["llm_api_key_set"] is False
+    assert SecretsStore(web_paths.secrets_json).get_llm_api_key() is None
+
+
+def test_mask_and_effective_llm_api_key_helpers(web_paths: WebPaths) -> None:
+    assert mask_secret(None) is None
+    assert mask_secret("short") == "…"
+    masked = mask_secret("sk-abcdefghijklmnop")
+    assert masked is not None
+    assert masked.startswith("sk-")
+    assert masked.endswith("mnop")
+
+    store = SecretsStore(web_paths.secrets_json)
+    assert effective_llm_api_key(store, {}) is None
+    assert effective_llm_api_key(store, {"LLM_API_KEY": "sk_fromenv"}) == "sk_fromenv"
+    store.set_llm_api_key("sk_secret")
+    assert effective_llm_api_key(store, {"LLM_API_KEY": "sk_fromenv"}) == "sk_secret"

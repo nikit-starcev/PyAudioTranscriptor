@@ -61,18 +61,11 @@ def _recompute_summary(
     owns_client = llm_client is None
     client = llm_client
     if client is None:
-        client = create_llm_client(
-            model_path=config.llm_model,
-            binary=config.llm_binary,
-            library_path=config.llm_lib_path,
-            gpu=config.llm_gpu,
-            context_size=config.llm_context_size,
-            request_timeout=config.llm_request_timeout,
-        )
+        client = create_llm_client(config)
     if client is None:
         logger.warning(
-            "Протокол без резюме: LLM включена, но модель не задана "
-            "(LLM_MODEL/--llm-model)"
+            "Протокол без резюме: LLM включена, но клиент не создан "
+            "(проверьте LLM_MODEL/LLM_BASE_URL/LLM_MODEL_NAME)"
         )
         return result.summary
 

@@ -54,6 +54,7 @@ from audio_transcriber.diarization.voices import (
 )
 from audio_transcriber.domain.enums import ExportFormat
 from audio_transcriber.export.factory import create_exporter
+from audio_transcriber.llm.client import probe_openai_server
 from audio_transcriber.protocol import ProtocolArtifacts, generate_protocol
 from audio_transcriber.utils.audio import load_waveform, write_wav
 from audio_transcriber.utils.playback import amplitude_envelope, read_duration
@@ -93,7 +94,9 @@ from audio_transcriber.web.secrets import (
     SecretsError,
     SecretsStore,
     effective_hf_token,
+    effective_llm_api_key,
     mask_hf_token,
+    mask_secret,
 )
 from audio_transcriber.web.settings import (
     SettingsError,
@@ -269,8 +272,9 @@ class TranscriptEditsRequest(BaseModel):
 class SettingsUpdate(BaseModel):
     """Тело ``PUT /api/settings``: частичное обновление (``None`` — не менять).
 
-    ``hf_token`` — отдельный секрет: он сохраняется не в ``settings.json``, а в
-    ``web-data/secrets.json`` с правами ``0600``. Пустая строка удаляет токен.
+    ``hf_token`` и ``llm_api_key`` — отдельные секреты: они сохраняются не в
+    ``settings.json``, а в ``web-data/secrets.json`` с правами ``0600``.
+    Пустая строка удаляет секрет.
     """
 
     glossary_enabled: bool | None = None
@@ -291,6 +295,10 @@ class SettingsUpdate(BaseModel):
     whisper_cpp_binary: str | None = None
     llm_model: str | None = None
     llm_binary: str | None = None
+    llm_provider: str | None = None
+    llm_base_url: str | None = None
+    llm_model_name: str | None = None
+    llm_api_key: str | None = None
     pyannote_local_model: str | None = None
 
 
@@ -301,6 +309,19 @@ class HfCheckRequest(BaseModel):
     """
 
     token: str | None = None
+
+
+class LlmCheckRequest(BaseModel):
+    """Тело ``POST /api/llm/check``: необязательные параметры внешней LLM.
+
+    Если поля не переданы, берутся из сохранённых настроек (``base_url``/
+    ``llm_model_name``) и секретов (API-ключ). Проверка делает лёгкий запрос
+    ``GET /models`` и не сохраняет ничего.
+    """
+
+    base_url: str | None = None
+    model_name: str | None = None
+    api_key: str | None = None
 
 
 def create_app(
@@ -356,6 +377,9 @@ def create_app(
         token = effective_hf_token(secrets_store, env_defaults())
         if token:
             overrides["HF_TOKEN"] = token
+        api_key = effective_llm_api_key(secrets_store, env_defaults())
+        if api_key:
+            overrides["LLM_API_KEY"] = api_key
         return build_job_config(
             source_path,
             output_dir=resolved_paths.results_dir / job_id,
@@ -465,6 +489,9 @@ def register_api(
     def _effective_token() -> str | None:
         return effective_hf_token(secrets_store, env_defaults())
 
+    def _effective_llm_key() -> str | None:
+        return effective_llm_api_key(secrets_store, env_defaults())
+
     def job_payload(job: Job) -> dict[str, object]:
         """Представление задачи с признаком «обрабатывается этим воркером».
 
@@ -503,6 +530,9 @@ def register_api(
         token = _effective_token()
         payload["hf_token_set"] = token is not None
         payload["hf_token_masked"] = mask_hf_token(token)
+        api_key = _effective_llm_key()
+        payload["llm_api_key_set"] = api_key is not None
+        payload["llm_api_key_masked"] = mask_secret(api_key)
         return payload
 
     @router.put("/settings")
@@ -511,12 +541,16 @@ def register_api(
         updates = payload.model_dump(exclude_none=True)
         token_requested = "hf_token" in updates
         raw_token = updates.pop("hf_token", None)
+        api_key_requested = "llm_api_key" in updates
+        raw_api_key = updates.pop("llm_api_key", None)
         try:
             merged = settings_from_mapping(updates, base=current)
             validate_settings(merged)
             saved = settings_store.save(merged)
             if token_requested:
                 secrets_store.set_hf_token(raw_token)
+            if api_key_requested:
+                secrets_store.set_llm_api_key(raw_api_key)
         except (SettingsError, SecretsError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         result = saved.as_dict()
@@ -527,6 +561,9 @@ def register_api(
         token = _effective_token()
         result["hf_token_set"] = token is not None
         result["hf_token_masked"] = mask_hf_token(token)
+        api_key = _effective_llm_key()
+        result["llm_api_key_set"] = api_key is not None
+        result["llm_api_key_masked"] = mask_secret(api_key)
         return result
 
     @router.get("/doctor")
@@ -553,6 +590,40 @@ def register_api(
         if token is None:
             token = _effective_token()
         return check_hf_access(token).as_dict()
+
+    @router.post("/llm/check")
+    def llm_check(payload: LlmCheckRequest | None = None) -> dict[str, object]:
+        """Мягкая проверка доступности внешней OpenAI-совместимой LLM.
+
+        Делает ``GET /models`` по переданному ``base_url`` (или сохранённому в
+        настройках). Ничего не сохраняет и не роняет сервер: результат —
+        ``{"status": "ok"|"error"|"no_url", "message": ..., "models": [...]}``.
+        """
+        settings = settings_store.load()
+        requested_url = payload.base_url if payload is not None else None
+        base_url = (
+            requested_url.strip()
+            if isinstance(requested_url, str) and requested_url.strip()
+            else settings.llm_base_url
+        )
+        if not base_url:
+            return {
+                "status": "no_url",
+                "message": "Не задан базовый URL внешней LLM",
+                "models": [],
+            }
+        requested_key = payload.api_key if payload is not None else None
+        api_key = (
+            requested_key.strip()
+            if isinstance(requested_key, str) and requested_key.strip()
+            else _effective_llm_key()
+        )
+        ok, message, models = probe_openai_server(base_url, api_key=api_key)
+        return {
+            "status": "ok" if ok else "error",
+            "message": message,
+            "models": models,
+        }
 
     @router.get("/setup")
     def get_setup() -> dict[str, object]:

@@ -1010,13 +1010,7 @@ class TranscriberApp(App):
         if not config.llm_enabled:
             return None
         try:
-            return create_llm_client(
-                model_path=config.llm_model,
-                binary=config.llm_binary,
-                library_path=config.llm_lib_path,
-                gpu=config.llm_gpu,
-                context_size=config.llm_context_size,
-            )
+            return create_llm_client(config)
         except Exception as exc:  # noqa: BLE001 — при сбое обработаем без LLM
             logger.warning("Не удалось создать LLM-клиент: %s", exc)
             return None

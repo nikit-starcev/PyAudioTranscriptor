@@ -107,8 +107,12 @@ fi
 [ -n "${HOTWORDS:-}" ] && ARGS+=(--hotwords "$HOTWORDS")
 [ "${VERBOSE:-false}" = "true" ] && ARGS+=(--verbose)
 
-# --- LLM-постобработка (llama.cpp) ---
+# --- LLM-постобработка (llama.cpp локально или внешний OpenAI-совместимый API) ---
 [ "${LLM_ENABLED:-false}" = "true" ] && ARGS+=(--llm)
+[ -n "${LLM_PROVIDER:-}" ] && ARGS+=(--llm-provider "$LLM_PROVIDER")
+[ -n "${LLM_BASE_URL:-}" ] && ARGS+=(--llm-base-url "$LLM_BASE_URL")
+[ -n "${LLM_MODEL_NAME:-}" ] && ARGS+=(--llm-model-name "$LLM_MODEL_NAME")
+[ -n "${LLM_API_KEY:-}" ] && ARGS+=(--llm-api-key "$LLM_API_KEY")
 [ -n "${LLM_MODEL:-}" ] && ARGS+=(--llm-model "$LLM_MODEL")
 [ -n "${LLM_BINARY:-}" ] && ARGS+=(--llm-binary "$LLM_BINARY")
 [ -n "${LLM_LIB_PATH:-}" ] && ARGS+=(--llm-lib-path "$LLM_LIB_PATH")

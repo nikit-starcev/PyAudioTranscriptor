@@ -413,7 +413,7 @@ def test_tui_reuses_and_closes_one_llm_client_per_queue(
         def close(self) -> None:
             self.closed += 1
 
-    def fake_create(**kwargs):
+    def fake_create(*_args, **_kwargs):
         client = _FakeClient()
         created.append(client)
         return client

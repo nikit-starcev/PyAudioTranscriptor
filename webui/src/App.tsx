@@ -728,7 +728,8 @@ function App() {
           <p className="text-xs text-slate-500 dark:text-slate-400">
             Файлы: <code>{config.input_dir}</code> · Результаты: <code>{config.output_dir}</code> ·
             Экспорт: {config.export_formats.join(', ')}
-            {config.llm_enabled ? ' · LLM вкл.' : ''}
+            {config.llm_enabled ? ` · LLM вкл. (${config.llm_provider})` : ''}
+            {config.llm_external ? ' · внешний LLM: текст уходит за пределы машины' : ''}
             {config.glossary_enabled ? ' · глоссарий вкл.' : ''}
           </p>
         )}

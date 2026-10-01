@@ -595,14 +595,7 @@ def run_llm_postprocess(
             emit(ProgressEvent("llm", f"Предложения новых терминов: {path}", fraction=None))
 
     if client is None:
-        client = create_llm_client(
-            model_path=config.llm_model,
-            binary=config.llm_binary,
-            library_path=config.llm_lib_path,
-            gpu=config.llm_gpu,
-            context_size=config.llm_context_size,
-            request_timeout=config.llm_request_timeout,
-        )
+        client = create_llm_client(config)
         # Клиент создан здесь — этот вызов владеет им и обязан закрыть,
         # иначе llama-server останется висеть и держать VRAM.
         owns_client = True
@@ -611,7 +604,10 @@ def run_llm_postprocess(
         owns_client = False
 
     if client is None:
-        logger.warning("LLM-постобработка пропущена: не указана модель (LLM_MODEL/--llm-model)")
+        logger.warning(
+            "LLM-постобработка пропущена: клиент не создан "
+            "(проверьте LLM_MODEL/LLM_BASE_URL/LLM_MODEL_NAME)"
+        )
         _maybe_write_suggestions(entries)
         return entries, speakers, None, None
 

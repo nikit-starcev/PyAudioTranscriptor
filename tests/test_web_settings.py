@@ -177,3 +177,131 @@ def test_build_job_config_diarization_defaults(
     assert config.diarization_min_duration_off == pytest.approx(0.5)
     assert config.diarization_clustering_threshold is None
     assert config.diarization_clustering_fb is None
+
+
+def test_settings_include_llm_provider_fields(client: TestClient) -> None:
+    payload = client.get("/api/settings").json()
+
+    assert payload["llm_provider"] == "llama"
+    assert payload["llm_base_url"] == ""
+    assert payload["llm_model_name"] == ""
+    assert payload["llm_api_key_set"] is False
+    assert payload["llm_api_key_masked"] is None
+    # Именно ключ, а не только флаг: значение секрета наружу не отдаётся.
+    assert "llm_api_key" not in payload
+
+
+def test_put_settings_persists_llm_provider(client: TestClient) -> None:
+    response = client.put(
+        "/api/settings",
+        json={
+            "llm_provider": "openai",
+            "llm_base_url": "http://localhost:11434/v1",
+            "llm_model_name": "llama3.1",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["llm_provider"] == "openai"
+    assert body["llm_base_url"] == "http://localhost:11434/v1"
+    assert body["llm_model_name"] == "llama3.1"
+
+    saved = client.get("/api/settings").json()
+    assert saved["llm_provider"] == "openai"
+
+
+def test_put_settings_rejects_unknown_provider(client: TestClient) -> None:
+    response = client.put("/api/settings", json={"llm_provider": "anthropic"})
+
+    assert response.status_code == 400
+    assert "провайдер" in response.json()["detail"]
+
+
+def test_put_settings_rejects_bad_base_url(client: TestClient) -> None:
+    response = client.put("/api/settings", json={"llm_base_url": "not-a-url"})
+
+    assert response.status_code == 400
+    assert "LLM_BASE_URL" in response.json()["detail"]
+
+
+def test_build_job_config_maps_external_llm(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("audio_transcriber.web.config.env_defaults", lambda: {})
+
+    config = build_job_config(
+        audio_file,
+        output_dir=tmp_path / "out",
+        data_dir=tmp_path / "data",
+        overrides={
+            "LLM_PROVIDER": "openai",
+            "LLM_BASE_URL": "http://localhost:11434/v1",
+            "LLM_MODEL_NAME": "llama3.1",
+            "LLM_API_KEY": "sk-injected",
+        },
+    )
+
+    assert config.llm_provider == "openai"
+    assert config.llm_base_url == "http://localhost:11434/v1"
+    assert config.llm_model_name == "llama3.1"
+    assert config.llm_api_key == "sk-injected"
+
+
+def test_build_job_config_llm_defaults_to_llama(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("audio_transcriber.web.config.env_defaults", lambda: {})
+
+    config = build_job_config(audio_file, output_dir=tmp_path / "out", data_dir=tmp_path / "data")
+
+    assert config.llm_provider == "llama"
+    assert config.llm_base_url is None
+    assert config.llm_model_name is None
+    assert config.llm_api_key is None
+
+
+def test_llm_check_without_url(client: TestClient) -> None:
+    payload = client.post("/api/llm/check", json={}).json()
+
+    assert payload["status"] == "no_url"
+    assert payload["models"] == []
+
+
+def test_llm_check_ok(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_probe(base_url: str, *, api_key: str | None = None):
+        captured["base_url"] = base_url
+        captured["api_key"] = api_key
+        return True, "Доступно. Моделей: 1 (llama3.1)", ["llama3.1"]
+
+    monkeypatch.setattr("audio_transcriber.web.app.probe_openai_server", fake_probe)
+    client.put("/api/settings", json={"llm_base_url": "http://localhost:11434/v1"})
+
+    payload = client.post(
+        "/api/llm/check", json={"api_key": "sk-typed"}
+    ).json()
+
+    assert payload["status"] == "ok"
+    assert payload["models"] == ["llama3.1"]
+    assert captured["base_url"] == "http://localhost:11434/v1"
+    assert captured["api_key"] == "sk-typed"
+
+
+def test_llm_check_reports_error(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "audio_transcriber.web.app.probe_openai_server",
+        lambda *_args, **_kwargs: (False, "Не удалось подключиться", []),
+    )
+
+    payload = client.post(
+        "/api/llm/check", json={"base_url": "http://localhost:9999/v1"}
+    ).json()
+
+    assert payload["status"] == "error"
+    assert "Не удалось" in payload["message"]

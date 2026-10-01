@@ -7,6 +7,10 @@ export type ConfigInfo = {
   llm_enabled: boolean
   glossary_enabled: boolean
   voices_dir: string
+  /** Провайдер LLM: llama (локальный) или openai (внешний API). */
+  llm_provider: string
+  /** true — включён внешний провайдер: текст уходит за пределы машины. */
+  llm_external: boolean
 }
 
 export type FileItem = {
@@ -170,6 +174,11 @@ export type WebSettings = {
   whisper_cpp_binary: string
   llm_model: string
   llm_binary: string
+  /** Провайдер LLM: llama (локальный) или openai (внешний API). */
+  llm_provider: string
+  /** Базовый URL и имя модели внешнего OpenAI-совместимого API. */
+  llm_base_url: string
+  llm_model_name: string
   pyannote_local_model: string
   input_dir: string
   output_dir: string
@@ -177,10 +186,14 @@ export type WebSettings = {
   voices_dir_resolved: string
   hf_token_set: boolean
   hf_token_masked: string | null
+  /** Секрет API-ключа внешней LLM: наружу отдаётся лишь флаг и маска. */
+  llm_api_key_set: boolean
+  llm_api_key_masked: string | null
 }
 
 export const ASR_BACKENDS = ['faster-whisper', 'whisper-cpp'] as const
 export const DEVICES = ['auto', 'cpu', 'cuda'] as const
+export const LLM_PROVIDERS = ['llama', 'openai'] as const
 
 export type ModelKind = 'whisper-cpp' | 'llm' | 'pyannote'
 export type ModelDownloadStatus = 'idle' | 'downloading' | 'done' | 'error' | 'cancelled'
@@ -310,6 +323,14 @@ export type HfCheckResult = {
 export const HF_TOKEN_URL = 'https://huggingface.co/settings/tokens'
 export const PYANNOTE_MODEL_URL =
   'https://huggingface.co/pyannote/speaker-diarization-community-1'
+
+export type LlmCheckStatus = 'ok' | 'no_url' | 'error'
+
+export type LlmCheckResult = {
+  status: LlmCheckStatus
+  message: string
+  models: string[]
+}
 
 export type GlossarySource = {
   name: string

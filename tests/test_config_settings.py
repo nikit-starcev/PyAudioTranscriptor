@@ -606,3 +606,36 @@ def test_num_speakers_overrides_range(
     assert config.min_speakers is None
     assert config.max_speakers is None
     assert any("игнорируются" in record.message for record in caplog.records)
+
+
+def test_llm_provider_defaults_to_llama(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file)
+
+    assert config.llm_provider == "llama"
+    assert config.llm_base_url is None
+    assert config.llm_model_name is None
+    assert config.llm_api_key is None
+
+
+def test_llm_provider_normalized_and_validated(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file, llm_provider="OpenAI")
+
+    assert config.llm_provider == "openai"
+
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, llm_provider="anthropic")
+
+
+def test_llm_provider_blank_fields_normalized_to_none(audio_file: Path) -> None:
+    config = AppConfig(
+        input_file=audio_file,
+        llm_enabled=True,
+        llm_provider="openai",
+        llm_base_url="  ",
+        llm_model_name="  ",
+        llm_api_key="  ",
+    )
+
+    assert config.llm_base_url is None
+    assert config.llm_model_name is None
+    assert config.llm_api_key is None

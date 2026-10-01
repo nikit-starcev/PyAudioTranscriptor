@@ -69,6 +69,9 @@ class WebConfig:
     llm_enabled: bool
     glossary_enabled: bool
     voices_dir: str
+    #: Провайдер LLM (``llama``/``openai``) и признак «текст уходит наружу».
+    llm_provider: str = "llama"
+    llm_external: bool = False
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -78,6 +81,8 @@ class WebConfig:
             "llm_enabled": self.llm_enabled,
             "glossary_enabled": self.glossary_enabled,
             "voices_dir": self.voices_dir,
+            "llm_provider": self.llm_provider,
+            "llm_external": self.llm_external,
         }
 
 
@@ -86,13 +91,17 @@ def public_config(*, input_dir: Path, output_dir: Path) -> WebConfig:
     defaults = env_defaults()
     export_formats = _env_export_formats(defaults)
     voices_dir = defaults.get("VOICES_DIR", "").strip() or "voices"
+    llm_enabled = _as_bool(defaults.get("LLM_ENABLED"))
+    llm_provider = defaults.get("LLM_PROVIDER", "").strip().casefold() or "llama"
     return WebConfig(
         input_dir=str(input_dir),
         output_dir=str(output_dir),
         export_formats=[fmt.value for fmt in export_formats],
-        llm_enabled=_as_bool(defaults.get("LLM_ENABLED")),
+        llm_enabled=llm_enabled,
         glossary_enabled=_as_bool(defaults.get("GLOSSARY_ENABLED"), default=True),
         voices_dir=voices_dir,
+        llm_provider=llm_provider,
+        llm_external=llm_enabled and llm_provider == "openai",
     )
 
 
@@ -209,6 +218,10 @@ def build_job_config(
             else None
         ),
         llm_enabled=_as_bool(defaults.get("LLM_ENABLED")),
+        llm_provider=defaults.get("LLM_PROVIDER", "").strip().casefold() or "llama",
+        llm_base_url=defaults.get("LLM_BASE_URL", "").strip() or None,
+        llm_model_name=defaults.get("LLM_MODEL_NAME", "").strip() or None,
+        llm_api_key=defaults.get("LLM_API_KEY", "").strip() or None,
         llm_model=Path(llm_model_raw) if llm_model_raw else None,
         llm_binary=defaults.get("LLM_BINARY", "").strip() or "llama-server",
         llm_lib_path=defaults.get("LLM_LIB_PATH") or None,

@@ -1,10 +1,16 @@
-"""Тонкий клиент к локальному llama.cpp через Vulkan.
+"""Клиенты LLM-постобработки: локальный llama.cpp и внешний OpenAI-совместимый API.
 
-Работа с LLM ведётся только локально, без внешних API. Клиент
-:class:`LlamaServerClient` поднимает ``llama-server`` как внешний процесс
-(GPU через Vulkan) и ходит к нему по OpenAI-совместимому протоколу
-``POST /v1/chat/completions``: модель грузится один раз и обслуживает все
-запросы конвейера.
+Провайдер **по умолчанию — локальный** :class:`LlamaServerClient`: он поднимает
+``llama-server`` как внешний процесс (GPU через Vulkan) и ходит к нему по
+OpenAI-совместимому протоколу ``POST /v1/chat/completions``; модель грузится
+один раз и обслуживает все запросы конвейера. Ничего не меняется для тех, кто
+работает «100% локально».
+
+Опционально (``llm_provider="openai"``) используется :class:`OpenAIClient` —
+тонкий клиент к внешнему OpenAI-совместимому API (OpenAI, Ollama, vLLM,
+LM Studio, OpenRouter и т.п.). В этом случае **текст стенограммы покидает
+локальную машину** — пользователь предупреждается в настройках и логе.
+:func:`create_llm_client` выбирает провайдера по конфигурации.
 
 Жизненный цикл серверного клиента устроен так, чтобы процесс
 ``llama-server`` **никогда не оставался висеть** (он держит VRAM):
@@ -38,8 +44,14 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from audio_transcriber.config.defaults import DEFAULT_CONTEXT_SIZE, DEFAULT_LLM_REQUEST_TIMEOUT
+from audio_transcriber.config.defaults import (
+    DEFAULT_CONTEXT_SIZE,
+    DEFAULT_LLM_PROVIDER,
+    DEFAULT_LLM_REQUEST_TIMEOUT,
+)
+from audio_transcriber.llm.base import LlmClient
 from audio_transcriber.utils.env import with_library_path
 from audio_transcriber.utils.exceptions import LlmError
 from audio_transcriber.utils.subprocess_registry import (
@@ -50,6 +62,9 @@ from audio_transcriber.utils.subprocess_registry import (
 from audio_transcriber.utils.subprocess_registry import (
     _active_processes as _active_processes,
 )
+
+if TYPE_CHECKING:
+    from audio_transcriber.config.settings import AppConfig
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +80,36 @@ DEFAULT_READY_TIMEOUT = 600.0
 # обратной совместимости импортов.
 DEFAULT_REQUEST_TIMEOUT = DEFAULT_LLM_REQUEST_TIMEOUT
 
+#: Сколько раз повторяем запрос к внешней LLM при временных сбоях (5xx/429/сеть).
+DEFAULT_MAX_RETRIES = 2
+#: Базовая задержка между повторными попытками (секунды), растёт экспоненциально.
+DEFAULT_RETRY_BACKOFF = 1.0
+
 _OFFLOAD_RE = re.compile(r"offloaded\s+(\d+)\s*/\s*(\d+)\s+layers?\s+to\s+GPU", re.IGNORECASE)
+
+#: HTTP-коды, при которых имеет смысл повторить запрос к внешней LLM.
+_RETRYABLE_HTTP_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+
+
+def http_error_hint(code: int, body: str) -> str:
+    """Подсказка пользователю при типичных ошибках запроса к LLM.
+
+    HTTP 400 у сервера почти всегда означает, что промпт превысил контекст
+    модели: сообщение об этом содержит ``context``/``token``.
+    """
+    lowered = body.casefold()
+    overflow = any(marker in lowered for marker in ("context", "token", "too long", "exceed"))
+    if code == 400 and overflow:
+        logger.warning(
+            "LLM отклонила запрос: переполнение контекста (HTTP %d). "
+            "Уменьшите LLM_CONTEXT или размер входного файла.",
+            code,
+        )
+        return (
+            " Подсказка: переполнение контекста — уменьшите LLM_CONTEXT "
+            "или размер входного файла."
+        )
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -452,27 +496,8 @@ class LlamaServerClient:
 
     @staticmethod
     def _http_error_hint(code: int, body: str) -> str:
-        """Подсказка пользователю при типичных ошибках запроса к LLM.
-
-        HTTP 400 у llama-server почти всегда означает, что промпт превысил
-        контекст модели: сообщение об этом содержит ``context``/``token``.
-        """
-        lowered = body.casefold()
-        overflow = any(
-            marker in lowered
-            for marker in ("context", "token", "too long", "exceed")
-        )
-        if code == 400 and overflow:
-            logger.warning(
-                "LLM отклонила запрос: переполнение контекста (HTTP %d). "
-                "Уменьшите LLM_CONTEXT или размер входного файла.",
-                code,
-            )
-            return (
-                " Подсказка: переполнение контекста — уменьшите LLM_CONTEXT "
-                "или размер входного файла."
-            )
-        return ""
+        """Подсказка пользователю при типичных ошибках запроса к LLM."""
+        return http_error_hint(code, body)
 
     def close(self) -> None:
         """Останавливает сервер, если он был запущен (идемпотентно)."""
@@ -486,20 +511,315 @@ class LlamaServerClient:
         self.close()
 
 
-def create_llm_client(
+
+class OpenAIClient:
+    """Клиент к внешнему OpenAI-совместимому API.
+
+    Один-единственный HTTP-эндпоинт ``/chat/completions`` (с префиксом ``/v1``
+    или без него — подбирается автоматически). Поддерживает авторизацию
+    ``Bearer <api_key>``, таймаут и повторные попытки при временных
+    ошибках сети/сервера (5xx, 429). Сетевые ошибки и неожиданные ответы
+    поднимаются как :class:`~audio_transcriber.utils.exceptions.LlmError` с
+    понятным сообщением, чтобы вызывающий код мог мягко деградировать.
+
+    В отличие от :class:`LlamaServerClient`, ничего не запускает и не держит
+    ресурсов: :meth:`close` — no-op.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        model_name: str,
+        *,
+        api_key: str | None = None,
+        request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        retry_backoff: float = DEFAULT_RETRY_BACKOFF,
+    ) -> None:
+        if not str(base_url).strip():
+            raise ValueError("Не задан base_url внешней LLM")
+        if not str(model_name).strip():
+            raise ValueError("Не задано имя модели внешней LLM")
+
+        self._base_url = str(base_url).strip()
+        self._model_name = str(model_name).strip()
+        self._api_key = api_key.strip() if isinstance(api_key, str) else None
+        self._request_timeout = request_timeout
+        self._max_tokens = max_tokens
+        self._max_retries = max(0, int(max_retries))
+        self._retry_backoff = max(0.0, float(retry_backoff))
+        self._urls = _chat_completions_urls(self._base_url)
+
+    @property
+    def base_url(self) -> str:
+        """Базовый URL провайдера (без завершающего слэша)."""
+        return self._base_url
+
+    @property
+    def model_name(self) -> str:
+        """Имя модели, передаваемое в запросе."""
+        return self._model_name
+
+    @property
+    def urls(self) -> list[str]:
+        """Кандидаты URL эндпоинта (основной и запасной без ``/v1``)."""
+        return list(self._urls)
+
+    def _request(self, url: str, messages: list[dict[str, str]]) -> urllib.request.Request:
+        payload = json.dumps(
+            {
+                "model": self._model_name,
+                "messages": messages,
+                "temperature": 0.0,
+                "max_tokens": self._max_tokens,
+            }
+        ).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        return urllib.request.Request(url, data=payload, headers=headers, method="POST")
+
+    def _sleep_before_retry(self, attempt: int) -> None:
+        # attempt >= 1: 1-я повторная попытка ждёт base * 2^0 и т.д.
+        if self._retry_backoff <= 0:
+            return
+        time.sleep(self._retry_backoff * (2 ** (attempt - 1)))
+
+    def chat(self, messages: list[dict[str, str]]) -> str:
+        """Отправляет сообщения внешнему API и возвращает текст ответа.
+
+        :raises LlmError: при исчерпании повторных попыток, авторизационной
+            ошибке, отсутствии модели/эндпоинта или неожиданном формате ответа.
+        """
+        url_index = 0
+        attempt = 0
+        while True:
+            url = self._urls[url_index]
+            request = self._request(url, messages)
+            try:
+                with urllib.request.urlopen(request, timeout=self._request_timeout) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")[-1000:]
+                # Промах по эндпоинту: сервер ожидает URL без префикса /v1 —
+                # пробуем запасной вариант, не расходуя попытки.
+                if (
+                    exc.code == 404
+                    and url_index == 0
+                    and len(self._urls) > 1
+                ):
+                    logger.debug("LLM: %s не найден, пробую %s", url, self._urls[1])
+                    url_index = 1
+                    continue
+                if exc.code in _RETRYABLE_HTTP_STATUS and attempt < self._max_retries:
+                    attempt += 1
+                    logger.warning(
+                        "Внешняя LLM вернула HTTP %d (%s), повтор %d/%d",
+                        exc.code,
+                        url,
+                        attempt,
+                        self._max_retries,
+                    )
+                    self._sleep_before_retry(attempt)
+                    continue
+                hint = http_error_hint(exc.code, body)
+                raise LlmError(
+                    f"Внешняя LLM вернула HTTP {exc.code} ({url}): {body}{hint}"
+                ) from exc
+            except (urllib.error.URLError, OSError, TimeoutError) as exc:
+                if attempt < self._max_retries:
+                    attempt += 1
+                    logger.warning(
+                        "Не удалось обратиться к внешней LLM (%s): %s — повтор %d/%d",
+                        url,
+                        exc,
+                        attempt,
+                        self._max_retries,
+                    )
+                    self._sleep_before_retry(attempt)
+                    continue
+                raise LlmError(
+                    f"Не удалось обратиться к внешней LLM {url}: {exc}"
+                ) from exc
+
+            return self._parse_response(data)
+
+    def _parse_response(self, data: object) -> str:
+        try:
+            content = data["choices"][0]["message"]["content"]  # type: ignore[index]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise LlmError(
+                f"Неожиданный ответ внешней LLM: {json.dumps(data, ensure_ascii=False)[:500]}"
+            ) from exc
+        if not isinstance(content, str):
+            raise LlmError(
+                f"Внешняя LLM вернула не текст: {json.dumps(data, ensure_ascii=False)[:500]}"
+            )
+        return content
+
+    def close(self) -> None:
+        """Ничего не делает: внешний клиент не владеет процессами/сессиями."""
+
+    def __enter__(self) -> OpenAIClient:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+
+def _chat_completions_urls(base_url: str) -> list[str]:
+    """Кандидаты URL ``/chat/completions`` для базового URL.
+
+    Поддерживаются оба распространённых варианта:
+
+    - ``https://host`` → ``https://host/v1/chat/completions`` (основной) и
+      ``https://host/chat/completions`` (запасной);
+    - ``https://host/v1`` → ``https://host/v1/chat/completions`` (основной) и
+      ``https://host/chat/completions`` (запасной);
+    - уже полный ``.../chat/completions`` → как есть.
+    """
+    base = base_url.strip().rstrip("/")
+    if not base:
+        raise LlmError("Не задан base_url внешней LLM")
+    if base.endswith("/chat/completions"):
+        return [base]
+    if base.endswith("/v1"):
+        primary = f"{base}/chat/completions"
+        fallback = f"{base[:-3]}/chat/completions"
+    else:
+        primary = f"{base}/v1/chat/completions"
+        fallback = f"{base}/chat/completions"
+    candidates = [primary]
+    if fallback != primary:
+        candidates.append(fallback)
+    return candidates
+
+
+def _models_urls(base_url: str) -> list[str]:
+    """Кандидаты URL ``/models`` для проверки доступности внешнего сервера."""
+    base = base_url.strip().rstrip("/")
+    if not base:
+        return []
+    if base.endswith("/models"):
+        return [base]
+    if base.endswith("/v1"):
+        return [f"{base}/models"]
+    return [f"{base}/v1/models", f"{base}/models"]
+
+
+def _parse_model_ids(raw: str) -> list[str]:
+    """Извлекает идентификаторы моделей из ответа ``/models`` (best-effort)."""
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return []
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list):
+        return []
+    ids: list[str] = []
+    for item in data:
+        if isinstance(item, dict) and isinstance(item.get("id"), str):
+            ids.append(item["id"])
+    return ids
+
+
+def probe_openai_server(
+    base_url: str,
     *,
-    model_path: Path | None,
-    binary: str,
-    library_path: str | None,
-    gpu: bool,
+    api_key: str | None = None,
+    timeout: float = 5.0,
+) -> tuple[bool, str, list[str]]:
+    """Проверяет доступность OpenAI-совместимого сервера через ``GET /models``.
+
+    Возвращает ``(ok, message, model_ids)``. Это лёгкая проверка для кнопки
+    «Проверить доступность» в настройках: сервер считается доступным, если
+    отвечает 2xx на список моделей. Сетевые ошибки и не-2xx не выбрасываются —
+    это диагностика, а не рабочий вызов.
+    """
+    urls = _models_urls(base_url)
+    if not urls:
+        return False, "Не задан base_url", []
+
+    headers = {"Accept": "application/json"}
+    if api_key and api_key.strip():
+        headers["Authorization"] = f"Bearer {api_key.strip()}"
+
+    last_error = "неизвестная ошибка"
+    for url in urls:
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404 and url != urls[-1]:
+                last_error = f"HTTP {exc.code} ({url})"
+                continue
+            return False, f"Сервер ответил HTTP {exc.code} ({url})", []
+        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            return False, f"Не удалось подключиться к {url}: {exc}", []
+
+        models = _parse_model_ids(raw)
+        if models:
+            preview = ", ".join(models[:3])
+            return True, f"Доступно. Моделей: {len(models)} ({preview})", models
+        return True, "Сервер доступен (список моделей пуст или в ином формате)", []
+
+    return False, f"Не удалось найти эндпоинт /models: {last_error}", []
+
+
+def create_llm_client(
+    config: AppConfig | None = None,
+    *,
+    provider: str = DEFAULT_LLM_PROVIDER,
+    model_path: Path | None = None,
+    binary: str = "llama-server",
+    library_path: str | None = None,
+    gpu: bool = True,
     context_size: int = DEFAULT_CONTEXT_SIZE,
     max_tokens: int = DEFAULT_MAX_TOKENS,
     request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
-) -> LlamaServerClient | None:
-    """Создаёт LLM-клиент по настройкам конфигурации.
+    base_url: str | None = None,
+    model_name: str | None = None,
+    api_key: str | None = None,
+) -> LlmClient | None:
+    """Создаёт LLM-клиент выбранного провайдера.
 
-    Возвращает ``None``, если модель не задана.
+    Основной способ — передать :class:`AppConfig` первым аргументом: провайдер
+    и его параметры берутся из конфигурации. Плоские ключевые аргументы
+    сохранены для обратной совместимости (TUI/тесты).
+
+    Возвращает ``None``, если параметров недостаточно: для ``llama`` — нет
+    GGUF-модели, для ``openai`` — не задан ``base_url`` или имя модели.
     """
+    if config is not None:
+        provider = config.llm_provider
+        model_path = config.llm_model
+        binary = config.llm_binary
+        library_path = config.llm_lib_path
+        gpu = config.llm_gpu
+        context_size = config.llm_context_size
+        request_timeout = config.llm_request_timeout
+        base_url = config.llm_base_url
+        model_name = config.llm_model_name
+        api_key = config.llm_api_key
+
+    normalized = (provider or DEFAULT_LLM_PROVIDER).strip().casefold()
+    if normalized == "openai":
+        if not base_url or not model_name:
+            logger.warning(
+                "LLM-провайдер openai: не задан base_url или имя модели — "
+                "LLM-постобработка будет пропущена"
+            )
+            return None
+        return OpenAIClient(
+            base_url,
+            model_name,
+            api_key=api_key,
+            request_timeout=request_timeout,
+            max_tokens=max_tokens,
+        )
+
     if model_path is None:
         return None
 

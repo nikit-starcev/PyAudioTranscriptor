@@ -158,6 +158,8 @@ def test_config_slice(client: TestClient) -> None:
         "llm_enabled",
         "glossary_enabled",
         "voices_dir",
+        "llm_provider",
+        "llm_external",
     }
 
 

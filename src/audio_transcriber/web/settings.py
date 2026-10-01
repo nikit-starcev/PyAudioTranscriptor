@@ -14,9 +14,10 @@ import logging
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
+from urllib.parse import urlparse
 
 from audio_transcriber.config import defaults as config_defaults
-from audio_transcriber.config.defaults import DEFAULT_VOICES_DIR
+from audio_transcriber.config.defaults import DEFAULT_VOICES_DIR, VALID_LLM_PROVIDERS
 from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
 from audio_transcriber.web.config import _as_bool, _env_export_formats, env_defaults
 
@@ -60,10 +61,17 @@ class WebSettings:
     whisper_cpp_binary: str = "whisper-cli"
     llm_model: str = ""
     llm_binary: str = "llama-server"
+    #: Провайдер LLM (``llama`` — локальный, ``openai`` — внешний API).
+    llm_provider: str = "llama"
+    #: Базовый URL и имя модели внешнего OpenAI-совместимого API.
+    llm_base_url: str = ""
+    llm_model_name: str = ""
+    #: API-ключ внешней LLM — секрет: хранится в ``secrets.json``, не в
+    #: ``settings.json``. В этом срезе намеренно отсутствует.
     pyannote_local_model: str = ""
 
     def as_dict(self) -> dict[str, object]:
-        """Плоское представление для JSON-ответа API."""
+        """Плоское представление для JSON-ответа API (без секретов)."""
         return asdict(self)
 
     def env_overrides(self) -> dict[str, str]:
@@ -86,6 +94,9 @@ class WebSettings:
             "WHISPER_CPP_BINARY": self.whisper_cpp_binary,
             "LLM_MODEL": self.llm_model,
             "LLM_BINARY": self.llm_binary,
+            "LLM_PROVIDER": self.llm_provider,
+            "LLM_BASE_URL": self.llm_base_url,
+            "LLM_MODEL_NAME": self.llm_model_name,
             "PYANNOTE_LOCAL_MODEL": self.pyannote_local_model,
         }
 
@@ -121,6 +132,9 @@ def default_settings(defaults: Mapping[str, str] | None = None) -> WebSettings:
         whisper_cpp_binary=source.get("WHISPER_CPP_BINARY", "").strip() or "whisper-cli",
         llm_model=source.get("LLM_MODEL", "").strip(),
         llm_binary=source.get("LLM_BINARY", "").strip() or "llama-server",
+        llm_provider=source.get("LLM_PROVIDER", "").strip().casefold() or "llama",
+        llm_base_url=source.get("LLM_BASE_URL", "").strip(),
+        llm_model_name=source.get("LLM_MODEL_NAME", "").strip(),
         pyannote_local_model=source.get("PYANNOTE_LOCAL_MODEL", "").strip(),
     )
 
@@ -164,6 +178,9 @@ def settings_from_mapping(
         whisper_cpp_binary=pick_nonempty("whisper_cpp_binary", current.whisper_cpp_binary),
         llm_model=pick_str("llm_model", current.llm_model),
         llm_binary=pick_nonempty("llm_binary", current.llm_binary),
+        llm_provider=pick_nonempty("llm_provider", current.llm_provider),
+        llm_base_url=pick_str("llm_base_url", current.llm_base_url),
+        llm_model_name=pick_str("llm_model_name", current.llm_model_name),
         pyannote_local_model=pick_str("pyannote_local_model", current.pyannote_local_model),
     )
 
@@ -192,6 +209,21 @@ def validate_settings(settings: WebSettings) -> None:
             f"Неизвестное устройство: {settings.device!r} (допустимо: {', '.join(VALID_DEVICES)})"
         )
 
+    settings.llm_provider = settings.llm_provider.strip().casefold()
+    settings.llm_base_url = settings.llm_base_url.strip()
+    settings.llm_model_name = settings.llm_model_name.strip()
+    if settings.llm_provider not in VALID_LLM_PROVIDERS:
+        raise SettingsError(
+            f"Неизвестный провайдер LLM: {settings.llm_provider!r} "
+            f"(допустимо: {', '.join(VALID_LLM_PROVIDERS)})"
+        )
+
+    if settings.llm_base_url and not _is_http_url(settings.llm_base_url):
+        raise SettingsError(
+            f"Некорректный LLM_BASE_URL: {settings.llm_base_url!r} "
+            "(ожидается http(s)://host[:port][/path])"
+        )
+
     paths = (
         ("glossary_db", settings.glossary_db),
         ("voices_dir", settings.voices_dir),
@@ -203,6 +235,15 @@ def validate_settings(settings: WebSettings) -> None:
         if not value.strip():
             continue
         _validate_path(label, value)
+
+
+def _is_http_url(value: str) -> bool:
+    """Похоже ли значение на абсолютный http(s)-URL с хостом."""
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return False
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
 def _validate_path(label: str, value: str) -> None:
