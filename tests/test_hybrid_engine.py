@@ -19,15 +19,25 @@ from audio_transcriber.diarization.hybrid_engine import (
     AnalysisWindow,
     HybridDiarizationError,
     HybridSpeakerDiarizer,
+    window_is_overloaded,
 )
 from audio_transcriber.domain.models import SpeakerSegment
 from audio_transcriber.utils.audio import SAMPLE_RATE
 
 SR = SAMPLE_RATE
 
-_A = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-_B = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-_C = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+_A = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+_B = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32)
+_C = np.array([0.0, 0.0, 1.0, 0.0], dtype=np.float32)
+_D = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+
+
+def _overloaded_segments(count: int = 12) -> list[SpeakerSegment]:
+    """Окно с занятыми всеми 4 головами и почти каждой сменой говорящего."""
+    return [
+        SpeakerSegment(start=i * 0.5, end=(i + 1) * 0.5, speaker_id=f"spk{i % 4}")
+        for i in range(count)
+    ]
 
 
 class _SequenceEmbedder:
@@ -333,3 +343,102 @@ def test_hybrid_raises_on_empty_waveform(monkeypatch: pytest.MonkeyPatch) -> Non
 
     with pytest.raises(HybridDiarizationError):
         diarizer.diarize(Path("audio.wav"), waveform=np.zeros(0, dtype=np.float32))
+
+
+# --- детект «перегруженного» окна и переобработка (#68) ----------------------
+
+
+def test_window_is_overloaded_true_on_all_heads_with_churn() -> None:
+    assert window_is_overloaded(_overloaded_segments()) is True
+
+
+def test_window_is_overloaded_false_without_all_heads() -> None:
+    segments = [
+        SpeakerSegment(start=i * 0.5, end=(i + 1) * 0.5, speaker_id=f"spk{i % 3}")
+        for i in range(12)
+    ]
+
+    assert window_is_overloaded(segments) is False
+
+
+def test_window_is_overloaded_false_with_few_segments() -> None:
+    segments = [
+        SpeakerSegment(start=float(i), end=float(i) + 1, speaker_id=f"spk{i % 4}")
+        for i in range(4)
+    ]
+
+    assert window_is_overloaded(segments) is False
+
+
+def test_window_is_overloaded_false_on_calm_four_speakers() -> None:
+    # Четыре говорящих, но длинные блоки без частой смены — окно не «путаное».
+    segments = [
+        SpeakerSegment(start=float(i), end=float(i) + 1, speaker_id=f"spk{i // 4}")
+        for i in range(16)
+    ]
+
+    assert window_is_overloaded(segments) is False
+
+
+def test_plan_subwindows_cover_parent_own_zone() -> None:
+    total = 60 * SR
+    samples = np.zeros(total, dtype=np.float32)
+    parent = AnalysisWindow(0, total, 0, total)
+
+    subs = hybrid_engine._plan_subwindows(
+        parent, samples, subwindow_seconds=30.0, overlap_seconds=2.0
+    )
+
+    assert len(subs) > 1
+    assert subs[0].start == parent.start
+    assert subs[-1].end == parent.end
+    assert subs[0].own_start == parent.own_start
+    assert subs[-1].own_end == parent.own_end
+    for previous, current in pairwise(subs):
+        # Зоны владения мелких окон стыкуются встык: без пропусков и дублей.
+        assert current.own_start == previous.own_end
+
+
+def test_hybrid_reprocesses_overloaded_window_with_subwindows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    samples = np.full(60 * SR, 0.5, dtype=np.float32)
+    calls = {"count": 0}
+
+    def fake_diarize(_audio_path: Path, **_kwargs: object) -> list[SpeakerSegment]:
+        index = calls["count"]
+        calls["count"] += 1
+        if index == 0:
+            return _overloaded_segments()
+        return [SpeakerSegment(0.0, 10.0, "local_0")]
+
+    monkeypatch.setattr(hybrid_engine, "diarize_audio", fake_diarize)
+    monkeypatch.setattr(hybrid_engine, "binary_available", lambda _binary: True)
+    diarizer = HybridSpeakerDiarizer(embedder=_SequenceEmbedder([_A, _B, _C]))
+
+    segments = diarizer.diarize(Path("audio.wav"), waveform=samples)
+
+    # Одно «перегруженное» окно (60 с) + три мелких (по 30 с с перекрытием).
+    assert calls["count"] == 4
+    assert len({segment.speaker_id for segment in segments}) == 3
+
+
+def test_hybrid_overload_split_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    samples = np.full(60 * SR, 0.5, dtype=np.float32)
+    calls = {"count": 0}
+
+    def fake_diarize(_audio_path: Path, **_kwargs: object) -> list[SpeakerSegment]:
+        calls["count"] += 1
+        return _overloaded_segments()
+
+    monkeypatch.setattr(hybrid_engine, "diarize_audio", fake_diarize)
+    monkeypatch.setattr(hybrid_engine, "binary_available", lambda _binary: True)
+    diarizer = HybridSpeakerDiarizer(
+        embedder=_SequenceEmbedder([_A, _B, _C, _D]),
+        overload_split=False,
+    )
+
+    diarizer.diarize(Path("audio.wav"), waveform=samples)
+
+    # Дробления нет — «nemo-speech» вызван один раз для единственного окна.
+    assert calls["count"] == 1

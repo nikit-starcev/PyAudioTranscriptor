@@ -285,6 +285,9 @@ def test_create_diarizer_hybrid_carries_settings(
         num_speakers=6,
         diarization_hybrid_window_seconds=60.0,
         diarization_hybrid_overlap_seconds=1.0,
+        diarization_hybrid_overload_split=False,
+        diarization_hybrid_subwindow_seconds=20.0,
+        diarization_hybrid_max_split_depth=2,
         diarization_estimate_threshold=0.65,
     )
 
@@ -298,6 +301,9 @@ def test_create_diarizer_hybrid_carries_settings(
     assert diarizer._overlap_seconds == 1.0
     assert diarizer._threshold == 0.65
     assert diarizer._expected_speakers == 6
+    assert diarizer._overload_split is False
+    assert diarizer._subwindow_seconds == 20.0
+    assert diarizer._max_split_depth == 2
 
 
 def test_create_diarizer_auto_above_cap_builds_hybrid(

@@ -27,8 +27,11 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
     DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
     DEFAULT_DIARIZATION_HYBRID_ENABLED,
+    DEFAULT_DIARIZATION_HYBRID_MAX_SPLIT_DEPTH,
     DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS,
     DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS,
+    DEFAULT_DIARIZATION_HYBRID_OVERLOAD_SPLIT,
+    DEFAULT_DIARIZATION_HYBRID_SUBWINDOW_SECONDS,
     DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
@@ -147,6 +150,10 @@ class AppConfig:
     diarization_hybrid_window_seconds: float = DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS
     diarization_hybrid_overlap_seconds: float = DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS
     diarization_hybrid_min_speaker_seconds: float = DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS
+    # Переобработка «перегруженных» окон гибрида мелкими окнами (#68).
+    diarization_hybrid_overload_split: bool = DEFAULT_DIARIZATION_HYBRID_OVERLOAD_SPLIT
+    diarization_hybrid_subwindow_seconds: float = DEFAULT_DIARIZATION_HYBRID_SUBWINDOW_SECONDS
+    diarization_hybrid_max_split_depth: int = DEFAULT_DIARIZATION_HYBRID_MAX_SPLIT_DEPTH
     speaker_names: dict[str, str] = field(default_factory=dict)
     # Образцы голоса участников для enrollment-диаризации: имя -> клип(ы).
     # Если заданы и сопоставление уверенное, имя говорящего берётся по голосу
@@ -634,6 +641,33 @@ class AppConfig:
         ):
             raise ConfigurationError(
                 "DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS должно быть положительным числом"
+            )
+
+        split = self.diarization_hybrid_overload_split
+        if not isinstance(split, bool):
+            raise ConfigurationError(
+                "DIARIZATION_HYBRID_OVERLOAD_SPLIT должно быть true или false"
+            )
+
+        subwindow = self.diarization_hybrid_subwindow_seconds
+        if (
+            isinstance(subwindow, bool)
+            or not isinstance(subwindow, (int, float))
+            or subwindow <= 0.0
+        ):
+            raise ConfigurationError(
+                "DIARIZATION_HYBRID_SUBWINDOW_SECONDS должно быть положительным числом"
+            )
+        if subwindow >= window:
+            raise ConfigurationError(
+                "DIARIZATION_HYBRID_SUBWINDOW_SECONDS должно быть меньше "
+                "DIARIZATION_HYBRID_WINDOW_SECONDS"
+            )
+
+        depth = self.diarization_hybrid_max_split_depth
+        if isinstance(depth, bool) or not isinstance(depth, int) or depth < 0:
+            raise ConfigurationError(
+                "DIARIZATION_HYBRID_MAX_SPLIT_DEPTH должно быть целым числом >= 0"
             )
 
     def _validate_llm_provider(self) -> None:

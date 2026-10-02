@@ -882,6 +882,9 @@ def test_diarization_hybrid_defaults(audio_file: Path) -> None:
     assert config.diarization_hybrid_window_seconds == 90.0
     assert config.diarization_hybrid_overlap_seconds == 2.0
     assert config.diarization_hybrid_min_speaker_seconds == 1.5
+    assert config.diarization_hybrid_overload_split is True
+    assert config.diarization_hybrid_subwindow_seconds == 30.0
+    assert config.diarization_hybrid_max_split_depth == 1
 
 
 def test_diarization_hybrid_engine_is_valid(audio_file: Path) -> None:
@@ -919,4 +922,33 @@ def test_diarization_hybrid_enabled_must_be_bool(audio_file: Path) -> None:
         AppConfig(
             input_file=audio_file,
             diarization_hybrid_enabled="yes",  # type: ignore[arg-type]
+        )
+
+
+def test_diarization_hybrid_subwindow_must_be_positive(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, diarization_hybrid_subwindow_seconds=0.0)
+
+
+def test_diarization_hybrid_subwindow_must_be_smaller_than_window(
+    audio_file: Path,
+) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(
+            input_file=audio_file,
+            diarization_hybrid_window_seconds=30.0,
+            diarization_hybrid_subwindow_seconds=30.0,
+        )
+
+
+def test_diarization_hybrid_max_split_depth_must_be_non_negative(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, diarization_hybrid_max_split_depth=-1)
+
+
+def test_diarization_hybrid_overload_split_must_be_bool(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(
+            input_file=audio_file,
+            diarization_hybrid_overload_split="yes",  # type: ignore[arg-type]
         )

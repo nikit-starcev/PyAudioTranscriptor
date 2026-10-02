@@ -17,6 +17,15 @@
 5. Локальные сегменты перекладываются в глобальные ID и склеиваются;
    перекрытие окон учтено зонами владения (без дублей и пропусков).
 
+Обход лимита 4 внутри окна (#68): если в окне заняты все 4 головы Sortformer и
+говорящий меняется почти на каждом соседнем сегменте, не исключено, что реальных
+участников было больше 4 и лишние «прилипли» к занятым головам. Такое
+«перегруженное» окно повторно обрабатывается более мелкими окнами (рекурсивно,
+до ``DEFAULT_DIARIZATION_HYBRID_MAX_SPLIT_DEPTH``), а локальные говорящие
+затем склеиваются глобально. Детектор консервативен: обычные записи с ≤4
+говорящими не дробятся, митигация отключается флагом
+``DIARIZATION_HYBRID_OVERLOAD_SPLIT``.
+
 Мягкая деградация: сбой отдельного окна — пропуск; недоступность эмбеддера/
 модели или слишком мало эмбеддингов — понятная
 :class:`HybridDiarizationError`, по которой маршрутизация не выбирает гибрид
@@ -28,6 +37,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
@@ -35,13 +45,19 @@ import numpy as np
 from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ESTIMATE_MODEL,
     DEFAULT_DIARIZATION_HYBRID_MAX_EMBEDDING_SECONDS,
+    DEFAULT_DIARIZATION_HYBRID_MAX_SPLIT_DEPTH,
     DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS,
     DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS,
+    DEFAULT_DIARIZATION_HYBRID_OVERLOAD_CHANGE_RATE,
+    DEFAULT_DIARIZATION_HYBRID_OVERLOAD_MIN_SEGMENTS,
+    DEFAULT_DIARIZATION_HYBRID_OVERLOAD_SPLIT,
+    DEFAULT_DIARIZATION_HYBRID_SUBWINDOW_SECONDS,
     DEFAULT_DIARIZATION_HYBRID_THRESHOLD,
     DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
     DEFAULT_NEMO_SPEECH_BINARY,
     DEFAULT_NEMO_SPEECH_DEVICE,
     DEFAULT_NEMO_SPEECH_MODEL,
+    NEMO_SPEECH_MAX_SPEAKERS,
 )
 from audio_transcriber.diarization import embeddings as embedding_utils
 from audio_transcriber.diarization.nemo_speech_engine import (
@@ -59,7 +75,7 @@ logger = logging.getLogger(__name__)
 
 #: Версия алгоритма гибрида. Изменение окон/склейки/кластеризации меняет
 #: результат при тех же входах — участвует в ключе кэша диаризации.
-DIARIZATION_HYBRID_IMPL_VERSION = 1
+DIARIZATION_HYBRID_IMPL_VERSION = 2
 
 #: Радиус поиска паузы при сдвиге границы окна (секунды).
 DEFAULT_SNAP_RADIUS_SECONDS = 3.0
@@ -198,6 +214,94 @@ def _group_by_speaker(segments: Sequence[SpeakerSegment]) -> dict[str, list[Spea
     return grouped
 
 
+def window_is_overloaded(
+    segments: Sequence[SpeakerSegment],
+    *,
+    speaker_cap: int = NEMO_SPEECH_MAX_SPEAKERS,
+    change_rate: float = DEFAULT_DIARIZATION_HYBRID_OVERLOAD_CHANGE_RATE,
+    min_segments: int = DEFAULT_DIARIZATION_HYBRID_OVERLOAD_MIN_SEGMENTS,
+) -> bool:
+    """Похоже ли, что в окне реально говорили больше ``speaker_cap`` человек.
+
+    EEND-модель Sortformer держит фиксированную голову на ``speaker_cap``
+    говорящих: если в окне их больше, лишние «прилипают» к занятым головам.
+    Прямо определить это по выходу нельзя, поэтому сигнал косвенный: заняты
+    **все** головы и сегменты сильно «путаются» — говорящий меняется почти на
+    каждом соседнем сегменте. Проверка заведомо консервативна (обычная
+    запись с ≤4 говорящими не дробится зря).
+    """
+    if speaker_cap < 1:
+        return False
+    distinct = {segment.speaker_id for segment in segments}
+    if len(distinct) < speaker_cap:
+        return False
+    ordered = sorted(segments, key=lambda item: (item.start, item.end, item.speaker_id))
+    if len(ordered) < max(2, min_segments):
+        return False
+    transitions = sum(
+        1 for previous, current in pairwise(ordered) if previous.speaker_id != current.speaker_id
+    )
+    return transitions / (len(ordered) - 1) >= change_rate
+
+
+def _plan_subwindows(
+    parent: AnalysisWindow,
+    samples: np.ndarray,
+    *,
+    subwindow_seconds: float,
+    overlap_seconds: float,
+    snap_radius_seconds: float = DEFAULT_SNAP_RADIUS_SECONDS,
+    sample_rate: int = SAMPLE_RATE,
+) -> list[AnalysisWindow]:
+    """Планирует мелкие окна внутри «перегруженного» ``parent``.
+
+    Границы привязаны к паузам, а зоны владения покрывают **зону владения
+    родителя** без пропусков и дублей с соседними окнами: крайние окна
+    «ужимаются» до ``parent.own_start``/``parent.own_end``. Если родитель и так
+    короче мелкого окна, возвращается он сам (без дробления).
+    """
+    parent_length = parent.end - parent.start
+    if parent_length <= 0:
+        return [parent]
+    subwindow_samples = max(1, int(subwindow_seconds * sample_rate))
+    if subwindow_samples >= parent_length:
+        return [parent]
+
+    overlap = max(0.0, min(overlap_seconds, subwindow_seconds / 2.0))
+    local = samples[parent.start : parent.end]
+    planned = plan_windows(
+        parent_length,
+        window_seconds=subwindow_seconds,
+        overlap_seconds=overlap,
+        samples=local,
+        snap_radius_seconds=snap_radius_seconds,
+        sample_rate=sample_rate,
+    )
+    if len(planned) <= 1:
+        return [parent]
+
+    result: list[AnalysisWindow] = []
+    last = len(planned) - 1
+    for index, window in enumerate(planned):
+        own_start = parent.start + window.own_start
+        own_end = parent.start + window.own_end
+        if index == 0:
+            own_start = parent.own_start
+        if index == last:
+            own_end = parent.own_end
+        own_start = max(parent.start, min(own_start, parent.end - 1))
+        own_end = min(parent.end, max(own_end, own_start + 1))
+        result.append(
+            AnalysisWindow(
+                start=parent.start + window.start,
+                end=parent.start + window.end,
+                own_start=own_start,
+                own_end=own_end,
+            )
+        )
+    return result
+
+
 def _collect_speaker_samples(
     samples: np.ndarray,
     window: AnalysisWindow,
@@ -304,6 +408,9 @@ class HybridSpeakerDiarizer:
     :param embedding_model: имя/путь ONNX-модели эмбеддингов (CAM++).
     :param threshold: порог косинусного расстояния глобальной кластеризации.
     :param expected_speakers: ориентир числа говорящих (оценка или ``num_speakers``).
+    :param overload_split: переобрабатывать ли «перегруженные» окна мелкими.
+    :param subwindow_seconds: длительность мелкого окна при переобработке.
+    :param max_split_depth: максимальная глубина рекурсивной нарезки.
     :param embedder: готовый эмбеддер (для тестов; по умолчанию создаётся сам).
     """
 
@@ -324,6 +431,9 @@ class HybridSpeakerDiarizer:
         embedding_model_dir: Path | None = None,
         threshold: float = DEFAULT_DIARIZATION_HYBRID_THRESHOLD,
         expected_speakers: int | None = None,
+        overload_split: bool = DEFAULT_DIARIZATION_HYBRID_OVERLOAD_SPLIT,
+        subwindow_seconds: float = DEFAULT_DIARIZATION_HYBRID_SUBWINDOW_SECONDS,
+        max_split_depth: int = DEFAULT_DIARIZATION_HYBRID_MAX_SPLIT_DEPTH,
         embedder: object | None = None,
     ) -> None:
         self._device = device
@@ -340,6 +450,9 @@ class HybridSpeakerDiarizer:
         self._embedding_model_dir = embedding_model_dir
         self._threshold = threshold
         self._expected_speakers = expected_speakers
+        self._overload_split = overload_split
+        self._subwindow_seconds = subwindow_seconds
+        self._max_split_depth = max_split_depth
         self._embedder = embedder
         self._overlaps: list[SpeakerOverlap] = []
 
@@ -377,43 +490,101 @@ class HybridSpeakerDiarizer:
         self._embedder = embedding_utils.SpeakerEmbedder(model_path)
         return self._embedder
 
-    def _collect_observations(
+    def _diarize_window(
+        self, audio_path: Path, samples: np.ndarray, window: AnalysisWindow
+    ) -> list[SpeakerSegment] | None:
+        """Диаризует один диапазон аудио через ``nemo-speech``."""
+        window_wave = samples[window.start : window.end]
+        return diarize_audio(
+            audio_path,
+            binary=self._binary,
+            device=self._device,
+            model=self._model,
+            lib_path=self._lib_path,
+            timeout=self._timeout,
+            waveform=window_wave,
+        )
+
+    def _should_split(self, segments: Sequence[SpeakerSegment], *, depth: int) -> bool:
+        """Нужно ли переобработать окно более мелкими (см. #68)."""
+        if not self._overload_split or depth >= self._max_split_depth:
+            return False
+        return window_is_overloaded(segments)
+
+    def _resolve_units(
         self,
         audio_path: Path,
         samples: np.ndarray,
         windows: Sequence[AnalysisWindow],
+        *,
+        depth: int = 0,
+    ) -> tuple[list[AnalysisWindow], list[list[SpeakerSegment]]]:
+        """Диаризует окна и разбивает «перегруженные» на более мелкие.
+
+        Возвращает выровненные списки ``(окна, сегменты)``: у «перегруженного»
+        окна вместо одного элемента появляются его мелкие подокна (рекурсивно,
+        до ``max_split_depth``), локальные говорящие которых затем
+        склеиваются глобально по эмбеддингам. Сбой окна — пустой список сегментов.
+        """
+        units: list[AnalysisWindow] = []
+        unit_segments: list[list[SpeakerSegment]] = []
+        for window in windows:
+            segments = self._diarize_window(audio_path, samples, window)
+            if segments is None:
+                logger.warning(
+                    "Гибридная диаризация: окно %.1f–%.1f с не обработано — пропущено",
+                    window.start / SAMPLE_RATE,
+                    window.end / SAMPLE_RATE,
+                )
+                units.append(window)
+                unit_segments.append([])
+                continue
+            if self._should_split(segments, depth=depth):
+                subwindows = _plan_subwindows(
+                    window,
+                    samples,
+                    subwindow_seconds=self._subwindow_seconds,
+                    overlap_seconds=self._overlap_seconds,
+                )
+                if len(subwindows) > 1:
+                    logger.info(
+                        "Гибрид: перегруженное окно %.1f–%.1f с (%d лок. говорящих, "
+                        "%d сегментов) → переобработка %d мелкими окнами (глубина %d)",
+                        window.start / SAMPLE_RATE,
+                        window.end / SAMPLE_RATE,
+                        len({segment.speaker_id for segment in segments}),
+                        len(segments),
+                        len(subwindows),
+                        depth + 1,
+                    )
+                    sub_units, sub_segments = self._resolve_units(
+                        audio_path, samples, subwindows, depth=depth + 1
+                    )
+                    units.extend(sub_units)
+                    unit_segments.extend(sub_segments)
+                    continue
+            units.append(window)
+            unit_segments.append(segments)
+        return units, unit_segments
+
+    def _collect_embeddings(
+        self,
+        samples: np.ndarray,
+        units: Sequence[AnalysisWindow],
+        unit_segments: Sequence[Sequence[SpeakerSegment]],
         embedder: object,
-    ) -> tuple[list[list[SpeakerSegment]], list[tuple[int, str, np.ndarray]]]:
-        """Диаризует окна и считает эмбеддинги локальных говорящих."""
-        window_segments: list[list[SpeakerSegment]] = []
+    ) -> list[tuple[int, str, np.ndarray]]:
+        """Считает эмбеддинги локальных говорящих каждой единицы анализа."""
         observations: list[tuple[int, str, np.ndarray]] = []
-        total = len(windows)
-        for index, window in enumerate(windows):
+        total = len(units)
+        for index, (window, segments) in enumerate(
+            zip(units, unit_segments, strict=True)
+        ):
             self._emit(
                 "Гибридная диаризация",
                 fraction=index / total,
                 detail=f"окно {index + 1}/{total}",
             )
-            window_wave = samples[window.start : window.end]
-            segments = diarize_audio(
-                audio_path,
-                binary=self._binary,
-                device=self._device,
-                model=self._model,
-                lib_path=self._lib_path,
-                timeout=self._timeout,
-                waveform=window_wave,
-            )
-            if segments is None:
-                logger.warning(
-                    "Гибридная диаризация: окно %d/%d не обработано — пропущено",
-                    index + 1,
-                    total,
-                )
-                window_segments.append([])
-                continue
-            window_segments.append(segments)
-
             for speaker, speaker_segments in _group_by_speaker(segments).items():
                 speech_seconds = sum(
                     max(0.0, segment.end - segment.start) for segment in speaker_segments
@@ -440,7 +611,7 @@ class HybridSpeakerDiarizer:
                     )
                     continue
                 observations.append((index, speaker, np.asarray(vector, dtype=np.float32)))
-        return window_segments, observations
+        return observations
 
     def _stitch(
         self,
@@ -519,9 +690,8 @@ class HybridSpeakerDiarizer:
         if not windows:
             raise HybridDiarizationError("Не удалось спланировать окна анализа")
 
-        window_segments, observations = self._collect_observations(
-            audio_path, samples, windows, embedder
-        )
+        units, unit_segments = self._resolve_units(audio_path, samples, windows)
+        observations = self._collect_embeddings(samples, units, unit_segments, embedder)
         if not observations:
             raise HybridDiarizationError(
                 "Не удалось получить ни одного эмбеддинга говорящего "
@@ -537,7 +707,7 @@ class HybridSpeakerDiarizer:
             min_speakers=min_speakers,
             max_speakers=max_speakers,
         )
-        segments = self._stitch(windows, window_segments, observations, labels)
+        segments = self._stitch(units, unit_segments, observations, labels)
         self._overlaps = compute_overlap_regions(segments)
         self._emit("Гибридная диаризация", fraction=1.0, detail="готово")
         return segments

@@ -20,8 +20,11 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
     DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
     DEFAULT_DIARIZATION_HYBRID_ENABLED,
+    DEFAULT_DIARIZATION_HYBRID_MAX_SPLIT_DEPTH,
     DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS,
     DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS,
+    DEFAULT_DIARIZATION_HYBRID_OVERLOAD_SPLIT,
+    DEFAULT_DIARIZATION_HYBRID_SUBWINDOW_SECONDS,
     DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
@@ -407,6 +410,36 @@ def transcribe(
             "Минимальная суммарная речь локального говорящего в окне (секунды) "
             "для эмбеддинга. Короче — вектор ненадёжен. По умолчанию "
             f"{DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS}."
+        ),
+    ),
+    diarization_hybrid_overload_split: bool = typer.Option(
+        DEFAULT_DIARIZATION_HYBRID_OVERLOAD_SPLIT,
+        "--diarization-hybrid-overload-split/--no-diarization-hybrid-overload-split",
+        envvar="DIARIZATION_HYBRID_OVERLOAD_SPLIT",
+        help=(
+            "Переобрабатывать «перегруженные» окна гибрида (все 4 головы "
+            "Sortformer и частая смена говорящего) более мелкими окнами, чтобы "
+            "не терять говорящих при >4 в окне."
+        ),
+    ),
+    diarization_hybrid_subwindow_seconds: float = typer.Option(
+        DEFAULT_DIARIZATION_HYBRID_SUBWINDOW_SECONDS,
+        "--diarization-hybrid-subwindow-seconds",
+        envvar="DIARIZATION_HYBRID_SUBWINDOW_SECONDS",
+        min=1.0,
+        help=(
+            "Длительность мелкого окна при переобработке перегруженного окна "
+            f"(секунды). По умолчанию {DEFAULT_DIARIZATION_HYBRID_SUBWINDOW_SECONDS}."
+        ),
+    ),
+    diarization_hybrid_max_split_depth: int = typer.Option(
+        DEFAULT_DIARIZATION_HYBRID_MAX_SPLIT_DEPTH,
+        "--diarization-hybrid-max-split-depth",
+        envvar="DIARIZATION_HYBRID_MAX_SPLIT_DEPTH",
+        min=0,
+        help=(
+            "Максимальная глубина рекурсивной нарезки перегруженного окна "
+            f"гибрида. По умолчанию {DEFAULT_DIARIZATION_HYBRID_MAX_SPLIT_DEPTH}."
         ),
     ),
     initial_prompt: str | None = typer.Option(
@@ -912,6 +945,9 @@ def transcribe(
             diarization_hybrid_window_seconds=diarization_hybrid_window_seconds,
             diarization_hybrid_overlap_seconds=diarization_hybrid_overlap_seconds,
             diarization_hybrid_min_speaker_seconds=diarization_hybrid_min_speaker_seconds,
+            diarization_hybrid_overload_split=diarization_hybrid_overload_split,
+            diarization_hybrid_subwindow_seconds=diarization_hybrid_subwindow_seconds,
+            diarization_hybrid_max_split_depth=diarization_hybrid_max_split_depth,
             initial_prompt=initial_prompt,
             hotwords=hotwords,
             clean_artifacts=clean_artifacts,
