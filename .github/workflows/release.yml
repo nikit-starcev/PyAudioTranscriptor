@@ -31,7 +31,7 @@ jobs:
         run: uv python install 3.14
 
       - name: Install project and dev tools
-        run: uv sync --group dev --all-extras
+        run: uv sync --group dev --all-extras --frozen
 
       - name: Ruff
         run: uv run ruff check src tests
