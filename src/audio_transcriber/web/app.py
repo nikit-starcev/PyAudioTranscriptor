@@ -2072,8 +2072,17 @@ def register_api(
         return _range_response(source, request.headers.get("range"), media_type=media_type)
 
     @router.get("/jobs/{job_id}/events")
-    async def job_events(job_id: str) -> StreamingResponse:
+    async def job_events(
+        job_id: str,
+        last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
+    ) -> StreamingResponse:
         job = _require_job(store, job_id)
+        after: int | None = None
+        if last_event_id:
+            try:
+                after = int(last_event_id)
+            except ValueError:
+                after = None
         if job.is_terminal:
             event: dict[str, object] = {
                 "stage": job.stage or job.status,
@@ -2095,6 +2104,14 @@ def register_api(
             )
 
         async def stream() -> AsyncIterator[str]:
+            # 1) Сначала догоняем историю, которую клиент ещё не видел
+            #    (``Last-Event-ID``). Первое подключение без заголовка получает
+            #    всю историю задачи.
+            for history_event in bus.history(job_id, after=after):
+                yield _sse(history_event)
+            # 2) Затем свежий снимок текущего состояния. Он идёт ПОСЛЕ истории,
+            #    поэтому финальным для клиента остаётся актуальное: старые
+            #    ``stage_elapsed≈0`` из истории больше не откатывают таймеры.
             active = runner.is_active(job_id)
             initial: dict[str, object] = {
                 "stage": job.stage or STATUS_QUEUED,
@@ -2111,8 +2128,10 @@ def register_api(
             }
             initial.update(estimator.snapshot(job, active=active))
             yield _sse(initial)
-            async for event in bus.subscribe(job_id):
-                yield ": ping\n\n" if event is None else _sse(event)
+            # 3) Живой поток. Историю уже отдали — повторно не реплеим, иначе
+            #    после снимка снова пришли бы устаревшие события.
+            async for live_event in bus.subscribe(job_id, replay=False):
+                yield ": ping\n\n" if live_event is None else _sse(live_event)
 
         return StreamingResponse(
             stream(), media_type="text/event-stream", headers=dict(SSE_HEADERS)

@@ -970,6 +970,206 @@ def test_event_bus_replays_history_to_late_subscriber() -> None:
     assert [event["stage"] for event in events if event is not None] == ["asr", "done"]
 
 
+def test_event_bus_assigns_monotonic_seq_per_job() -> None:
+    """Каждому событию задачи — монотонный ``seq`` (для дедупа и Last-Event-ID)."""
+    bus = JobEventBus(heartbeat=0.05)
+    bus.publish("j1", {"stage": "asr", "status": "running"})
+    bus.publish("j1", {"stage": "done", "status": "done"})
+
+    assert [event["seq"] for event in bus.history("j1")] == [1, 2]
+
+    # ``clear`` (удаление задачи / начало повторного прогона) забывает нумерацию:
+    # новый прогон стартует с ``seq=1``, и ``_seq`` не растёт по всем задачам.
+    bus.clear("j1")
+    bus.publish("j1", {"stage": "asr", "status": "running"})
+    assert bus.history("j1")[0]["seq"] == 1
+
+    # Нумерация независима по задачам.
+    bus.publish("j2", {"stage": "asr", "status": "running"})
+    assert bus.history("j2")[0]["seq"] == 1
+
+
+def test_event_bus_history_after_seq() -> None:
+    """``history(after=...)`` отдаёт только события новее ``Last-Event-ID``."""
+    bus = JobEventBus(heartbeat=0.05)
+    bus.publish("j1", {"stage": "a", "status": "running"})
+    bus.publish("j1", {"stage": "b", "status": "running"})
+    bus.publish("j1", {"stage": "done", "status": "done"})
+
+    assert [event["stage"] for event in bus.history("j1", after=1)] == ["b", "done"]
+    assert bus.history("j1", after=3) == []
+    # ``after=0`` равносилен «вся история» (первое подключение без заголовка).
+    assert len(bus.history("j1", after=0)) == 3
+
+
+def test_event_bus_subscribe_can_skip_replay() -> None:
+    """``subscribe(replay=False)`` не повторяет историю, но шлёт живой поток."""
+    bus = JobEventBus(heartbeat=0.05)
+    bus.publish("j1", {"stage": "old", "status": "running"})
+    received: list[dict | None] = []
+
+    async def consume() -> None:
+        async for event in bus.subscribe("j1", replay=False):
+            received.append(event)
+            if event is not None and event.get("status") == "done":
+                break
+
+    async def main() -> None:
+        task = asyncio.create_task(consume())
+        await asyncio.sleep(0.01)
+        bus.publish("j1", {"stage": "new", "status": "running"})
+        bus.publish("j1", {"stage": "done", "status": "done"})
+        await asyncio.wait_for(task, timeout=2.0)
+
+    asyncio.run(main())
+
+    assert [e["stage"] for e in received if e is not None] == ["new", "done"]
+
+
+def test_event_bus_subscribe_without_replay_still_yields_terminal() -> None:
+    """Гонка: задача успела завершиться до подписки — конечное событие не теряем."""
+    bus = JobEventBus(heartbeat=0.05)
+    bus.publish("j1", {"stage": "asr", "status": "running"})
+    bus.publish("j1", {"stage": "done", "status": "done"})
+
+    async def collect() -> list[dict | None]:
+        return [event async for event in bus.subscribe("j1", replay=False)]
+
+    events = asyncio.run(collect())
+
+    assert [e["stage"] for e in events if e is not None] == ["done"]
+
+
+def _job_events_route(app) -> object:
+    """Находит APIRoute ``/api/jobs/{job_id}/events`` (роутер FastAPI вложен)."""
+    stack = list(app.routes)
+    while stack:
+        route = stack.pop()
+        if getattr(route, "path", None) == "/api/jobs/{job_id}/events":
+            return route
+        nested = getattr(route, "routes", None)
+        if nested:
+            stack.extend(nested)
+        original = getattr(route, "original_router", None)
+        if original is not None:
+            stack.extend(getattr(original, "routes", None) or [])
+    raise AssertionError("маршрут /api/jobs/{job_id}/events не найден")
+
+
+def _read_job_events_until_snapshot(
+    client: TestClient, job_id: str, *, last_event_id: str | None = None
+) -> tuple[list[str], list[dict[str, object]]]:
+    """Читает SSE задачи до свежего снимка «Подключено» и закрывает поток.
+
+    Возвращает (строки, распарсенные события) в порядке отдачи сервером.
+    """
+    route = _job_events_route(client.app)  # type: ignore[arg-type]
+    endpoint = route.endpoint  # type: ignore[attr-defined]
+
+    async def scenario() -> tuple[list[str], list[dict[str, object]]]:
+        response = await endpoint(job_id, last_event_id=last_event_id)
+        lines: list[str] = []
+        events: list[dict[str, object]] = []
+        agen = response.body_iterator
+        try:
+            async for chunk in agen:
+                text = chunk.decode() if isinstance(chunk, bytes) else str(chunk)
+                for line in text.splitlines():
+                    lines.append(line)
+                    if line.startswith("data:"):
+                        event = json.loads(line[len("data:") :].strip())
+                        events.append(event)
+                        if event.get("message") == "Подключено":
+                            return lines, events
+        finally:
+            aclose = getattr(agen, "aclose", None)
+            if aclose is not None:
+                await aclose()
+        return lines, events
+
+    return asyncio.run(scenario())
+
+
+def test_job_events_send_history_before_current_snapshot(
+    web_paths: WebPaths, config_builder
+) -> None:
+    """История (в т.ч. ``stage_elapsed≈0``) идёт ДО свежего снимка задачи.
+
+    Именно порядок «история → снимок» гарантирует, что таймеры клиента не
+    откатятся к нулю при переключении задач/реконнекте: финальным событием
+    остаётся актуальное состояние. Плюс проверяем ``Last-Event-ID`` и ``id:``.
+    """
+    started = threading.Event()
+    release = threading.Event()
+
+    def pipeline(
+        config: AppConfig, *, on_progress=None, cancel_event=None
+    ) -> TranscriptionResult:
+        if on_progress is not None:
+            on_progress(ProgressEvent("diarization", "Определение говорящих", 0.5))
+        started.set()
+        release.wait(timeout=5.0)
+        return TranscriptionResult(
+            source_path=config.input_file,
+            language="ru",
+            duration=1.0,
+            entries=[],
+            speakers=[],
+            low_confidence_threshold=-1.0,
+        )
+
+    app = create_app(
+        paths=web_paths,
+        pipeline_fn=pipeline,
+        config_builder=config_builder,
+        heartbeat=0.05,
+    )
+    with TestClient(app) as client:
+        uploaded = _upload(client)
+        job_id = client.post("/api/jobs", json={"path": uploaded["name"]}).json()["id"]
+        assert client.post(f"/api/jobs/{job_id}/run").status_code == 200
+        assert started.wait(timeout=5.0)
+        try:
+            bus = client.app.state.bus  # type: ignore[attr-defined]
+            deadline = time.time() + 5.0
+            while time.time() < deadline and not bus.history(job_id):
+                time.sleep(0.02)
+            history = list(bus.history(job_id))
+            assert history, "история должна содержать события прогресса"
+            first_seq = int(history[0]["seq"])  # type: ignore[arg-type]
+            time.sleep(0.1)  # чтобы живые elapsed/stage_elapsed были > 0
+
+            lines, events = _read_job_events_until_snapshot(client, job_id)
+
+            # Снимок «текущего» — последним, история с ``seq`` — раньше него.
+            assert events[-1]["message"] == "Подключено"
+            assert all("seq" in event for event in events[:-1])
+            assert "seq" not in events[-1]
+            # Финальный снимок несёт реальное (не меньшее истории) время.
+            history_elapsed = [
+                float(event["elapsed"])  # type: ignore[arg-type]
+                for event in events[:-1]
+                if event.get("elapsed") is not None
+            ]
+            assert events[-1]["elapsed"] is not None
+            assert float(events[-1]["elapsed"]) >= max(  # type: ignore[arg-type]
+                history_elapsed, default=0.0
+            )
+            # ``id: <seq>`` выставлен — браузер вернёт его при реконнекте.
+            assert f"id: {first_seq}" in lines
+
+            # ``Last-Event-ID`` отсекает уже полученную историю.
+            _, events_after = _read_job_events_until_snapshot(
+                client, job_id, last_event_id=str(first_seq)
+            )
+            assert events_after[-1]["message"] == "Подключено"
+            seqs_after = [e["seq"] for e in events_after if "seq" in e]
+            assert first_seq not in seqs_after
+            assert all(int(seq) > first_seq for seq in seqs_after)  # type: ignore[arg-type]
+        finally:
+            release.set()
+
+
 def test_cli_web_help_lists_command() -> None:
     import re
 

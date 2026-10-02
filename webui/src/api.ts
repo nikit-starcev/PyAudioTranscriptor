@@ -235,6 +235,8 @@ export type JobEvent = {
   active?: boolean
   elapsed?: number | null
   stage_elapsed?: number | null
+  /** Монотонный номер события (на задачу): дедуп повторно отданной истории. */
+  seq?: number
   stage_times?: StageTime[]
   /** Планируемые стадии конвейера в порядке выполнения. */
   planned_stages?: string[]

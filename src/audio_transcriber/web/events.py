@@ -41,6 +41,10 @@ class JobEventBus:
         self._lock = threading.Lock()
         self._subscribers: dict[str, list[_Subscriber]] = {}
         self._history: dict[str, list[JobEvent]] = {}
+        #: Монотонный (на задачу) номер события: клиент по нему дедуплицирует
+        #: историю, повторно отданную при (пере)подключении SSE, а также
+        #: сопоставляет ``Last-Event-ID``. Аналог ``DownloadBus._seq`` (#65).
+        self._seq: dict[str, int] = {}
 
     def publish(self, job_id: str, event: JobEvent) -> None:
         """Публикует событие всем текущим подписчикам задачи.
@@ -48,32 +52,65 @@ class JobEventBus:
         Конечное событие (``status`` из ``TERMINAL_STATUSES``) дополнительно
         закрывает поток подписчиков сигналом ``None``.
         """
+        payload = dict(event)
         with self._lock:
-            self._history.setdefault(job_id, []).append(event)
+            seq = self._seq.get(job_id, 0) + 1
+            self._seq[job_id] = seq
+            payload["seq"] = seq
+            self._history.setdefault(job_id, []).append(payload)
             subscribers = list(self._subscribers.get(job_id, ()))
-        terminal = event.get("status") in TERMINAL_STATUSES
+        terminal = payload.get("status") in TERMINAL_STATUSES
         for subscriber in subscribers:
             try:
-                subscriber.loop.call_soon_threadsafe(subscriber.queue.put_nowait, event)
+                subscriber.loop.call_soon_threadsafe(subscriber.queue.put_nowait, payload)
                 if terminal:
                     subscriber.loop.call_soon_threadsafe(subscriber.queue.put_nowait, None)
             except RuntimeError:
                 # Event loop уже закрыт (остановка сервера) — событие некому отдать.
                 continue
 
-    def history(self, job_id: str) -> list[JobEvent]:
-        """Снимок накопленных событий задачи (может быть пустым)."""
+    def history(self, job_id: str, after: int | None = None) -> list[JobEvent]:
+        """Снимок накопленных событий задачи (может быть пустым).
+
+        ``after`` задаёт ``Last-Event-ID``: отдаются только события с ``seq``
+        строго больше него, чтобы при переподключении не повторять уже
+        полученное клиентом (как в :meth:`DownloadBus.history`).
+        """
         with self._lock:
-            return list(self._history.get(job_id, ()))
+            events = list(self._history.get(job_id, ()))
+        if after is None:
+            return events
+        result: list[JobEvent] = []
+        for event in events:
+            seq = event.get("seq")
+            if isinstance(seq, int) and seq > after:
+                result.append(event)
+        return result
 
     def clear(self, job_id: str) -> None:
-        """Забывает историю и подписчиков задачи (при удалении)."""
+        """Забывает историю, подписчиков и нумерацию задачи.
+
+        Вызывается при удалении задачи и в начале повторного прогона. Новый
+        прогон начинается с ``seq=1``: клиент при перезапуске создаёт свежий
+        ``EventSource`` (без ``Last-Event-ID`` прошлого прогона), а прежний
+        номер нужен был только живому потоку. Нумерацию забываем, чтобы
+        ``_seq`` не разрастался по всем когда-либо созданным задачам.
+        """
         with self._lock:
             self._history.pop(job_id, None)
             self._subscribers.pop(job_id, None)
+            self._seq.pop(job_id, None)
 
-    async def subscribe(self, job_id: str) -> AsyncIterator[JobEvent | None]:
-        """Отдаёт историю задачи, затем живой поток событий.
+    async def subscribe(
+        self, job_id: str, *, replay: bool = True
+    ) -> AsyncIterator[JobEvent | None]:
+        """История задачи (если ``replay``), затем живой поток событий.
+
+        ``replay=False`` используется HTTP-слоем, который сам отдаёт историю
+        ДО свежего снимка состояния: иначе повторно отданные старые события
+        откатили бы таймеры клиента. Даже без реплея подписчик получает
+        конечное событие, если задача уже завершилась в промежутке между
+        снимком истории и подпиской (иначе поток «завис» бы).
 
         Возвращает ``None`` на таймауте ожидания (сигнал для keep-alive) и
         завершается, когда приходит конечное событие.
@@ -82,13 +119,19 @@ class JobEventBus:
         queue: asyncio.Queue[JobEvent | None] = asyncio.Queue()
         subscriber = _Subscriber(queue=queue, loop=loop)
         with self._lock:
-            replay = list(self._history.get(job_id, ()))
-            already_terminal = bool(replay and replay[-1].get("status") in TERMINAL_STATUSES)
+            history = list(self._history.get(job_id, ()))
+            already_terminal = bool(
+                history and history[-1].get("status") in TERMINAL_STATUSES
+            )
             if not already_terminal:
                 self._subscribers.setdefault(job_id, []).append(subscriber)
         try:
-            for event in replay:
-                yield event
+            if replay:
+                for event in history:
+                    yield event
+            elif already_terminal and history:
+                # Гонка: задача завершилась после снимка истории, но до подписки.
+                yield history[-1]
             if already_terminal:
                 return
             while True:

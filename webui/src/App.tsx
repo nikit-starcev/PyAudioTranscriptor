@@ -178,6 +178,13 @@ function App() {
   const [liveStage, setLiveStage] = useState<string | null>(null)
   const [liveStageStartedAt, setLiveStageStartedAt] = useState<number | null>(null)
   const liveStageRef = useRef<string | null>(null)
+  //: Монотонные guard'ы таймеров: сервер при (пере)подключении SSE повторно
+  //: отдаёт историю задачи (старые события с ``stage_elapsed≈0``). Без guard'а
+  //: они откатывают счётчики к нулю при переключении задач. Запоминаем
+  //: последние применённые значения и игнорируем устаревшие события.
+  const lastEventSeqRef = useRef<number>(0)
+  const lastElapsedRef = useRef<number>(0)
+  const lastStageElapsedRef = useRef<number>(0)
   const fileInput = useRef<HTMLInputElement>(null)
   const wizardAutoShown = useRef(false)
   const exportDefaultApplied = useRef(false)
@@ -297,6 +304,10 @@ function App() {
       const details = await api<JobDetails>(`/api/jobs/${jobId}`)
       setStageTimes(details.stage_times ?? [])
       setFinalTotalSeconds(details.total_seconds)
+      // Свежий снимок сервера — авторитетный: синхронизируем guard'ы, чтобы
+      // запоздавшие исторические SSE-события его не откатили.
+      lastElapsedRef.current = details.total_seconds ?? 0
+      lastStageElapsedRef.current = details.stage_elapsed ?? 0
       if (isLiveJob(details)) {
         setTotalStartedAt(
           details.total_seconds != null ? Date.now() - details.total_seconds * 1000 : Date.now(),
@@ -384,6 +395,11 @@ function App() {
 
   useEffect(() => {
     if (!activeJobId) return
+    // Новый поток (смена задачи/повторный запуск) — отсчёт таймеров заново.
+    // При ручном реконнекте внутри того же потока guard'ы НЕ сбрасываются.
+    lastEventSeqRef.current = 0
+    lastElapsedRef.current = 0
+    lastStageElapsedRef.current = 0
     let disposed = false
     let source: EventSource | null = null
     let retryTimer: number | undefined
@@ -445,22 +461,38 @@ function App() {
 
       stream.onmessage = (message) => {
         const event = JSON.parse(message.data) as JobEvent
+        // Дедуп по ``seq``: сервер может повторно отдать историю при
+        // (пере)подключении. Свежий снимок сервера идёт без ``seq`` — его
+        // пропускаем всегда.
+        if (typeof event.seq === 'number') {
+          if (event.seq <= lastEventSeqRef.current) return
+          lastEventSeqRef.current = event.seq
+        }
         setProgress(event)
         if (event.stage_times) setStageTimes(event.stage_times)
         if (isTerminal(event.status)) {
           finish(event.status)
           return
         }
+        // Монотонный guard по ``elapsed``: устаревшее (реплей истории)
+        // событие с меньшим временем не откатывает «Итого» к ~0.
+        if (event.elapsed != null && event.elapsed >= lastElapsedRef.current) {
+          lastElapsedRef.current = event.elapsed
+          setTotalStartedAt(Date.now() - event.elapsed * 1000)
+        }
         // Живой счётчик текущей стадии: при её смене перезапускаем отсчёт.
         if (event.stage !== liveStageRef.current) {
           liveStageRef.current = event.stage
           setLiveStage(event.stage)
-          setLiveStageStartedAt(Date.now() - (event.stage_elapsed ?? 0) * 1000)
-        } else if (event.stage_elapsed != null) {
+          const stageElapsed = event.stage_elapsed ?? 0
+          lastStageElapsedRef.current = stageElapsed
+          setLiveStageStartedAt(Date.now() - stageElapsed * 1000)
+        } else if (
+          event.stage_elapsed != null &&
+          event.stage_elapsed >= lastStageElapsedRef.current
+        ) {
+          lastStageElapsedRef.current = event.stage_elapsed
           setLiveStageStartedAt(Date.now() - event.stage_elapsed * 1000)
-        }
-        if (event.elapsed != null) {
-          setTotalStartedAt(Date.now() - event.elapsed * 1000)
         }
       }
 
@@ -627,6 +659,10 @@ function App() {
         })
         setStageTimes(details.stage_times ?? [])
         setFinalTotalSeconds(details.total_seconds)
+        // Снимок ``GET /api/jobs/{id}`` авторитетен для таймеров: ставим
+        // guard'ы по нему, чтобы SSE-реплей истории не откатил счётчики.
+        lastElapsedRef.current = details.total_seconds ?? 0
+        lastStageElapsedRef.current = details.stage_elapsed ?? 0
         if (isLiveJob(details)) {
           setTotalStartedAt(
             details.total_seconds != null ? Date.now() - details.total_seconds * 1000 : Date.now(),
