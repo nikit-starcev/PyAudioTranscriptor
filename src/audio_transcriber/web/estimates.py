@@ -67,6 +67,25 @@ HEALTH_OK = "ok"
 HEALTH_SLOW = "slow"
 HEALTH_STALLED = "stalled"
 
+#: Человекочитаемые названия стадий — для причины замедления (#36).
+STAGE_TITLES: dict[str, str] = {
+    "denoise": "шумоподавление",
+    "asr": "распознавание речи",
+    "diarization": "определение говорящих",
+    "merge": "объединение сегментов",
+    "clean": "очистка артефактов",
+    "correction": "автоисправление",
+    "llm": "LLM-постобработка",
+    "export": "экспорт",
+}
+
+#: Ресурсоёмкие стадии: диаризация и ASR чаще всего упираются в GPU/CPU (#36).
+HEAVY_STAGES = frozenset({"diarization", "asr"})
+
+#: Длительность записи (секунды), начиная с которой прогон считаем «длинным»
+#: и упоминаем это в причине замедления (#36).
+LONG_AUDIO_SECONDS = 1800.0
+
 #: TTL кэша статистики по умолчанию (секунды).
 DEFAULT_PROFILE_TTL = 30.0
 
@@ -349,10 +368,12 @@ def eta_by_stage(job: Job, profile: StageProfile) -> dict[str, float] | None:
 
 @dataclass(slots=True)
 class Health:
-    """«Здоровье» задачи: статус и давность последнего обновления."""
+    """«Здоровье» задачи: статус, давность обновления и причина (#36)."""
 
     status: str
     last_update_seconds: float | None
+    #: Короткое объяснение по-русски: что отстаёт и почему (пусто для ``ok``).
+    reason: str = ""
 
 
 def _seconds_since(value: str | None, now: datetime) -> float | None:
@@ -360,6 +381,130 @@ def _seconds_since(value: str | None, now: datetime) -> float | None:
     if moment is None:
         return None
     return max((now - moment).total_seconds(), 0.0)
+
+
+def _format_clock(seconds: float) -> str:
+    """Длительность в формате ``M:SS`` / ``H:MM:SS`` (для причины, #36/#43)."""
+    total = max(round(seconds), 0)
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def _format_seconds(seconds: float) -> str:
+    """Округлённые секунды по-русски («45 с»)."""
+    return f"{max(seconds, 0.0):.0f} с"
+
+
+def _stage_note(stage: str | None) -> str:
+    """Человекочитаемое «Стадия „…“» для причины замедления."""
+    if not stage:
+        return "Текущая стадия"
+    return f"Стадия «{STAGE_TITLES.get(stage, stage)}»"
+
+
+def explain_health(
+    job: Job,
+    profile: StageProfile,
+    *,
+    active: bool,
+    now: datetime | None = None,
+) -> str:
+    """Причина замедления/зависания задачи для tooltip (#36).
+
+    Возвращает пустую строку, если задача в норме. Никогда не показывает
+    заведомо ложные числа: если свежей истории нет, прямо говорит об этом, а
+    не подставляет выдуманное ожидаемое время.
+    """
+    if now is None:
+        now = datetime.now(UTC)
+
+    def why(stage: str | None) -> str:
+        """Почему стадия может идти дольше: тяжёлая, длинная запись, нет истории."""
+        parts: list[str] = []
+        if stage in HEAVY_STAGES:
+            parts.append("ресурсоёмкая стадия")
+        if not profile.has_history:
+            parts.append("нет свежей истории — оценка приблизительная")
+        elif stage is not None and stage not in profile.fresh_stages:
+            parts.append("нет свежих замеров этой стадии — оценка приблизительная")
+        if job.duration is not None and job.duration >= LONG_AUDIO_SECONDS:
+            parts.append(f"длинная запись ({_format_clock(job.duration)})")
+        return "; ".join(parts)
+
+    if job.status == STATUS_RUNNING and not active:
+        return (
+            "Задачу не ведёт воркер: обработка прервана "
+            "(возможно, перезапуск сервера)"
+        )
+
+    expected = (
+        expected_seconds(profile, job.stage, job.duration) if job.stage else None
+    )
+    elapsed = job.stage_elapsed
+    last_update = _seconds_since(job.updated_at, now)
+    if last_update is None:
+        last_update = job.stage_elapsed
+
+    stall_threshold = STALL_MIN_SECONDS
+    slow_threshold: float | None = None
+    if expected is not None and expected > 0:
+        stall_threshold = max(STALL_MIN_SECONDS, STALL_FACTOR * expected)
+        slow_threshold = max(SLOW_MIN_SECONDS, SLOW_FACTOR * expected)
+
+    if last_update is not None and last_update >= stall_threshold:
+        detail = (
+            f"{_stage_note(job.stage)}: нет обновлений "
+            f"{_format_seconds(last_update)} (порог {_format_seconds(stall_threshold)})"
+        )
+        extra = why(job.stage)
+        return f"{detail} · {extra}" if extra else detail
+
+    slow = False
+    if slow_threshold is not None and elapsed is not None and elapsed >= slow_threshold:
+        slow = True
+    if (
+        not slow
+        and expected is not None
+        and expected > 0
+        and job.fraction is not None
+        and elapsed is not None
+    ):
+        expected_elapsed = float(job.fraction) * expected
+        if expected_elapsed > 0 and elapsed >= max(
+            SLOW_MIN_SECONDS, SLOW_FACTOR * expected_elapsed
+        ):
+            slow = True
+
+    if slow and expected is not None and expected > 0 and elapsed is not None:
+        stage_slow_threshold = max(SLOW_MIN_SECONDS, SLOW_FACTOR * expected)
+        if elapsed >= stage_slow_threshold:
+            ratio = elapsed / expected
+            detail = (
+                f"{_stage_note(job.stage)}: идёт {_format_seconds(elapsed)} "
+                f"против ожидаемых {_format_seconds(expected)} (×{ratio:.1f})"
+            )
+        elif job.fraction is not None:
+            # Прогресс буксует: сравниваем с ожидаемым временем на пройденную
+            # долю, а не с полной стадией — иначе «×» выглядела бы < 1.
+            expected_elapsed = float(job.fraction) * expected
+            if expected_elapsed > 0:
+                ratio = elapsed / expected_elapsed
+                detail = (
+                    f"{_stage_note(job.stage)}: {float(job.fraction) * 100:.0f}% за "
+                    f"{_format_seconds(elapsed)} вместо ≈{_format_seconds(expected_elapsed)} "
+                    f"(×{ratio:.1f})"
+                )
+            else:
+                detail = f"{_stage_note(job.stage)}: прогресс буксует ({_format_seconds(elapsed)})"
+        else:
+            detail = f"{_stage_note(job.stage)}: идёт {_format_seconds(elapsed)}"
+        extra = why(job.stage)
+        return f"{detail} · {extra}" if extra else detail
+
+    return ""
 
 
 def classify_health(
@@ -387,7 +532,11 @@ def classify_health(
     last_update_rounded = round(last_update, 1) if last_update is not None else None
 
     if job.status == STATUS_RUNNING and not active:
-        return Health(HEALTH_STALLED, last_update_rounded)
+        return Health(
+            HEALTH_STALLED,
+            last_update_rounded,
+            explain_health(job, profile, active=False, now=now),
+        )
 
     expected = (
         expected_seconds(profile, job.stage, job.duration) if job.stage else None
@@ -401,7 +550,11 @@ def classify_health(
         slow_threshold = max(SLOW_MIN_SECONDS, SLOW_FACTOR * expected)
 
     if last_update is not None and last_update >= stall_threshold:
-        return Health(HEALTH_STALLED, last_update_rounded)
+        return Health(
+            HEALTH_STALLED,
+            last_update_rounded,
+            explain_health(job, profile, active=active, now=now),
+        )
 
     slow = False
     if slow_threshold is not None and elapsed is not None and elapsed >= slow_threshold:
@@ -421,7 +574,9 @@ def classify_health(
         ):
             slow = True
 
-    return Health(HEALTH_SLOW if slow else HEALTH_OK, last_update_rounded)
+    status = HEALTH_SLOW if slow else HEALTH_OK
+    reason = "" if status == HEALTH_OK else explain_health(job, profile, active=active, now=now)
+    return Health(status, last_update_rounded, reason)
 
 
 def health_payload(
@@ -434,6 +589,7 @@ def health_payload(
     return {
         "status": health.status,
         "last_update_seconds": health.last_update_seconds,
+        "reason": health.reason,
     }
 
 

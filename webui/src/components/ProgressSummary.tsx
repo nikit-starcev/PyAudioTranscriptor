@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
-import type { HealthStatus, JobEvent } from '../api'
+import { formatClock, type HealthStatus, type JobEvent } from '../api'
 
 const HEALTH_LABELS: Record<HealthStatus, string> = {
   ok: 'В норме',
@@ -74,6 +74,7 @@ export default function ProgressSummary({ progress, running }: Props) {
   const eta = anchor.current.eta != null ? Math.max(anchor.current.eta - since, 0) : null
   const lastUpdate = anchor.current.last != null ? anchor.current.last + since : null
   const health = progress.health?.status ?? null
+  const healthReason = progress.health?.reason?.trim()
   const percent =
     progress.progress_percent ?? (progress.fraction != null ? progress.fraction * 100 : 0)
 
@@ -88,9 +89,14 @@ export default function ProgressSummary({ progress, running }: Props) {
             HEALTH_STYLES[health] ??
             'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
           }`}
-          title="Состояние задачи по активности и темпу прогресса"
+          title={healthReason || 'Состояние задачи по активности и темпу прогресса'}
         >
           {HEALTH_LABELS[health] ?? health}
+        </span>
+      )}
+      {progress.duration != null && (
+        <span className="tabular-nums text-slate-600 dark:text-slate-300">
+          длительность записи: {formatClock(progress.duration)}
         </span>
       )}
       {running && eta != null && (

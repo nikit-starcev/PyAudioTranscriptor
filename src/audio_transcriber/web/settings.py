@@ -52,6 +52,10 @@ class WebSettings:
     normalize_text: bool = True
     clean_artifacts: bool = True
     protocol_auto: bool = False
+    #: Системные уведомления о завершении/ошибке/отмене веб-задачи (#35).
+    #: Отдельная настройка веб-интерфейса; переопределяет ``NOTIFICATIONS``
+    #: из ``config.env`` для веб-задач.
+    notifications: bool = True
     #: Бэкенд распознавания (``faster-whisper`` или ``whisper-cpp``).
     asr_backend: str = "faster-whisper"
     #: Устройство вычислений (``auto`` / ``cpu`` / ``cuda``).
@@ -88,6 +92,7 @@ class WebSettings:
             "NORMALIZE_TEXT": _format_bool(self.normalize_text),
             "CLEAN_ARTIFACTS": _format_bool(self.clean_artifacts),
             "PROTOCOL_AUTO": _format_bool(self.protocol_auto),
+            "NOTIFICATIONS": _format_bool(self.notifications),
             "ASR_BACKEND": self.asr_backend,
             "DEVICE": self.device,
             "WHISPER_CPP_MODEL": self.whisper_cpp_model,
@@ -126,6 +131,7 @@ def default_settings(defaults: Mapping[str, str] | None = None) -> WebSettings:
         normalize_text=_as_bool(source.get("NORMALIZE_TEXT"), default=True),
         clean_artifacts=_as_bool(source.get("CLEAN_ARTIFACTS"), default=True),
         protocol_auto=_as_bool(source.get("PROTOCOL_AUTO")),
+        notifications=_as_bool(source.get("NOTIFICATIONS"), default=True),
         asr_backend=source.get("ASR_BACKEND", "").strip() or "faster-whisper",
         device=source.get("DEVICE", "").strip() or "auto",
         whisper_cpp_model=source.get("WHISPER_CPP_MODEL", "").strip(),
@@ -172,6 +178,7 @@ def settings_from_mapping(
         normalize_text=pick_bool("normalize_text", current.normalize_text),
         clean_artifacts=pick_bool("clean_artifacts", current.clean_artifacts),
         protocol_auto=pick_bool("protocol_auto", current.protocol_auto),
+        notifications=pick_bool("notifications", current.notifications),
         asr_backend=pick_nonempty("asr_backend", current.asr_backend),
         device=pick_nonempty("device", current.device),
         whisper_cpp_model=pick_str("whisper_cpp_model", current.whisper_cpp_model),

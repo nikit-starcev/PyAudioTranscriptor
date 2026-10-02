@@ -35,6 +35,8 @@ export type JobHealth = {
   status: HealthStatus
   /** Сколько секунд назад последний раз обновлялось состояние задачи. */
   last_update_seconds: number | null
+  /** Причина замедления/зависания по-русски (пусто для ok) — tooltip (#36). */
+  reason: string
 }
 
 export type Job = {
@@ -171,6 +173,8 @@ export type JobEvent = {
   elapsed?: number | null
   stage_elapsed?: number | null
   stage_times?: StageTime[]
+  /** Длительность исходной записи в секундах (#43). */
+  duration?: number | null
   /** Сводный процент прогона, ETA и «здоровье» (см. #15/#24). */
   progress_percent?: number
   eta_seconds?: number | null
@@ -190,6 +194,8 @@ export type WebSettings = {
   normalize_text: boolean
   clean_artifacts: boolean
   protocol_auto: boolean
+  /** Системные уведомления о завершении/ошибке/отмене задачи (#35). */
+  notifications: boolean
   asr_backend: string
   device: string
   whisper_cpp_model: string
@@ -457,6 +463,22 @@ export function formatBytes(bytes: number): string {
 
 export function formatDuration(seconds: number | null): string {
   return seconds == null ? '—' : formatTime(seconds)
+}
+
+/**
+ * Длительность записи без десятых: `M:SS`, для часа и больше — `H:MM:SS`
+ * (#43). Отличается от {@link formatTime}, который показывает десятые доли.
+ */
+export function formatClock(seconds: number | null): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return '—'
+  const total = Math.round(seconds)
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const secs = total % 60
+  if (hours) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+  }
+  return `${minutes}:${String(secs).padStart(2, '0')}`
 }
 
 // Длительность стадии: миллисекунды, секунды или минуты — по величине.

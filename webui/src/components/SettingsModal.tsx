@@ -137,6 +137,7 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
         normalize_text: settings.normalize_text,
         clean_artifacts: settings.clean_artifacts,
         protocol_auto: settings.protocol_auto,
+        notifications: settings.notifications,
         asr_backend: settings.asr_backend,
         device: settings.device,
         whisper_cpp_model: settings.whisper_cpp_model,
@@ -286,6 +287,26 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
                     </span>
                   </label>
                 ))}
+              </fieldset>
+
+              <fieldset className="space-y-2 rounded-md border border-slate-200 p-3 dark:border-slate-800">
+                <legend className="px-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+                  Уведомления
+                </legend>
+                <label className="flex items-start gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={settings.notifications}
+                    onChange={(event) => update({ notifications: event.target.checked })}
+                  />
+                  <span>
+                    Системные уведомления
+                    <span className="block text-xs text-slate-400 dark:text-slate-500">
+                      Показывать уведомление о завершении, ошибке или отмене задачи
+                    </span>
+                  </span>
+                </label>
               </fieldset>
 
               <fieldset className="space-y-2 rounded-md border border-slate-200 p-3 dark:border-slate-800">

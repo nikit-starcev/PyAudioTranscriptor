@@ -93,6 +93,17 @@ def test_put_settings_partial_update(client: TestClient) -> None:
     assert after["glossary_db"] == before["glossary_db"]
 
 
+def test_settings_notifications_toggle_persists(client: TestClient) -> None:
+    """#35: отдельный тумблер уведомлений читается и сохраняется."""
+    assert client.get("/api/settings").json()["notifications"] is True
+
+    response = client.put("/api/settings", json={"notifications": False})
+
+    assert response.status_code == 200
+    assert response.json()["notifications"] is False
+    assert client.get("/api/settings").json()["notifications"] is False
+
+
 def test_put_settings_rejects_invalid_formats(client: TestClient) -> None:
     response = client.put("/api/settings", json={"export_formats": ["txt", "pdf"]})
 

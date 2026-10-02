@@ -300,6 +300,8 @@ class SettingsUpdate(BaseModel):
     normalize_text: bool | None = None
     clean_artifacts: bool | None = None
     protocol_auto: bool | None = None
+    #: Системные уведомления о завершении/ошибке/отмене веб-задачи (#35).
+    notifications: bool | None = None
     hf_token: str | None = None
     asr_backend: str | None = None
     device: str | None = None
@@ -1272,6 +1274,7 @@ def register_api(
                 "fraction": job.fraction,
                 "message": _terminal_message(job),
                 "status": job.status,
+                "duration": job.duration,
                 "stage_times": [timing.as_dict() for timing in job.stage_times],
             }
             event.update(estimator.snapshot(job, active=False))
@@ -1293,6 +1296,7 @@ def register_api(
                 "active": active,
                 "elapsed": job.total_seconds if active else None,
                 "stage_elapsed": job.stage_elapsed if active else None,
+                "duration": job.duration,
                 "stage_times": [timing.as_dict() for timing in job.stage_times],
             }
             initial.update(estimator.snapshot(job, active=active))

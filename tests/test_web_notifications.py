@@ -258,3 +258,27 @@ def test_build_job_config_reads_notifications(
 
     assert enabled.notifications is True
     assert disabled.notifications is False
+
+
+def test_web_settings_notifications_override_env(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#35: сохранённый тумблер уведомлений переопределяет ``NOTIFICATIONS`` env."""
+    from audio_transcriber.web.settings import SettingsStore, settings_from_mapping
+
+    monkeypatch.setattr(
+        "audio_transcriber.web.config.env_defaults", lambda: {"NOTIFICATIONS": "true"}
+    )
+    store = SettingsStore(tmp_path / "settings.json")
+    saved = store.save(settings_from_mapping({"notifications": False}, base=store.load()))
+
+    overrides = saved.env_overrides()
+    assert overrides["NOTIFICATIONS"] == "false"
+
+    config = build_job_config(
+        audio_file,
+        output_dir=tmp_path / "out",
+        data_dir=tmp_path / "data",
+        overrides=overrides,
+    )
+    assert config.notifications is False

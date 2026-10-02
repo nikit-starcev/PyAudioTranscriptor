@@ -388,6 +388,30 @@ def test_jobs_listing(client: TestClient) -> None:
     assert jobs[0]["active"] is False
 
 
+def test_jobs_payload_includes_source_duration(client: TestClient) -> None:
+    """#43: длительность исходной записи есть и в списке, и в деталях задачи."""
+    uploaded = _upload(client)
+    job_id = client.post("/api/jobs", json={"path": uploaded["name"]}).json()["id"]
+    client.app.state.store.update(job_id, duration=944.0)
+
+    listing = client.get("/api/jobs").json()
+    details = client.get(f"/api/jobs/{job_id}").json()
+
+    assert listing[0]["duration"] == 944.0
+    assert details["duration"] == 944.0
+
+
+def test_events_include_source_duration_after_done(client: TestClient) -> None:
+    """#43: терминальное SSE-событие несёт длительность исходной записи."""
+    uploaded = _upload(client)
+    job_id, _ = _run_job(client, uploaded["name"])
+
+    response = client.get(f"/api/jobs/{job_id}/events")
+
+    assert response.status_code == 200
+    assert '"duration": 2.5' in response.text
+
+
 def test_create_job_with_num_speakers_reaches_config(
     web_paths: WebPaths, config_builder
 ) -> None:

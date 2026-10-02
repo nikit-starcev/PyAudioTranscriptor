@@ -93,6 +93,16 @@ def _format_duration(seconds: float) -> str:
     return f"{secs} с"
 
 
+def _format_clock(seconds: float) -> str:
+    """Длительность записи в формате ``M:SS`` / ``H:MM:SS`` (#43)."""
+    total = max(round(seconds), 0)
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
 def _notification_message(job: Job, status: str, *, detail: str | None = None) -> str:
     """Текст уведомления: имя задачи, статус и (при успехе) длительность."""
     if status == STATUS_DONE:
@@ -317,6 +327,13 @@ class JobRunner:
         # Длительность аудио нужна для ETA уже во время прогона: результат
         # сообщит её только в конце, поэтому пробуем контейнер заранее.
         duration = probe_duration(request.source_path)
+        # #43: явно показываем длительность исходной записи — и в логах, и в UI.
+        if duration is not None:
+            logger.info(
+                "Задача %s: длительность записи %s", job_id, _format_clock(duration)
+            )
+        else:
+            logger.info("Задача %s: длительность записи не определена", job_id)
         self._store.update(
             job_id,
             status=STATUS_RUNNING,
@@ -339,6 +356,7 @@ class JobRunner:
                 "fraction": 0.0,
                 "message": "Запуск",
                 "status": STATUS_RUNNING,
+                "duration": duration,
             },
         )
 
@@ -513,7 +531,13 @@ class JobRunner:
     def _merge_estimate(
         self, payload: dict[str, object], job: Job | None, *, active: bool
     ) -> None:
-        """Добавляет в событие/ответ оценки прогресса, ETA и здоровья (#15/#24)."""
+        """Добавляет в событие/ответ оценки прогресса, ETA и здоровья (#15/#24).
+
+        Здесь же проставляется длительность исходной записи (#43): она нужна
+        живой панели прогресса, даже если список задач ещё не перечитан.
+        """
+        if job is not None:
+            payload.setdefault("duration", job.duration)
         if self._estimator is None or job is None:
             return
         payload.update(self._estimator.snapshot(job, active=active))

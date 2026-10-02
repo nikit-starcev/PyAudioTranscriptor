@@ -413,6 +413,115 @@ def test_health_falls_back_to_stage_elapsed_without_updated_at() -> None:
     assert health.status == HEALTH_STALLED
 
 
+# --- #36: причина замедления ---------------------------------------------
+
+
+def test_health_slow_reason_names_stage_and_overrun() -> None:
+    profile = _profile(dict.fromkeys(STAGES, 0.5))
+    now = datetime.now(UTC)
+    # Ожидание asr = 50 с, идёт 250 с (×5) — причина должна назвать стадию,
+    # фактическое и ожидаемое время и ресурсоёмкость.
+    job = _job(
+        stage="asr",
+        duration=100.0,
+        stage_elapsed=250.0,
+        updated_at=(now - timedelta(seconds=1)).isoformat(),
+    )
+
+    health = classify_health(job, profile, active=True, now=now)
+
+    assert health.status == HEALTH_SLOW
+    assert "распознавание речи" in health.reason
+    assert "250 с" in health.reason
+    assert "50 с" in health.reason
+    assert "×5.0" in health.reason
+    assert "ресурсоёмкая стадия" in health.reason
+
+
+def test_health_slow_reason_mentions_long_audio() -> None:
+    profile = _profile(dict.fromkeys(STAGES, 0.5))
+    now = datetime.now(UTC)
+    # Запись длиннее порога (1 ч) — причина упоминает длинную запись.
+    job = _job(
+        stage="asr",
+        duration=3600.0,
+        stage_elapsed=4000.0,
+        updated_at=(now - timedelta(seconds=1)).isoformat(),
+    )
+
+    health = classify_health(job, profile, active=True, now=now)
+
+    assert health.status == HEALTH_SLOW
+    assert "длинная запись (1:00:00)" in health.reason
+
+
+def test_health_slow_reason_fraction_lag_not_misleading() -> None:
+    """#36: при отставании по доле сравнение идёт с долей, а не со всей стадией."""
+    profile = _profile(dict.fromkeys(STAGES, 1.0))  # ожидание asr = 100 с
+    now = datetime.now(UTC)
+    job = _job(
+        stage="asr",
+        duration=100.0,
+        fraction=0.1,
+        stage_elapsed=45.0,
+        updated_at=(now - timedelta(seconds=1)).isoformat(),
+    )
+
+    health = classify_health(job, profile, active=True, now=now)
+
+    assert health.status == HEALTH_SLOW
+    assert "10%" in health.reason
+    assert "вместо" in health.reason
+    # Нельзя показывать «против ожидаемых 100 с» — это выглядело бы быстрее плана.
+    assert "против ожидаемых" not in health.reason
+
+
+def test_health_stalled_reason_is_honest_without_history() -> None:
+    """Нет свежей истории — не подставляем выдуманное ожидаемое время (#36)."""
+    profile = _profile(dict.fromkeys(STAGES, 1.0), samples=0)
+    now = datetime.now(UTC)
+    job = _job(
+        stage="asr",
+        duration=100.0,
+        stage_elapsed=120.0,
+        updated_at=(now - timedelta(seconds=120)).isoformat(),
+    )
+
+    health = classify_health(job, profile, active=True, now=now)
+
+    assert health.status == HEALTH_STALLED
+    assert "нет свежей истории" in health.reason
+    # Никаких «против ожидаемых … с» — истории для оценки нет.
+    assert "против ожидаемых" not in health.reason
+
+
+def test_health_reason_for_orphaned_job() -> None:
+    profile = _profile(dict.fromkeys(STAGES, 0.5))
+    now = datetime.now(UTC)
+    job = _job(stage="asr", duration=100.0, stage_elapsed=1.0, updated_at=now.isoformat())
+
+    health = classify_health(job, profile, active=False, now=now)
+
+    assert health.status == HEALTH_STALLED
+    assert "не ведёт воркер" in health.reason
+
+
+def test_health_ok_has_empty_reason() -> None:
+    profile = _profile(dict.fromkeys(STAGES, 0.5))
+    now = datetime.now(UTC)
+    job = _job(
+        stage="asr",
+        duration=100.0,
+        stage_elapsed=5.0,
+        updated_at=(now - timedelta(seconds=1)).isoformat(),
+    )
+
+    health = classify_health(job, profile, active=True, now=now)
+
+    assert health.status == HEALTH_OK
+    assert health.reason == ""
+
+
 # --- StageEstimator: кэш статистики --------------------------------------
 
 
@@ -477,6 +586,9 @@ def test_stage_estimator_snapshot_fields() -> None:
     health = snapshot["health"]
     assert isinstance(health, dict)
     assert health["status"] in {HEALTH_OK, HEALTH_SLOW, HEALTH_STALLED}
+    # #36: причина замедления идёт в API/SSE, фронт показывает её в tooltip.
+    assert "reason" in health
+    assert isinstance(health["reason"], str)
 
 
 # --- прочее ---------------------------------------------------------------

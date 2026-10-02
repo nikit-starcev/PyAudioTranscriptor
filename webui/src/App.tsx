@@ -5,6 +5,7 @@ import {
   describeApply,
   EXPORT_FORMATS,
   errorMessage,
+  formatClock,
   formatDuration,
   formatSize,
   isTerminal,
@@ -555,6 +556,7 @@ function App() {
           message: '',
           status: details.status,
           active: details.active,
+          duration: details.duration,
         })
         setStageTimes(details.stage_times ?? [])
         setFinalTotalSeconds(details.total_seconds)
@@ -1175,6 +1177,7 @@ function App() {
                       <p className="text-xs text-slate-400 dark:text-slate-500">
                         {job.stage ? `${job.stage} · ` : ''}
                         {job.fraction != null ? `${Math.round(job.fraction * 100)}%` : '—'}
+                        {job.duration != null ? ` · запись ${formatClock(job.duration)}` : ''}
                         {' · говорящих: '}
                         {formatSpeakerSetting(job)}
                       </p>
