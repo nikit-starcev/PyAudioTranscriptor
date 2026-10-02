@@ -31,6 +31,7 @@ import {
 import GlossaryModal from './components/GlossaryModal'
 import EditorPanel from './components/EditorPanel'
 import ModelsModal from './components/ModelsModal'
+import ActionProgressCard from './components/ActionProgressCard'
 import ProgressSummary from './components/ProgressSummary'
 import ReadinessBanner from './components/ReadinessBanner'
 import SettingsModal from './components/SettingsModal'
@@ -40,6 +41,7 @@ import StageTimes from './components/StageTimes'
 import ThemeToggle from './components/ThemeToggle'
 import TranscriptTable from './components/TranscriptTable'
 import VoicesModal from './components/VoicesModal'
+import { useActionProgress } from './actionProgress'
 
 const STAGES: { key: string; label: string }[] = [
   { key: 'denoise', label: 'Шумоподавление' },
@@ -141,6 +143,12 @@ function App() {
     kind: 'info' | 'error'
     text: string
   } | null>(null)
+  // Прогресс длительных действий (#58): enrollment, глоссарий, правки, протокол.
+  const {
+    run: actionRun,
+    runTask: runActionTask,
+    reset: resetActionProgress,
+  } = useActionProgress()
   // Формат прямой выгрузки стенограммы; по умолчанию — первый из настроек.
   const [exportFormat, setExportFormat] = useState('txt')
   const [summary, setSummary] = useState<string | null>(null)
@@ -764,17 +772,25 @@ function App() {
 
   const applyNames = useCallback(
     async (jobId: string): Promise<ApplyNamesResponse> => {
-      const response = await api<ApplyNamesResponse>(`/api/jobs/${jobId}/apply-names`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      })
+      const response = await runActionTask(
+        'enrollment',
+        (actionId) =>
+          api<ApplyNamesResponse>(`/api/jobs/${jobId}/apply-names`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Action-Id': actionId },
+            body: JSON.stringify({}),
+          }),
+        (value) => ({
+          text: describeApply(value, value.result.speakers.length),
+          error: value.error != null,
+        }),
+      )
       setResult(response.result)
       await refreshSamples(jobId)
       setSpeakerUndoAvailable(false)
       return response
     },
-    [refreshSamples],
+    [refreshSamples, runActionTask],
   )
 
   //: «Переопределить говорящих» (#37): применяет enrollment текущего результата
@@ -805,7 +821,8 @@ function App() {
   useEffect(() => {
     setApplyNotice(null)
     setSpeakerUndoAvailable(false)
-  }, [activeJobId])
+    resetActionProgress()
+  }, [activeJobId, resetActionProgress])
 
   const saveToLibrary = useCallback(
     async (
@@ -827,9 +844,19 @@ function App() {
     setProtocolBusy(true)
     setProtocolError(null)
     try {
-      const response = await api<ProtocolResponse>(`/api/jobs/${jobId}/protocol`, {
-        method: 'POST',
-      })
+      const response = await runActionTask(
+        'protocol',
+        (actionId) =>
+          api<ProtocolResponse>(`/api/jobs/${jobId}/protocol`, {
+            method: 'POST',
+            headers: { 'X-Action-Id': actionId },
+          }),
+        (value) => ({
+          text: value.summary
+            ? 'Протокол сформирован, резюме готово'
+            : 'Протокол сформирован',
+        }),
+      )
       setProtocol(response)
       setSummary(response.summary)
     } catch (cause) {
@@ -837,7 +864,7 @@ function App() {
     } finally {
       setProtocolBusy(false)
     }
-  }, [])
+  }, [runActionTask])
 
   const stageIndex = useMemo(() => {
     if (!progress) return -1
@@ -1523,6 +1550,7 @@ function App() {
       </main>
 
       <VoicesModal open={voicesOpen} onClose={() => setVoicesOpen(false)} />
+      <ActionProgressCard run={actionRun} onClose={resetActionProgress} />
       <SettingsModal
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}

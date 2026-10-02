@@ -36,6 +36,7 @@ from audio_transcriber.diarization.reference import (
 )
 from audio_transcriber.domain.enums import Device
 from audio_transcriber.domain.models import SpeakerSegment
+from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.utils.audio import SAMPLE_RATE, load_waveform
 
 logger = logging.getLogger(__name__)
@@ -368,6 +369,7 @@ def assign_speaker_names(
     engine: SpeakerEmbeddingEngine | None = None,
     waveform: np.ndarray | None = None,
     prepare: ReferencePrepareOptions | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> dict[str, str]:
     """Сопоставляет говорящих с именами по образцам голоса.
 
@@ -394,6 +396,7 @@ def assign_speaker_names(
         engine=engine,
         waveform=waveform,
         prepare=prepare,
+        on_progress=on_progress,
     ).mapping
 
 
@@ -408,6 +411,7 @@ def enroll_speakers(
     engine: SpeakerEmbeddingEngine | None = None,
     waveform: np.ndarray | None = None,
     prepare: ReferencePrepareOptions | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> EnrollmentOutcome:
     """Сопоставляет говорящих с именами и возвращает подробный итог.
 
@@ -421,7 +425,12 @@ def enroll_speakers(
     ``prepare`` — параметры подготовки (VAD-обрезка + RMS-нормализация),
     применяемые **одинаково** к эталонам и к окнам говорящего. ``None`` —
     значения по умолчанию (:class:`ReferencePrepareOptions`).
+
+    ``on_progress`` — необязательный колбэк этапов (порядок: образцы →
+    эмбеддинги → сопоставление). Веб-интерфейс использует его для показа
+    прогресса «Применить имена» (см. ``web/actions.py``).
     """
+    emit = on_progress or (lambda _event: None)
     cleaned = _clean_references(references)
     if not cleaned:
         logger.debug("Enrollment: образцы голоса не заданы — пропуск")
@@ -430,10 +439,13 @@ def enroll_speakers(
         logger.info("Enrollment: нет диаризованных говорящих — пропуск")
         return _empty_outcome()
 
+    total_names = len(cleaned)
+    emit(ProgressEvent("samples", "Загрузка образцов голоса", 0.0))
     try:
         active_engine = engine or PyannoteEmbeddingEngine(
             local_model_path=local_model_path, device=device
         )
+        emit(ProgressEvent("embeddings", "Загрузка модели эмбеддингов", 0.05))
         window_seconds = float(active_engine.window_seconds)
     except Exception as exc:  # noqa: BLE001 — мягкая деградация
         logger.warning(
@@ -444,7 +456,7 @@ def enroll_speakers(
         return _empty_outcome()
 
     reference_embeddings: dict[str, np.ndarray] = {}
-    for name, paths in cleaned.items():
+    for position, (name, paths) in enumerate(cleaned.items(), start=1):
         vectors: list[np.ndarray] = []
         for path in paths:
             try:
@@ -478,11 +490,19 @@ def enroll_speakers(
         averaged = average_embeddings(vectors)
         if averaged is not None:
             reference_embeddings[name] = averaged
+        emit(
+            ProgressEvent(
+                "embeddings",
+                f"Эмбеддинги образцов: {position}/{total_names}",
+                0.05 + 0.4 * position / total_names,
+            )
+        )
 
     if not reference_embeddings:
         logger.warning("Enrollment: ни один образец не обработан — имена не применены")
         return _empty_outcome()
 
+    emit(ProgressEvent("samples", "Загрузка аудиозаписи", 0.5))
     if waveform is not None:
         # Аудио уже декодировано предыдущей стадией (например, денойзом) —
         # повторное чтение файла не нужно.
@@ -499,8 +519,10 @@ def enroll_speakers(
         energy.median_energy(audio_prefix, sample_rate=SAMPLE_RATE)
     )
 
+    grouped = _segments_by_speaker(speaker_segments)
+    total_speakers = len(grouped)
     speaker_embeddings: dict[str, np.ndarray] = {}
-    for speaker_id, segments in _segments_by_speaker(speaker_segments).items():
+    for position, (speaker_id, segments) in enumerate(grouped.items(), start=1):
         vectors = []
         windows = _representative_windows(
             segments,
@@ -528,11 +550,19 @@ def enroll_speakers(
         averaged = average_embeddings(vectors)
         if averaged is not None:
             speaker_embeddings[speaker_id] = averaged
+        emit(
+            ProgressEvent(
+                "embeddings",
+                f"Эмбеддинги говорящих: {position}/{total_speakers}",
+                0.5 + 0.45 * position / total_speakers,
+            )
+        )
 
     if not speaker_embeddings:
         logger.warning("Enrollment: эмбеддинги говорящих не построены — имена не применены")
         return _empty_outcome()
 
+    emit(ProgressEvent("matching", "Сопоставление говорящих и имён", 0.98))
     similarities = cosine_similarities(speaker_embeddings, reference_embeddings)
     _log_similarity_matrix(similarities)
     mapping = match_speakers(similarities, min_similarity)
@@ -562,6 +592,7 @@ def enroll_speakers(
             min_similarity,
         )
 
+    emit(ProgressEvent("matching", "Сопоставление завершено", 1.0))
     return EnrollmentOutcome(
         mapping=mapping,
         best_candidates=best_candidates,

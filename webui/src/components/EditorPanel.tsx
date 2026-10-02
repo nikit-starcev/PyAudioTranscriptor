@@ -8,6 +8,8 @@ import {
   type TextSuggestion,
   type TranscriptResult,
 } from '../api'
+import { useActionProgress } from '../actionProgress'
+import ActionProgressCard from './ActionProgressCard'
 
 type Props = {
   jobId: string
@@ -49,6 +51,13 @@ function EditorPanel({ jobId, onResult }: Props) {
   const [suggestions, setSuggestions] = useState<TextSuggestion[]>([])
   const [rejected, setRejected] = useState<Set<string>>(new Set())
 
+  // Прогресс длительных действий редактора (#58): глоссарий и проверка текста.
+  const {
+    run: actionRun,
+    runTask: runActionTask,
+    reset: resetActionProgress,
+  } = useActionProgress()
+
   // Смена задачи делает прежние предложения и сообщения неактуальными.
   useEffect(() => {
     setSuggestions([])
@@ -56,7 +65,8 @@ function EditorPanel({ jobId, onResult }: Props) {
     setGlossaryNotice(null)
     setAppliedNotice(null)
     setEditError(null)
-  }, [jobId])
+    resetActionProgress()
+  }, [jobId, resetActionProgress])
 
   const selected = useMemo(
     () => suggestions.filter((item) => !rejected.has(item.id)),
@@ -67,13 +77,18 @@ function EditorPanel({ jobId, onResult }: Props) {
     setGlossaryBusy(true)
     setGlossaryNotice(null)
     try {
-      const response = await api<GlossaryApplyResponse>(
-        `/api/jobs/${jobId}/apply-glossary`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ respect_edited: respectGlossaryEdits }),
-        },
+      const response = await runActionTask(
+        'glossary',
+        (actionId) =>
+          api<GlossaryApplyResponse>(`/api/jobs/${jobId}/apply-glossary`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Action-Id': actionId },
+            body: JSON.stringify({ respect_edited: respectGlossaryEdits }),
+          }),
+        (value) => ({
+          text: value.error ? value.error : `Применено замен: ${value.replacements}`,
+          error: value.error != null,
+        }),
       )
       onResult(response.result)
       if (response.error) {
@@ -90,25 +105,32 @@ function EditorPanel({ jobId, onResult }: Props) {
     } finally {
       setGlossaryBusy(false)
     }
-  }, [jobId, onResult, respectGlossaryEdits])
+  }, [jobId, onResult, respectGlossaryEdits, runActionTask])
 
   const checkText = useCallback(async () => {
     setCheckBusy(true)
     setEditError(null)
     setAppliedNotice(null)
     try {
-      const response = await api<CorrectTextResponse>(
-        `/api/jobs/${jobId}/correct-text`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            dry_run: true,
-            fix_common: fixCommon,
-            check_spelling: checkSpelling,
-            respect_edited: respectEdits,
+      const response = await runActionTask(
+        'correction',
+        (actionId) =>
+          api<CorrectTextResponse>(`/api/jobs/${jobId}/correct-text`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Action-Id': actionId },
+            body: JSON.stringify({
+              dry_run: true,
+              fix_common: fixCommon,
+              check_spelling: checkSpelling,
+              respect_edited: respectEdits,
+            }),
           }),
-        },
+        (value) => ({
+          text:
+            value.suggestions.length > 0
+              ? `Найдено правок: ${value.suggestions.length}`
+              : 'Правок не найдено',
+        }),
       )
       setSuggestions(response.suggestions)
       setRejected(new Set())
@@ -124,25 +146,27 @@ function EditorPanel({ jobId, onResult }: Props) {
     } finally {
       setCheckBusy(false)
     }
-  }, [jobId, fixCommon, checkSpelling, respectEdits])
+  }, [jobId, fixCommon, checkSpelling, respectEdits, runActionTask])
 
   const applySelected = useCallback(async () => {
     setApplyBusy(true)
     setEditError(null)
     setAppliedNotice(null)
     try {
-      const response = await api<CorrectTextResponse>(
-        `/api/jobs/${jobId}/correct-text`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            selection: selected.map((item) => item.id),
-            fix_common: fixCommon,
-            check_spelling: checkSpelling,
-            respect_edited: respectEdits,
+      const response = await runActionTask(
+        'correction',
+        (actionId) =>
+          api<CorrectTextResponse>(`/api/jobs/${jobId}/correct-text`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Action-Id': actionId },
+            body: JSON.stringify({
+              selection: selected.map((item) => item.id),
+              fix_common: fixCommon,
+              check_spelling: checkSpelling,
+              respect_edited: respectEdits,
+            }),
           }),
-        },
+        (value) => ({ text: `Применено правок: ${value.applied_count}` }),
       )
       onResult(response.result)
       setSuggestions(response.suggestions)
@@ -157,7 +181,7 @@ function EditorPanel({ jobId, onResult }: Props) {
     } finally {
       setApplyBusy(false)
     }
-  }, [jobId, onResult, selected, fixCommon, checkSpelling, respectEdits])
+  }, [jobId, onResult, selected, fixCommon, checkSpelling, respectEdits, runActionTask])
 
   const toggleSuggestion = useCallback((id: string) => {
     setRejected((current) => {
@@ -322,6 +346,7 @@ function EditorPanel({ jobId, onResult }: Props) {
           </div>
         )}
       </div>
+      <ActionProgressCard run={actionRun} onClose={resetActionProgress} />
     </div>
   )
 }

@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Annotated
 
 import numpy as np
-from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -73,6 +73,15 @@ from audio_transcriber.storage.glossary_builder import build_active_glossary
 from audio_transcriber.utils.audio import load_waveform, write_wav
 from audio_transcriber.utils.playback import amplitude_envelope, read_duration
 from audio_transcriber.utils.text import sanitize_filename
+from audio_transcriber.web.actions import (
+    ACTION_CORRECTION,
+    ACTION_ENROLLMENT,
+    ACTION_GLOSSARY,
+    ACTION_PROTOCOL,
+    ActionEventBus,
+    ActionProgress,
+    sanitize_action_id,
+)
 from audio_transcriber.web.config import (
     build_job_config,
     env_defaults,
@@ -419,6 +428,10 @@ def create_app(
     store.initialize()
     bus = JobEventBus(heartbeat=heartbeat)
     download_bus = DownloadBus(heartbeat=heartbeat)
+    # Отдельная шина прогресса длительных действий (#58): apply-names,
+    # apply-glossary, correct-text, protocol. Живёт независимо от SSE задачи,
+    # потому что действия выполняются уже после её завершения.
+    action_bus = ActionEventBus(heartbeat=heartbeat)
     # Оценки прогресса/ETA/здоровья по истории завершённых задач (#15/#24).
     estimator = StageEstimator(store)
 
@@ -487,6 +500,7 @@ def create_app(
     app.state.paths = resolved_paths
     app.state.store = store
     app.state.bus = bus
+    app.state.action_bus = action_bus
     app.state.runner = runner
     app.state.estimator = estimator
     app.state.settings_store = settings_store
@@ -511,6 +525,7 @@ def create_app(
         downloads=downloads,
         download_bus=download_bus,
         models_root=resolved_paths.models_dir,
+        action_bus=action_bus,
     )
     app.include_router(router)
 
@@ -549,11 +564,25 @@ def register_api(
     downloads: ModelDownloadManager,
     download_bus: DownloadBus,
     models_root: Path,
+    action_bus: ActionEventBus,
 ) -> None:
     """Регистрирует все маршруты API v1 на переданном роутере."""
 
     def _glossary_db_path() -> Path:
         return settings_store.load().resolved_glossary_db()
+
+    def _action_progress(
+        action_id: str | None, kind: str
+    ) -> ActionProgress | None:
+        """Создаёт публикатор этапов действия из заголовка ``X-Action-Id``.
+
+        ``None``, если заголовок не передан или идентификатор некорректен —
+        тогда эндпоинт работает как раньше, без публикации прогресса.
+        """
+        clean = sanitize_action_id(action_id)
+        if clean is None:
+            return None
+        return ActionProgress(bus=action_bus, action_id=clean, kind=kind)
 
     def _effective_token() -> str | None:
         return effective_hf_token(secrets_store, env_defaults())
@@ -1035,7 +1064,11 @@ def register_api(
         return JSONResponse(updated)
 
     @router.post("/jobs/{job_id}/apply-glossary")
-    def apply_glossary(job_id: str, payload: ApplyGlossaryRequest | None = None) -> Response:
+    def apply_glossary(
+        job_id: str,
+        payload: ApplyGlossaryRequest | None = None,
+        action_id: Annotated[str | None, Header(alias="X-Action-Id")] = None,
+    ) -> Response:
         """Применяет матчер глоссария к текущему результату без распознавания (#32).
 
         Источник терминов — актуальная ``GlossaryDB`` (включённые источники) с
@@ -1045,6 +1078,7 @@ def register_api(
         повторный запуск идемпотентен. Реплики с ручными правками (#26) по
         умолчанию не трогаются — они считаются в ``skipped_edited``.
         """
+        progress = _action_progress(action_id, ACTION_GLOSSARY)
         job = _require_job(store, job_id)
         result = _require_result(paths, job)
         entries = result.get("entries")
@@ -1052,12 +1086,18 @@ def register_api(
             raise HTTPException(status_code=400, detail="В результате нет реплик")
         respect_edited = payload.respect_edited if payload is not None else True
         source = Path(job.source_path)
+        if progress is not None:
+            progress.emit("prepare", "Подготовка глоссария", 0.2)
         try:
             config = config_builder(job_id, source)
             glossary = build_active_glossary(config)
         except Exception as exc:  # noqa: BLE001 — БД/пути могут быть недоступны
+            if progress is not None:
+                progress.fail(f"Глоссарий недоступен: {exc}")
             return _glossary_apply_error(result, f"Глоссарий недоступен: {exc}")
         if glossary is None or len(glossary) == 0:
+            if progress is not None:
+                progress.fail("Глоссарий пуст: нет включённых терминов")
             return _glossary_apply_error(
                 result, "Глоссарий пуст: нет включённых терминов"
             )
@@ -1066,6 +1106,10 @@ def register_api(
         details: list[dict[str, object]] = []
         skipped_edited = 0
         replacements_total = 0
+        total = len(entries)
+        step = max(1, total // 50)
+        if progress is not None:
+            progress.emit("process", f"Обработка реплик: 0/{total}", 0.25)
         for index, raw in enumerate(entries):
             if not isinstance(raw, Mapping):
                 updated_entries.append(raw)
@@ -1095,10 +1139,18 @@ def register_api(
                     }
                 )
             updated_entries.append(item)
+            if progress is not None and ((index + 1) % step == 0 or index + 1 == total):
+                progress.emit(
+                    "process",
+                    f"Обработка реплик: {index + 1}/{total}",
+                    0.25 + 0.7 * (index + 1) / total,
+                )
         updated: dict[str, object] = dict(result)
         if replacements_total:
             updated["entries"] = updated_entries
             _write_result(paths, job, updated)
+        if progress is not None:
+            progress.done(f"Готово: применено замен — {replacements_total}")
         return JSONResponse(
             {
                 "result": updated,
@@ -1111,7 +1163,11 @@ def register_api(
         )
 
     @router.post("/jobs/{job_id}/correct-text")
-    def correct_text(job_id: str, payload: CorrectTextRequest | None = None) -> Response:
+    def correct_text(
+        job_id: str,
+        payload: CorrectTextRequest | None = None,
+        action_id: Annotated[str | None, Header(alias="X-Action-Id")] = None,
+    ) -> Response:
         """Редакторская проверка/исправление текущего текста (#51).
 
         Правила частых ошибок (пунктуация/пробелы/тире) и консервативная
@@ -1130,10 +1186,15 @@ def register_api(
             raise HTTPException(
                 status_code=400, detail="Не выбран ни один вид проверки"
             )
+        progress = _action_progress(action_id, ACTION_CORRECTION)
 
         corrector = MorphTextCorrector() if request.check_spelling else None
         groups: dict[int, list[Suggestion]] = {}
         skipped_edited = 0
+        total = len(entries)
+        step = max(1, total // 50)
+        if progress is not None:
+            progress.emit("analyze", f"Поиск правок: 0/{total}", 0.05)
         for index, raw in enumerate(entries):
             if not isinstance(raw, Mapping):
                 continue
@@ -1152,9 +1213,17 @@ def register_api(
             )
             if items:
                 groups[index] = items
+            if progress is not None and ((index + 1) % step == 0 or index + 1 == total):
+                progress.emit(
+                    "analyze",
+                    f"Поиск правок: {index + 1}/{total}",
+                    0.05 + 0.85 * (index + 1) / total,
+                )
         suggestions = [item for group in groups.values() for item in group]
 
         if request.dry_run:
+            if progress is not None:
+                progress.done(f"Готово: найдено правок — {len(suggestions)}")
             return JSONResponse(
                 {
                     "result": dict(result),
@@ -1171,9 +1240,12 @@ def register_api(
             if request.selection is not None
             else {item.id for item in suggestions}
         )
+        if progress is not None:
+            progress.emit("apply", f"Применение правок: 0/{len(groups)}", 0.9)
         updated_entries: list[object] = list(entries)
         applied_items: list[dict[str, object]] = []
-        for index, group in groups.items():
+        group_total = len(groups)
+        for position, (index, group) in enumerate(groups.items(), start=1):
             chosen = [item for item in group if item.id in selected]
             if not chosen:
                 continue
@@ -1190,12 +1262,20 @@ def register_api(
             item["text"] = new_text
             updated_entries[index] = item
             applied_items.extend(item.as_dict() for item in applied)
+            if progress is not None and (position % step == 0 or position == group_total):
+                progress.emit(
+                    "apply",
+                    f"Применение правок: {position}/{group_total}",
+                    0.9 + 0.1 * position / max(1, group_total),
+                )
         updated: dict[str, object] = dict(result)
         if applied_items:
             updated["entries"] = updated_entries
             _write_result(paths, job, updated)
         # После применения возвращаем пустой список: оставшиеся (отклонённые)
         # предложения лучше пересобрать заново — смещения текста изменились.
+        if progress is not None:
+            progress.done(f"Готово: применено правок — {len(applied_items)}")
         return JSONResponse(
             {
                 "result": updated,
@@ -1208,13 +1288,19 @@ def register_api(
         )
 
     @router.post("/jobs/{job_id}/protocol")
-    def job_protocol(job_id: str) -> dict[str, object]:
+    def job_protocol(
+        job_id: str,
+        action_id: Annotated[str | None, Header(alias="X-Action-Id")] = None,
+    ) -> dict[str, object]:
         """Формирует протокол по текущему результату (резюме + экспорт).
 
         Синхронный вызов: FastAPI выполняет его в рабочем потоке, поэтому
         остальные запросы не блокируются. LLM-резюме считается по актуальной
-        стенограмме — уже с применёнными именами говорящих.
+        стенограмме — уже с применёнными именами говорящих. Если клиент передал
+        ``X-Action-Id``, этапы (подготовка → LLM → экспорт) публикуются в шину
+        действий для индикатора прогресса (#58).
         """
+        progress = _action_progress(action_id, ACTION_PROTOCOL)
         job = _require_job(store, job_id)
         if job.status != STATUS_DONE:
             raise HTTPException(status_code=409, detail="Результат ещё не готов")
@@ -1223,14 +1309,22 @@ def register_api(
             raise HTTPException(status_code=400, detail="Исходный файл не найден")
         payload = _require_result(paths, job)
         try:
+            if progress is not None:
+                progress.emit("prepare", "Подготовка стенограммы", 0.1)
             config = config_builder(job_id, source)
             result = result_from_payload(payload, source_path=source)
-            artifacts = protocol_fn(config, result)
+            artifacts = protocol_fn(
+                config, result, on_progress=progress.as_callback() if progress else None
+            )
         except Exception as exc:
+            if progress is not None:
+                progress.fail(f"Не удалось сформировать протокол: {exc}")
             raise HTTPException(
                 status_code=500, detail=f"Не удалось сформировать протокол: {exc}"
             ) from exc
         updated = _store_protocol(paths, job, payload, artifacts)
+        if progress is not None:
+            progress.done("Протокол сформирован")
         return {
             "paths": [str(path) for path in artifacts.paths],
             "summary": artifacts.summary,
@@ -1366,8 +1460,18 @@ def register_api(
         return JSONResponse(new_result)
 
     @router.post("/jobs/{job_id}/apply-names")
-    def apply_names_route(job_id: str, payload: ApplyNamesRequest | None = None) -> Response:
-        """Сопоставить говорящих с именами по образцам (библиотека + явные)."""
+    def apply_names_route(
+        job_id: str,
+        payload: ApplyNamesRequest | None = None,
+        action_id: Annotated[str | None, Header(alias="X-Action-Id")] = None,
+    ) -> Response:
+        """Сопоставить говорящих с именами по образцам (библиотека + явные).
+
+        Длительная операция (загрузка модели эмбеддингов + инференс). Если
+        клиент передал ``X-Action-Id``, этапы enrollment публикуются в шину
+        действий (#58); иначе поведение прежнее.
+        """
+        progress = _action_progress(action_id, ACTION_ENROLLMENT)
         job = _require_job(store, job_id)
         result = _require_result(paths, job)
         threshold = (
@@ -1381,12 +1485,18 @@ def register_api(
         references_total = len(explicit) + len(library)
         segments = build_speaker_segments(result)
         if not source.is_file():
+            if progress is not None:
+                progress.fail("Исходное аудио не найдено")
             return _apply_names_error(result, threshold, "Исходное аудио не найдено")
         if references_total == 0:
+            if progress is not None:
+                progress.fail("Нет образцов голоса: библиотека пуста и явные не заданы")
             return _apply_names_error(
                 result, threshold, "Нет образцов голоса: библиотека пуста и явные не заданы"
             )
         if not segments:
+            if progress is not None:
+                progress.fail("Нет сегментов говорящих для сопоставления")
             return _apply_names_error(
                 result, threshold, "Нет сегментов говорящих для сопоставления"
             )
@@ -1400,8 +1510,11 @@ def register_api(
                 data_dir=paths.data_dir,
                 min_similarity=threshold,
                 local_model_path=_local_model_path(),
+                on_progress=progress.as_callback() if progress is not None else None,
             )
         except Exception as exc:  # noqa: BLE001 — модель/аудио недоступны: мягкая деградация
+            if progress is not None:
+                progress.fail(f"Сопоставление недоступно: {exc}")
             return _apply_names_error(result, threshold, f"Сопоставление недоступно: {exc}")
         if outcome.mapping:
             _write_result(paths, job, updated)
@@ -1410,6 +1523,10 @@ def register_api(
             speaker_id: {"name": name, "score": round(float(score), 3)}
             for speaker_id, (name, score) in outcome.best_candidates.items()
         }
+        if progress is not None:
+            progress.done(
+                f"Готово: сопоставлено имён — {len(outcome.mapping)} из {len(segments)}"
+            )
         return JSONResponse(
             {
                 "result": updated,
@@ -1620,6 +1737,28 @@ def register_api(
             initial.update(estimator.snapshot(job, active=active))
             yield _sse(initial)
             async for event in bus.subscribe(job_id):
+                yield ": ping\n\n" if event is None else _sse(event)
+
+        return StreamingResponse(
+            stream(), media_type="text/event-stream", headers=dict(SSE_HEADERS)
+        )
+
+    @router.get("/actions/{action_id}/events")
+    async def action_events(action_id: str) -> StreamingResponse:
+        """SSE-поток этапов длительного действия (#58).
+
+        Клиент генерирует ``action_id``, открывает этот поток и передаёт тот же
+        идентификатор заголовком ``X-Action-Id`` в запрос действия. Сервер
+        публикует этапы (``action``/``stage``/``message``/``fraction``/``elapsed``)
+        и закрывает поток конечным событием (``status`` ``done``/``error``).
+        Запоздавший подписчик получает накопленную историю действия.
+        """
+        clean = sanitize_action_id(action_id)
+        if clean is None:
+            raise HTTPException(status_code=400, detail="Некорректный идентификатор действия")
+
+        async def stream() -> AsyncIterator[str]:
+            async for event in action_bus.subscribe(clean):
                 yield ": ping\n\n" if event is None else _sse(event)
 
         return StreamingResponse(

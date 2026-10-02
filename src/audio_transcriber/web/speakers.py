@@ -30,6 +30,7 @@ from audio_transcriber.domain.models import (
     TranscriptEntry,
     TranscriptionResult,
 )
+from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.utils.text import sanitize_filename
 from audio_transcriber.web.results import serialize_result
 
@@ -237,12 +238,17 @@ def apply_names(
     data_dir: Path,
     min_similarity: float,
     local_model_path: Path | str | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> tuple[dict[str, object], EnrollmentOutcome]:
     """Сопоставляет говорящих с именами по образцам и применяет совпадения.
 
     Образцы: явные (из запроса) + библиотека ``voices/``. Возвращает новый JSON
     результата и подробный итог enrollment (совпадения и лучших недобранных).
+
+    ``on_progress`` — необязательный колбэк этапов (образцы → эмбеддинги →
+    сопоставление → применение имён) для индикатора в веб-интерфейсе.
     """
+    emit = on_progress or (lambda _event: None)
     references = merge_references(explicit_references, library_references)
     segments = build_speaker_segments(payload)
     outcome = enroll_speakers(
@@ -251,9 +257,11 @@ def apply_names(
         audio_path=source_path,
         min_similarity=min_similarity,
         local_model_path=local_model_path,
+        on_progress=on_progress,
     )
     if not outcome.mapping:
         return dict(payload), outcome
+    emit(ProgressEvent("apply", "Применение имён говорящих", None))
     updated = apply_speaker_changes(
         payload,
         source_path=source_path,
@@ -262,6 +270,7 @@ def apply_names(
         samples=samples,
         data_dir=data_dir,
     )
+    emit(ProgressEvent("apply", "Имена применены", 1.0))
     return updated, outcome
 
 

@@ -45,6 +45,7 @@ function SpeakersPanel({
   onOpenVoices,
 }: Props) {
   const [busy, setBusy] = useState(false)
+  const [applyingNames, setApplyingNames] = useState(false)
   const [status, setStatus] = useState<{ kind: 'info' | 'error'; text: string } | null>(null)
   const [edit, setEdit] = useState<EditState | null>(null)
   const [mergeTarget, setMergeTarget] = useState<Record<string, string>>({})
@@ -106,11 +107,16 @@ function SpeakersPanel({
   const applyNames = () => {
     const total = speakers.length
     void run(async () => {
-      const response = await onApplyNames()
-      setStatus({
-        kind: response.error ? 'error' : 'info',
-        text: describeApply(response, total),
-      })
+      setApplyingNames(true)
+      try {
+        const response = await onApplyNames()
+        setStatus({
+          kind: response.error ? 'error' : 'info',
+          text: describeApply(response, total),
+        })
+      } finally {
+        setApplyingNames(false)
+      }
     })
   }
 
@@ -156,7 +162,7 @@ function SpeakersPanel({
             disabled={busy || speakers.length === 0}
             className="rounded-md bg-slate-800 px-3 py-1.5 text-xs text-white hover:bg-slate-700 disabled:opacity-40 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-white"
           >
-            Применить имена
+            {applyingNames ? 'Применяю имена…' : 'Применить имена'}
           </button>
           <button
             type="button"
