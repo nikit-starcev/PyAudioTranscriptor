@@ -18,6 +18,7 @@ import pytest
 
 from audio_transcriber.denoising import deepfilter as df_module
 from audio_transcriber.denoising.deepfilter import DF_SAMPLE_RATE, DeepFilterDenoiser
+from audio_transcriber.progress import ProgressEvent
 from audio_transcriber.utils.audio import (
     SAMPLE_RATE,
     encode_pcm16,
@@ -183,6 +184,35 @@ def test_last_waveform_matches_written_wav(tmp_path: Path, monkeypatch) -> None:
 
     # encode_pcm16 — поточечная, поэтому WAV побитово равен кодировке всего массива.
     assert written == encode_pcm16(result)
+
+
+def test_denoiser_emits_chunked_progress(tmp_path: Path, monkeypatch) -> None:
+    """Длинный денойз эмитит растущую долю обработанного аудио и финальные 100 %.
+
+    Раньше стадия отдавала одно событие ``fraction=None`` и молчала минуты —
+    теперь по каждому чанку приходит реальный процент (#см. баг «статусы не
+    приходят»).
+    """
+    input_path = tmp_path / "input.wav"
+    _write_signal(input_path, 6.0, rate=DF_SAMPLE_RATE, seed=5)
+    _fake_model(monkeypatch)
+    monkeypatch.setattr(DeepFilterDenoiser, "_enhance", _identity_enhance)
+
+    events: list[ProgressEvent] = []
+    denoiser = DeepFilterDenoiser(
+        chunk_seconds=1.0, overlap_seconds=0.25, on_progress=events.append
+    )
+    denoiser.denoise(input_path)
+    denoiser.close()
+
+    denoise_events = [event for event in events if event.stage == "denoise"]
+    # Больше одного чанка → несколько промежуточных событий, затем 100 %.
+    assert len(denoise_events) > 1
+    fractions = [event.fraction for event in denoise_events]
+    assert all(fraction is not None for fraction in fractions)
+    assert fractions == sorted(fractions)
+    assert fractions[0] is not None and 0.0 < fractions[0] < 1.0
+    assert fractions[-1] == 1.0
 
 
 def test_denoise_peak_memory_bounded_by_chunk(tmp_path: Path, monkeypatch) -> None:

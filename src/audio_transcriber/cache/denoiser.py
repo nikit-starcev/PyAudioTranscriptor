@@ -20,19 +20,37 @@ import numpy as np
 
 from audio_transcriber.cache.store import StageCache
 from audio_transcriber.denoising.base import DenoiserProtocol
+from audio_transcriber.progress import ProgressCallback
 
 logger = logging.getLogger(__name__)
 
 
 class CachingDenoiser:
-    """Обёртка ``DenoiserProtocol``, кэширующая очищенный аудиофайл."""
+    """Обёртка ``DenoiserProtocol``, кэширующая очищенный аудиофайл.
 
-    def __init__(self, inner: DenoiserProtocol, cache: StageCache, *, source: Path) -> None:
+    :param on_progress: приёмник событий прогресса. Если задан, прокидывается
+        во внутренний денойзер (атрибут ``on_progress``), чтобы длинная стадия
+        шумоподавления отдавала реальный процент. Обёртка сама событий не
+        генерирует: на попадании в кэш инференса нет, а на промахе весь
+        прогресс приходит от ``inner``.
+    """
+
+    def __init__(
+        self,
+        inner: DenoiserProtocol,
+        cache: StageCache,
+        *,
+        source: Path,
+        on_progress: ProgressCallback | None = None,
+    ) -> None:
         self._inner = inner
         self._cache = cache
         self._source = source
         self._last_hit = False
         self._last_waveform: np.ndarray | None = None
+        self._on_progress = on_progress
+        if on_progress is not None and hasattr(inner, "on_progress"):
+            inner.on_progress = on_progress
 
     @property
     def last_hit(self) -> bool:

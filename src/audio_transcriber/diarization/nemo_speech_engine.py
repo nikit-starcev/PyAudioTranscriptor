@@ -15,9 +15,9 @@ Sortformer streaming, EEND, 4 спикера) и приводит его выв�
   нём нет** ``libstdc++.so.6``/``libgcc_s.so.1``: бандл-версии затеняют
   системные и ломают загрузку Vulkan-ICD на Radeon. У самого бинарника есть
   RUNPATH ``$ORIGIN/../lib``, поэтому отсутствие ``LD_LIBRARY_PATH`` не мешает.
-* У EEND-модели **нет** per-speaker эмбеддингов — enrollment по образцам с
-  этим движком невозможен (см. ``supports_enrollment``); конвейер это
-  учитывает.
+* У EEND-модели **нет** per-speaker эмбеддингов, но enrollment по образцам
+  от движка диаризации не зависит: конвейер использует отдельный embedding-
+  движок, поэтому имена по образцам присваиваются и с nemo-speech.
 * Ошибки (нет бинарника, сбой subprocess, битый вывод) приводят к мягкой
   деградации: предупреждение в лог и пустой список сегментов — конвейер
   продолжается без разметки говорящих.
@@ -249,9 +249,6 @@ class NemoSpeechSpeakerDiarizer:
     :param on_progress: приёмник событий прогресса (мягко необязателен).
     :param timeout: таймаут одного вызова subprocess (секунды).
     """
-
-    #: У EEND Sortformer нет per-speaker эмбеддингов — enrollment невозможен.
-    supports_enrollment = False
 
     def __init__(
         self,

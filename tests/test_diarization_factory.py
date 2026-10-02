@@ -261,7 +261,6 @@ def test_create_diarizer_nemo_carries_settings(
     assert diarizer._lib_path == "/opt/nemo/lib"
     assert diarizer._model == "sortformer"
     assert diarizer._device == "vulkan"
-    assert diarizer.supports_enrollment is False
 
 
 def test_create_diarizer_pyannote_path_intact(
@@ -299,7 +298,6 @@ def test_create_diarizer_hybrid_carries_settings(
     assert diarizer._overlap_seconds == 1.0
     assert diarizer._threshold == 0.65
     assert diarizer._expected_speakers == 6
-    assert diarizer.supports_enrollment is False
 
 
 def test_create_diarizer_auto_above_cap_builds_hybrid(

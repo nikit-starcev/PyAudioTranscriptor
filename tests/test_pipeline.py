@@ -18,6 +18,7 @@ from audio_transcriber.domain.models import (
 )
 from audio_transcriber.merging.aligner import OverlapSegmentMerger
 from audio_transcriber.pipeline import run_pipeline
+from audio_transcriber.progress import ProgressEvent
 from audio_transcriber.utils.exceptions import ProcessingCancelled
 
 
@@ -563,6 +564,56 @@ def test_run_pipeline_emits_denoise_progress_event(audio_file: Path, tmp_path: P
     assert any(event.stage == "denoise" for event in events)
 
 
+class ProgressDenoiser:
+    """Денойзер, эмитящий прогресс через прокинутый конвейером колбэк."""
+
+    def __init__(self, output: Path) -> None:
+        self.output = output
+        self.on_progress = None
+        self.closed = 0
+
+    def denoise(self, input_path: Path) -> Path:
+        if self.on_progress is not None:
+            self.on_progress(
+                ProgressEvent("denoise", "Шумоподавление", fraction=0.5)
+            )
+        return self.output
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+def test_run_pipeline_forwards_progress_callback_to_denoiser(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    """Колбэк прогресса доходит до денойзера (в т.ч. через ``CachingDenoiser``)."""
+    denoiser = ProgressDenoiser(audio_file)
+    events: list[ProgressEvent] = []
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+        diarization_enabled=False,
+        use_cache=True,
+    )
+
+    run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=FakeRecognizer(),
+        merger=FakeMerger(),
+        denoiser=denoiser,
+        on_progress=events.append,
+    )
+
+    # Обёртка прокинула колбэк во внутренний денойзер, и его событие добралось
+    # до приёмника конвейера.
+    assert denoiser.on_progress is not None
+    assert any(
+        event.stage == "denoise" and event.fraction == 0.5 for event in events
+    )
+
+
 def test_run_pipeline_continues_when_denoiser_degrades_softly(
     audio_file: Path, tmp_path: Path
 ) -> None:
@@ -971,24 +1022,32 @@ def test_run_pipeline_cancel_during_asr_keeps_completed_cache(
 
 
 
-# --- EEND-движок (nemo-speech): enrollment недоступен (#62) -----------------
+# --- EEND-движки (nemo-speech, hybrid): enrollment всё равно выполняется ---
 
 
 class NoEmbeddingDiarizer(FakeDiarizer):
-    """Заглушка EEND-движка: эмбеддингов говорящих нет → enrollment невозможен."""
+    """Заглушка EEND-движка (Sortformer): per-speaker эмбеддингов у него нет.
 
-    supports_enrollment = False
+    Раньше конвейер пропускал enrollment для таких движков по флагу
+    ``supports_enrollment``. Теперь enrollment использует собственный
+    embedding-движок и выполняется независимо от движка диаризации.
+    """
 
 
-def test_run_pipeline_skips_enrollment_for_eend_engine(
-    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+@pytest.mark.parametrize("engine", ["nemo-speech", "hybrid"])
+def test_run_pipeline_runs_enrollment_for_eend_engines(
+    engine: str,
+    audio_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Enrollment не гейтится типом движка: имена по образцам присваиваются."""
     reference = _reference_file(tmp_path)
     calls: list[dict[str, object]] = []
 
     def fake_assign(**kwargs: object) -> dict[str, str]:
         calls.append(kwargs)
-        return {}
+        return {"SPEAKER_00": "Иван"}
 
     monkeypatch.setattr("audio_transcriber.pipeline.assign_speaker_names", fake_assign)
     config = AppConfig(
@@ -998,20 +1057,19 @@ def test_run_pipeline_skips_enrollment_for_eend_engine(
         speaker_names={"SPEAKER_00": "Пётр"},
         speaker_references={"Иван": (reference,)},
         voices_dir=tmp_path / "no_voices",
-        diarization_engine="nemo-speech",
+        diarization_engine=engine,
     )
 
-    with caplog.at_level("WARNING"):
-        result = run_pipeline(
-            config,
-            device=Device.CPU,
-            recognizer=FakeRecognizer(),
-            diarizer=NoEmbeddingDiarizer(),
-            merger=OverlapSegmentMerger(),
-        )
+    result = run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=FakeRecognizer(),
+        diarizer=NoEmbeddingDiarizer(),
+        merger=OverlapSegmentMerger(),
+    )
 
-    # Enrollment не вызывался, но конвейер не упал и применил --speaker-name.
-    assert calls == []
+    # Enrollment вызван, несмотря на EEND-движок; имя образца приоритетнее.
+    assert len(calls) == 1
+    assert calls[0]["references"] == {"Иван": (reference,)}
     assert result.entries[0].speaker is not None
-    assert result.entries[0].speaker.display_name == "Пётр"
-    assert any("Enrollment" in record.message for record in caplog.records)
+    assert result.entries[0].speaker.display_name == "Иван"

@@ -75,6 +75,11 @@ const STATUS_STYLES: Record<string, string> = {
 //: ~3 с, чтобы UI быстрее подхватывал состояние после короткого сбоя.
 const SSE_RECONNECT_DELAY_MS = 2000
 
+//: Период фонового опроса списка задач, пока есть незавершённые (queued/running).
+//: Фолбэк на случай, когда SSE активной задачи молчит или оборвался без события
+//: (см. #65 — при этом EventSource не пересоздаётся).
+const JOBS_POLL_INTERVAL_MS = 5000
+
 //: Задача реально выполняется: running и её ведёт воркер (``active``).
 //: Осиротевшая running-задача (active=false) «не идёт» — прогресс не тикает.
 function isLiveJob(job: { status: string; active?: boolean }): boolean {
@@ -113,6 +118,9 @@ function App() {
   const [showProcessed, setShowProcessed] = useState(false)
   const showProcessedRef = useRef(false)
   const [jobs, setJobs] = useState<Job[]>([])
+  // Актуальный список задач для фонового поллинга: ref обновляется в
+  // `refreshJobs`, поэтому интервал не зависит от состояния и не пересоздаётся.
+  const jobsRef = useRef<Job[]>([])
   // Показывать ли в списке «Задачи» мягко удалённые (#30). По умолчанию скрыты;
   // значение дублируется в ref, чтобы `refreshJobs` не менял идентичность и не
   // заставлял переподключать SSE.
@@ -178,6 +186,7 @@ function App() {
       try {
         const suffix = showDeletedRef.current ? '?include_deleted=true' : ''
         const list = await api<Job[]>(`/api/jobs${suffix}`)
+        jobsRef.current = list
         setJobs(list)
         return list
       } catch (cause) {
@@ -326,6 +335,20 @@ function App() {
     void refreshJobs()
     void refreshDoctor()
   }, [refreshFiles, refreshJobs, refreshDoctor])
+
+  // Фоновый поллинг-фолбэк списка задач: SSE подключён только к активной
+  // задаче, и если её поток молчит или оборвался без конечного события, статусы
+  // в списке «зависают». Пока есть незавершённые задачи (queued/running),
+  // периодически подтягиваем `GET /api/jobs`. Один `setInterval`, зависимости
+  // стабильны (`refreshJobs` — useCallback с []) — EventSource не пересоздаётся,
+  // компоненты не размонтируются (см. #65).
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const hasActive = jobsRef.current.some((job) => !isTerminal(job.status))
+      if (hasActive) void refreshJobs({ silent: true })
+    }, JOBS_POLL_INTERVAL_MS)
+    return () => window.clearInterval(timer)
+  }, [refreshJobs])
 
   useEffect(() => {
     if (!doctor) return

@@ -47,6 +47,7 @@ from typing import Any
 import av
 import numpy as np
 
+from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.utils.audio import (
     SAMPLE_RATE,
     WaveformAccumulator,
@@ -248,6 +249,7 @@ def _iter_resolved_48k(
     chunk_size: int,
     overlap: int,
     enhance: Callable[[np.ndarray], np.ndarray],
+    on_chunk: Callable[[int], None] | None = None,
 ) -> Iterator[np.ndarray]:
     """Прогоняет поток через ``enhance`` чанками с overlap-add и отдаёт готовые куски.
 
@@ -255,6 +257,9 @@ def _iter_resolved_48k(
     сумма весов = 1) сохраняет амплитуду и убирает щелчки. Возвращаемые куски
     идут строго последовательно и в сумме дают ровно столько же сэмплов, сколько
     пришло на вход (без пропусков и дублирования).
+
+    ``on_chunk`` (если задан) вызывается с числом обработанных сэмплов входа
+    после каждого чанка — для отображения прогресса длинной стадии денойза.
     """
 
     hop = chunk_size - overlap
@@ -266,6 +271,7 @@ def _iter_resolved_48k(
     fade_out = 1.0 - fade_in
     queue = _SampleQueue()
     prev_tail: np.ndarray | None = None
+    processed = 0
 
     for frame in frames:
         queue.push(frame)
@@ -285,6 +291,9 @@ def _iter_resolved_48k(
                 if hop > overlap:
                     yield enhanced[overlap:hop]
             prev_tail = enhanced[hop:]
+            processed += hop
+            if on_chunk is not None:
+                on_chunk(processed)
 
     remaining = len(queue)
     if remaining > 0:
@@ -301,6 +310,9 @@ def _iter_resolved_48k(
                 ).astype(np.float32)
             if remaining > boundary:
                 yield enhanced[boundary:]
+        processed += remaining
+        if on_chunk is not None:
+            on_chunk(processed)
     elif prev_tail is not None and prev_tail.size:
         yield prev_tail
 
@@ -310,6 +322,10 @@ class DeepFilterDenoiser:
 
     Создаёт временные WAV в собственном каталоге, который освобождается в
     :meth:`close` (также поддерживается контекстный менеджер).
+
+    :param on_progress: приёмник событий прогресса (мягко необязателен).
+        Атрибут публичный — :class:`~audio_transcriber.cache.denoiser.
+        CachingDenoiser` прокидывает в него колбэк конвейера.
     """
 
     def __init__(
@@ -318,6 +334,7 @@ class DeepFilterDenoiser:
         output_sample_rate: int = SAMPLE_RATE,
         chunk_seconds: float = DEFAULT_CHUNK_SECONDS,
         overlap_seconds: float = DEFAULT_OVERLAP_SECONDS,
+        on_progress: ProgressCallback | None = None,
     ) -> None:
         if output_sample_rate <= 0:
             raise ValueError("output_sample_rate должен быть положительным")
@@ -339,6 +356,9 @@ class DeepFilterDenoiser:
         #: конвейера). Нужен, чтобы диаризация переиспользовала уже декодированное
         #: аудио и не читала временный WAV повторно.
         self._last_waveform: np.ndarray | None = None
+        #: Приёмник событий прогресса; публичный, чтобы обёртка могла прокинуть
+        #: колбэк внутрь (см. ``CachingDenoiser``).
+        self.on_progress = on_progress
 
     @property
     def last_waveform(self) -> np.ndarray | None:
@@ -427,6 +447,16 @@ class DeepFilterDenoiser:
         """Потоково обрабатывает открытый контейнер и пишет временный WAV."""
 
         expected = estimate_sample_count(container, stream, self._output_sample_rate)
+        # ``expected`` — верхняя оценка числа сэмплов на частоте конвейера.
+        # Переводим её в 48 кГц, в которых считает ``_iter_resolved_48k``, чтобы
+        # отдавать реальную долю обработанного аудио (детерминированный прогресс
+        # вместо «немого» этапа на минуты). Длительность неизвестна (0) — прогресс
+        # не эмитим, только финальные 100 %.
+        total_samples = (
+            round(expected * DF_SAMPLE_RATE / self._output_sample_rate)
+            if expected > 0 and self._output_sample_rate > 0
+            else 0
+        )
 
         def enhance(segment: np.ndarray) -> np.ndarray:
             return self._enhance(segment, model, df_state)
@@ -436,6 +466,7 @@ class DeepFilterDenoiser:
             chunk_size=self._chunk_size,
             overlap=self._overlap,
             enhance=enhance,
+            on_chunk=lambda done: self._emit_progress(done, total_samples),
         )
         target = self._prepare_temp_path(input_path)
         self._write_temp_stream(target, resolved, expected)
@@ -443,7 +474,21 @@ class DeepFilterDenoiser:
         assert self._last_waveform is not None
         duration = self._last_waveform.shape[0] / self._output_sample_rate
         logger.info("Шумоподавление: %s → %s (%.1f с)", input_path.name, target.name, duration)
+        self._emit(1.0)
         return target
+
+    def _emit(self, fraction: float | None) -> None:
+        """Отправляет событие прогресса денойза, если задан приёмник."""
+
+        emit = self.on_progress
+        if emit is not None:
+            emit(ProgressEvent("denoise", "Шумоподавление", fraction=fraction))
+
+    def _emit_progress(self, done: int, total: int) -> None:
+        """Эмитит долю обработанного аудио (0…1); без оценки длины — молчит."""
+
+        if total > 0:
+            self._emit(min(done / total, 1.0))
 
     def _prepare_temp_path(self, input_path: Path) -> Path:
         """Создаёт (при необходимости) временный каталог и путь к результату."""

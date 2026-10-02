@@ -307,8 +307,6 @@ class HybridSpeakerDiarizer:
     :param embedder: готовый эмбеддер (для тестов; по умолчанию создаётся сам).
     """
 
-    supports_enrollment = False
-
     def __init__(
         self,
         device: str = DEFAULT_NEMO_SPEECH_DEVICE,
