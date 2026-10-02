@@ -12,6 +12,7 @@ from __future__ import annotations
 import wave
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import av
 import numpy as np
@@ -19,6 +20,64 @@ import numpy as np
 from audio_transcriber.utils.exceptions import AudioFileError
 
 SAMPLE_RATE = 16000
+
+
+class WaveformAccumulator:
+    """Одномерный float32-буфер, собираемый потоково без двойной аллокации.
+
+    ``np.concatenate`` над списком чанков держит в памяти одновременно список
+    и результат (пик — двойная длина). Этот буфер предвыделяется по оценке
+    длительности и растёт геометрически лишь при недооценке, поэтому память
+    ограничена итоговой длиной, а не её удвоением. ``finish`` возвращает
+    contiguous-срез без копирования.
+    """
+
+    def __init__(self, expected_samples: int = 0) -> None:
+        self._data = np.empty(max(expected_samples, 1), dtype=np.float32)
+        self._size = 0
+
+    @property
+    def size(self) -> int:
+        """Число записанных сэмплов."""
+        return self._size
+
+    def append(self, samples: np.ndarray) -> None:
+        """Добавляет моно-сэмплы, растит буфер при необходимости (геометрически)."""
+        arr = np.asarray(samples, dtype=np.float32).reshape(-1)
+        count = int(arr.shape[0])
+        if count == 0:
+            return
+        needed = self._size + count
+        capacity = int(self._data.shape[0])
+        if needed > capacity:
+            grown = np.empty(max(needed, capacity * 2), dtype=np.float32)
+            grown[: self._size] = self._data[: self._size]
+            self._data = grown
+        self._data[self._size : needed] = arr
+        self._size = needed
+
+    def finish(self) -> np.ndarray:
+        """Возвращает накопленный waveform как contiguous-срез без копии."""
+        return self._data[: self._size]
+
+
+def estimate_sample_count(container: Any, stream: Any, sample_rate: int) -> int:
+    """Оценивает число сэмплов потока по заголовку (без декодирования).
+
+    Используется для предвыделения буфера. Даёт верхнюю оценку с запасом
+    (1 секунда + 1 %), чтобы ресемплер не вышел за границы. ``0`` — длительность
+    неизвестна, тогда буфер растёт геометрически.
+    """
+
+    duration: float | None = None
+    if stream.duration is not None and stream.time_base is not None:
+        duration = float(stream.duration * stream.time_base)
+    elif container.duration is not None:
+        duration = container.duration / av.time_base
+    if duration is None or duration <= 0:
+        return 0
+    estimate = duration * sample_rate
+    return int(estimate) + sample_rate + int(estimate * 0.01)
 
 
 @dataclass(frozen=True)
@@ -89,19 +148,20 @@ def load_waveform(path: Path, *, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
         raise AudioFileError(f"В файле {path} не найдена аудиодорожка") from exc
 
     resampler = av.audio.resampler.AudioResampler(format="fltp", layout="mono", rate=sample_rate)
-    chunks: list[np.ndarray] = []
+    accumulator = WaveformAccumulator(estimate_sample_count(container, stream, sample_rate))
     try:
         for frame in container.decode(stream):
-            chunks.extend(resampled.to_ndarray() for resampled in resampler.resample(frame))
+            for resampled in resampler.resample(frame):
+                accumulator.append(resampled.to_ndarray()[0])
     except Exception as exc:
         raise AudioFileError(f"Не удалось декодировать аудиофайл {path}: {exc}") from exc
     finally:
         container.close()
 
-    if not chunks:
+    if accumulator.size == 0:
         raise AudioFileError(f"Аудиофайл {path} не содержит звуковых данных")
 
-    return np.concatenate(chunks, axis=1)[0]
+    return accumulator.finish()
 
 
 def resample_waveform(
@@ -145,11 +205,8 @@ def resample_waveform(
     return np.concatenate(chunks, axis=1)[0]
 
 
-def write_wav(path: Path, waveform: np.ndarray, *, sample_rate: int = SAMPLE_RATE) -> None:
-    """Записывает моно waveform float32 как 16-битный PCM WAV.
-
-    Используется для передачи аудио внешним инструментам (whisper-cli),
-    которые не декодируют все форматы (например, WebM), но принимают WAV.
+def encode_pcm16(waveform: np.ndarray) -> bytes:
+    """Кодирует моно waveform float32 в 16-битный PCM (little-endian).
 
     Масштаб 32768 и округление к ближайшему дают точный round-trip
     s16 → float32 → s16: PyAV декодирует s16 делением на 32768, поэтому
@@ -160,9 +217,18 @@ def write_wav(path: Path, waveform: np.ndarray, *, sample_rate: int = SAMPLE_RAT
 
     samples = np.clip(waveform, -1.0, 1.0) * 32768.0
     pcm = np.clip(np.rint(samples), -32768.0, 32767.0).astype(np.int16)
+    return pcm.tobytes()
+
+
+def write_wav(path: Path, waveform: np.ndarray, *, sample_rate: int = SAMPLE_RATE) -> None:
+    """Записывает моно waveform float32 как 16-битный PCM WAV.
+
+    Используется для передачи аудио внешним инструментам (whisper-cli),
+    которые не декодируют все форматы (например, WebM), но принимают WAV.
+    """
 
     with wave.open(str(path), "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(sample_rate)
-        wf.writeframes(pcm.tobytes())
+        wf.writeframes(encode_pcm16(waveform))
