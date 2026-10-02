@@ -2,13 +2,8 @@
 
 from __future__ import annotations
 
-import glob
-import json
 import random
 import time
-from pathlib import Path
-
-import pytest
 
 from audio_transcriber.domain.models import SpeakerSegment, TranscriptionSegment
 from audio_transcriber.merging.aligner import (
@@ -202,31 +197,25 @@ def test_nearest_threshold_also_applies_to_brute_force_path() -> None:
     assert entries[0].speaker is None
 
 
-def _real_diarization_segments() -> list[SpeakerSegment] | None:
-    """Сегменты из реального кэша диаризации ``web-data/cache`` (если есть)."""
-    cache_dir = Path(__file__).resolve().parents[1] / "web-data" / "cache"
-    matches = sorted(glob.glob(str(cache_dir / "diarization-*.json")))
-    if not matches:
-        return None
-    payload = json.loads(Path(matches[0]).read_text(encoding="utf-8"))
-    raw = payload.get("data", {}).get("segments")
-    if not isinstance(raw, list) or not raw:
-        return None
+def _real_diarization_segments() -> list[SpeakerSegment]:
+    """Синтетическая разметка, воспроизводящая «дырку» 865.89→876.54 с.
+
+    Раньше тест опирался на реальный кэш ``web-data/cache``, но он меняется от
+    прогона к прогону (движки/гиперпараметры диаризации) — тест был
+    недетерминирован (то проходил, то падал). Теперь разметка задаётся явно:
+    два говорящих с большим зазором между сегментами (как в исходном кэше).
+    """
     return [
-        SpeakerSegment(
-            start=float(item["start"]),
-            end=float(item["end"]),
-            speaker_id=str(item["speaker_id"]),
-        )
-        for item in raw
+        SpeakerSegment(start=700.0, end=865.89, speaker_id="SPEAKER_00"),
+        SpeakerSegment(start=876.54, end=920.0, speaker_id="SPEAKER_01"),
     ]
 
 
 def test_real_cache_hole_no_longer_assigns_nearest_speaker() -> None:
     """Реплика внутри дырки реальной разметки (865.9→876.5 с) — без говорящего.
 
-    Опора на реальный кэш ``web-data/cache`` (он может отсутствовать в
-    окружении — тогда тест пропускается). До правки порог был 5 с, и реплика,
+    Синтетическая разметка (см. ``_real_diarization_segments``). До правки
+    порог был 5 с, и реплика,
     целиком лежавшая в дырке (зазоры ~3–5 с до соседних сегментов с обеих
     сторон), получала «ближайшую» догадку. Теперь оба зазора > 2 с —
     говорящего нет.
@@ -236,8 +225,6 @@ def test_real_cache_hole_no_longer_assigns_nearest_speaker() -> None:
     перекрытию, а не по «ближайшему».
     """
     speaker_segments = _real_diarization_segments()
-    if speaker_segments is None:
-        pytest.skip("реальный кэш диаризации недоступен")
 
     # Реплика целиком внутри дырки: следующий сегмент разметки начинается на
     # 876.54 с, предыдущий заканчивается на 865.89 с — оба зазора > 2 с.
