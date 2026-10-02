@@ -57,6 +57,7 @@ def test_get_settings_shape(client: TestClient, web_paths: WebPaths) -> None:
         "mark_overlap",
         "normalize_text",
         "clean_artifacts",
+        "enable_correction",
         "protocol_auto",
         "input_dir",
         "output_dir",
@@ -796,3 +797,64 @@ def test_put_settings_rejects_bad_hybrid_overlap(client: TestClient) -> None:
 
     assert response.status_code == 400
     assert "DIARIZATION_HYBRID_OVERLAP_SECONDS" in response.json()["detail"]
+
+
+# --- Автоисправление опечаток (стадия correction, pymorphy3) ------------------
+
+
+def test_enable_correction_settings_roundtrip() -> None:
+    base = default_settings({})
+    # По умолчанию стадия выключена (как ENABLE_CORRECTION=false в config.env).
+    assert base.enable_correction is False
+
+    merged = settings_from_mapping({"enable_correction": True}, base=base)
+    assert merged.enable_correction is True
+
+    env = merged.env_overrides()
+    assert env["ENABLE_CORRECTION"] == "true"
+
+
+def test_enable_correction_settings_from_env() -> None:
+    assert default_settings({"ENABLE_CORRECTION": "true"}).enable_correction is True
+    assert default_settings({"ENABLE_CORRECTION": "false"}).enable_correction is False
+    assert default_settings({}).enable_correction is False
+
+
+def test_put_settings_persists_enable_correction(client: TestClient) -> None:
+    """PUT реально сохраняет ``enable_correction`` (защита от pydantic-дропа)."""
+    assert client.get("/api/settings").json()["enable_correction"] is False
+
+    response = client.put("/api/settings", json={"enable_correction": True})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["enable_correction"] is True
+    assert client.get("/api/settings").json()["enable_correction"] is True
+
+    # Обратное выключение тоже сохраняется именно как false.
+    response = client.put("/api/settings", json={"enable_correction": False})
+
+    assert response.status_code == 200, response.text
+    assert client.get("/api/settings").json()["enable_correction"] is False
+
+
+def test_build_job_config_maps_enable_correction(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("audio_transcriber.web.config.env_defaults", lambda: {})
+
+    disabled = build_job_config(
+        audio_file,
+        output_dir=tmp_path / "out",
+        data_dir=tmp_path / "data",
+        overrides={"ENABLE_CORRECTION": "false"},
+    )
+    enabled = build_job_config(
+        audio_file,
+        output_dir=tmp_path / "out",
+        data_dir=tmp_path / "data",
+        overrides={"ENABLE_CORRECTION": "true"},
+    )
+
+    assert disabled.enable_correction is False
+    assert enabled.enable_correction is True
+

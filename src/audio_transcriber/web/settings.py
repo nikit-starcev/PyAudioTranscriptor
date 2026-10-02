@@ -75,6 +75,9 @@ class WebSettings:
     mark_overlap: bool = True
     normalize_text: bool = True
     clean_artifacts: bool = True
+    #: Автоисправление опечаток (стадия ``correction``, ``pymorphy3``): правит
+    #: только неизвестные словоформы. Осторожный режим, по умолчанию выключен.
+    enable_correction: bool = False
     protocol_auto: bool = False
     #: Системные уведомления о завершении/ошибке/отмене веб-задачи (#35).
     #: Отдельная настройка веб-интерфейса; переопределяет ``NOTIFICATIONS``
@@ -144,6 +147,7 @@ class WebSettings:
             "MARK_OVERLAP": _format_bool(self.mark_overlap),
             "NORMALIZE_TEXT": _format_bool(self.normalize_text),
             "CLEAN_ARTIFACTS": _format_bool(self.clean_artifacts),
+            "ENABLE_CORRECTION": _format_bool(self.enable_correction),
             "PROTOCOL_AUTO": _format_bool(self.protocol_auto),
             "NOTIFICATIONS": _format_bool(self.notifications),
             "ASR_BACKEND": self.asr_backend,
@@ -207,6 +211,7 @@ def default_settings(defaults: Mapping[str, str] | None = None) -> WebSettings:
         mark_overlap=_as_bool(source.get("MARK_OVERLAP"), default=True),
         normalize_text=_as_bool(source.get("NORMALIZE_TEXT"), default=True),
         clean_artifacts=_as_bool(source.get("CLEAN_ARTIFACTS"), default=True),
+        enable_correction=_as_bool(source.get("ENABLE_CORRECTION")),
         protocol_auto=_as_bool(source.get("PROTOCOL_AUTO")),
         notifications=_as_bool(source.get("NOTIFICATIONS"), default=True),
         asr_backend=source.get("ASR_BACKEND", "").strip() or "faster-whisper",
@@ -325,6 +330,7 @@ def settings_from_mapping(
         mark_overlap=pick_bool("mark_overlap", current.mark_overlap),
         normalize_text=pick_bool("normalize_text", current.normalize_text),
         clean_artifacts=pick_bool("clean_artifacts", current.clean_artifacts),
+        enable_correction=pick_bool("enable_correction", current.enable_correction),
         protocol_auto=pick_bool("protocol_auto", current.protocol_auto),
         notifications=pick_bool("notifications", current.notifications),
         asr_backend=pick_nonempty("asr_backend", current.asr_backend),

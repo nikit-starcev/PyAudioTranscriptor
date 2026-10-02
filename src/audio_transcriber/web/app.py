@@ -395,6 +395,7 @@ class SettingsUpdate(BaseModel):
     mark_overlap: bool | None = None
     normalize_text: bool | None = None
     clean_artifacts: bool | None = None
+    enable_correction: bool | None = None
     protocol_auto: bool | None = None
     #: Системные уведомления о завершении/ошибке/отмене веб-задачи (#35).
     notifications: bool | None = None

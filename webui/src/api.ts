@@ -262,6 +262,8 @@ export type WebSettings = {
   mark_overlap: boolean
   normalize_text: boolean
   clean_artifacts: boolean
+  /** Автоисправление опечаток (стадия correction, pymorphy3). */
+  enable_correction: boolean
   protocol_auto: boolean
   /** Системные уведомления о завершении/ошибке/отмене задачи (#35). */
   notifications: boolean

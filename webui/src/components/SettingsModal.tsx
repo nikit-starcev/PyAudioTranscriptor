@@ -35,6 +35,7 @@ type ToggleKey =
   | 'mark_overlap'
   | 'normalize_text'
   | 'clean_artifacts'
+  | 'enable_correction'
   | 'protocol_auto'
 
 const TOGGLES: { key: ToggleKey; label: string; hint: string }[] = [
@@ -49,6 +50,13 @@ const TOGGLES: { key: ToggleKey; label: string; hint: string }[] = [
   { key: 'mark_overlap', label: 'Помечать наложение речи', hint: 'Отмечать реплики поверх друг друга' },
   { key: 'normalize_text', label: 'Нормализация текста', hint: 'Пробелы, пунктуация, многоточия' },
   { key: 'clean_artifacts', label: 'Очистка артефактов', hint: 'Удалять [СМЕХ], [BLANK_AUDIO] и т.п.' },
+  {
+    key: 'enable_correction',
+    label: 'Автоисправление опечаток',
+    hint:
+      'Правит только неизвестные словоформы (pymorphy3), осторожно; ' +
+      'включает стадию «correction» в прогон',
+  },
   {
     key: 'protocol_auto',
     label: 'Протокол сразу после обработки',
@@ -241,6 +249,7 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
         mark_overlap: settings.mark_overlap,
         normalize_text: settings.normalize_text,
         clean_artifacts: settings.clean_artifacts,
+        enable_correction: settings.enable_correction,
         protocol_auto: settings.protocol_auto,
         notifications: settings.notifications,
         asr_backend: settings.asr_backend,

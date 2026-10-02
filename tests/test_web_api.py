@@ -582,6 +582,52 @@ def test_create_job_rejects_inverted_speaker_range(client: TestClient) -> None:
     assert response.status_code == 422
 
 
+def test_enable_correction_settings_reach_job_config(
+    web_paths: WebPaths, fake_pipeline, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Тумблер ``enable_correction`` доходит до ``AppConfig`` задачи.
+
+    Проверяет всю цепочку: ``PUT /api/settings`` → ``settings.json`` →
+    ``env_overrides()`` → ``build_job_config`` (через ``default_config_builder``).
+    """
+    captured: list[dict[str, str]] = []
+
+    def fake_build(source_path, *, output_dir, data_dir, overrides=None):
+        captured.append(dict(overrides or {}))
+        return AppConfig(
+            input_file=source_path,
+            output_dir=output_dir,
+            denoise=False,
+            diarization_enabled=False,
+            export_speaker_samples=False,
+            notifications=False,
+            timeline=False,
+            protocol_auto=False,
+            use_cache=False,
+        )
+
+    monkeypatch.setattr("audio_transcriber.web.app.build_job_config", fake_build)
+
+    app = create_app(paths=web_paths, pipeline_fn=fake_pipeline, heartbeat=0.05)
+    with TestClient(app) as test_client:
+        saved = test_client.put("/api/settings", json={"enable_correction": True})
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["enable_correction"] is True
+
+        uploaded = _upload(test_client)
+        created = test_client.post("/api/jobs", json={"path": uploaded["name"]})
+        job_id = created.json()["id"]
+        assert test_client.post(f"/api/jobs/{job_id}/run").status_code == 200
+
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            if test_client.get(f"/api/jobs/{job_id}").json()["status"] in {"done", "error"}:
+                break
+            time.sleep(0.02)
+
+    assert any(item.get("ENABLE_CORRECTION") == "true" for item in captured)
+
+
 def test_patch_job_speaker_range(client: TestClient) -> None:
     uploaded = _upload(client)
     job_id = client.post("/api/jobs", json={"path": uploaded["name"]}).json()["id"]
