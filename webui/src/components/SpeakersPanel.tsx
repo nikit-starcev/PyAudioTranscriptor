@@ -7,6 +7,8 @@ import {
   formatDuration,
   type ApplyNamesResponse,
   type LibraryWindow,
+  type ReassignRequest,
+  type ReassignResponse,
   type SampleMeta,
   type TranscriptResult,
   type VoiceInfo,
@@ -20,6 +22,9 @@ type Props = {
   onRename: (speakerId: string, name: string) => Promise<void>
   onMerge: (source: string, target: string) => Promise<void>
   onToLibrary: (speakerId: string, name: string, window?: LibraryWindow) => Promise<VoiceInfo>
+  onReassign: (speakerId: string, body: ReassignRequest) => Promise<ReassignResponse>
+  onUndo: () => Promise<void>
+  undoAvailable: boolean
   onApplyNames: () => Promise<ApplyNamesResponse>
   onOpenVoices: () => void
 }
@@ -33,6 +38,9 @@ function SpeakersPanel({
   onRename,
   onMerge,
   onToLibrary,
+  onReassign,
+  onUndo,
+  undoAvailable,
   onApplyNames,
   onOpenVoices,
 }: Props) {
@@ -116,6 +124,13 @@ function SpeakersPanel({
     })
   }
 
+  const undo = () => {
+    void run(async () => {
+      await onUndo()
+      setStatus({ kind: 'info', text: 'Последний перенос окна отменён' })
+    })
+  }
+
   return (
     <div className="rounded-md border border-slate-200 p-3 dark:border-slate-800">
       <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -124,6 +139,17 @@ function SpeakersPanel({
           {speakers.length} шт.
         </span>
         <div className="ml-auto flex flex-wrap gap-2">
+          {undoAvailable && (
+            <button
+              type="button"
+              onClick={undo}
+              disabled={busy}
+              title="Отменить последний перенос окна (#40/#41)"
+              className="rounded-md border border-amber-300 px-3 py-1.5 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-40 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-950/40"
+            >
+              ↺ Отменить перенос
+            </button>
+          )}
           <button
             type="button"
             onClick={applyNames}
@@ -331,7 +357,10 @@ function SpeakersPanel({
                 jobId={jobId}
                 speakerId={speaker.id}
                 speakerName={speaker.display_name}
+                speakers={speakers}
                 onToLibrary={onToLibrary}
+                onReassign={onReassign}
+                onRename={onRename}
               />
             </li>
           )

@@ -154,6 +154,36 @@ export type SpeakerVariants = { speaker_id: string; variants: SampleVariant[] }
 /** Окно исходного аудио для сохранения в библиотеку как образец. */
 export type LibraryWindow = { start: number; end: number }
 
+/** Одно изменение говорящего реплики при переназначении окна (#40/#41). */
+export type SpeakerChange = {
+  index: number
+  before_speaker_id: string | null
+  after_speaker_id: string | null
+  before_extra_ids: string[]
+  after_extra_ids: string[]
+}
+
+/** Тело ``POST /api/jobs/{id}/speakers/{sid}/reassign`` (#40/#41). */
+export type ReassignRequest = {
+  start: number
+  end: number
+  /** Перенести на существующего говорящего (#40). */
+  target_speaker_id?: string | null
+  /** Создать нового говорящего с этим именем и назначить ему окно (#41). */
+  new_name?: string | null
+  /** Не замещать основного целиком, а добавить целевого сов-говорящим (#41). */
+  split?: boolean
+}
+
+/** Ответ ``POST .../reassign``: результат, изменения и созданный говорящий. */
+export type ReassignResponse = {
+  result: TranscriptResult
+  changes: SpeakerChange[]
+  target_speaker_id: string
+  created_speaker: { id: string; display_name: string } | null
+  speaker_id: string
+}
+
 export type BestCandidate = { name: string; score: number }
 
 export type ApplyNamesResponse = {

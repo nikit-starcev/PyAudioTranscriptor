@@ -127,7 +127,11 @@ from audio_transcriber.web.setup import build_setup_steps
 from audio_transcriber.web.speakers import (
     apply_names,
     apply_speaker_changes,
+    apply_window_reassign,
     build_speaker_segments,
+    find_speaker,
+    find_speaker_by_name,
+    make_speaker,
     result_from_payload,
 )
 from audio_transcriber.web.storage.jobs_db import (
@@ -261,6 +265,23 @@ class ToLibraryRequest(BaseModel):
     name: str
     start: float | None = None
     end: float | None = None
+
+
+class ReassignRequest(BaseModel):
+    """Тело ``POST /api/jobs/{id}/speakers/{sid}/reassign`` (#40/#41).
+
+    Окно ``[start, end)`` — выбранный вариант прослушивания (#25). Указывается
+    ровно одно из двух: ``target_speaker_id`` — перенести на существующего
+    говорящего (#40), ``new_name`` — создать нового и назначить ему окно (#41).
+    ``split=True`` не замещает основного говорящего целиком, а добавляет
+    целевого сов-говорящим репликам, частично выходящим за окно.
+    """
+
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
+    target_speaker_id: str | None = None
+    new_name: str | None = None
+    split: bool = False
 
 
 class ApplyNamesRequest(BaseModel):
@@ -539,6 +560,14 @@ def register_api(
 
     def _effective_llm_key() -> str | None:
         return effective_llm_api_key(secrets_store, env_defaults())
+
+    #: Последний JSON результата до переноса окна (#40/#41) — для одношаговой
+    #: отмены. Хранится в памяти процесса (локальный однопользовательский
+    #: сервер) и сбрасывается любой другой правкой говорящих.
+    speaker_undo: dict[str, dict[str, object]] = {}
+
+    def clear_speaker_undo(job_id: str) -> None:
+        speaker_undo.pop(job_id, None)
 
     def job_payload(job: Job) -> dict[str, object]:
         """Представление задачи с признаком «обрабатывается этим воркером».
@@ -1333,6 +1362,7 @@ def register_api(
         except OSError as exc:
             raise HTTPException(status_code=500, detail=f"Не удалось применить правки: {exc}") from exc
         _write_result(paths, job, new_result)
+        clear_speaker_undo(job_id)
         return JSONResponse(new_result)
 
     @router.post("/jobs/{job_id}/apply-names")
@@ -1375,6 +1405,7 @@ def register_api(
             return _apply_names_error(result, threshold, f"Сопоставление недоступно: {exc}")
         if outcome.mapping:
             _write_result(paths, job, updated)
+            clear_speaker_undo(job_id)
         best = {
             speaker_id: {"name": name, "score": round(float(score), 3)}
             for speaker_id, (name, score) in outcome.best_candidates.items()
@@ -1462,6 +1493,86 @@ def register_api(
                 status_code=500, detail=f"Не удалось сохранить образец: {exc}"
             ) from exc
         return VoiceSample(name=base_sample_name(target.stem), path=target).as_dict(quality)
+
+    @router.post("/jobs/{job_id}/speakers/{speaker_id}/reassign")
+    def reassign_speaker(
+        job_id: str, speaker_id: str, payload: ReassignRequest
+    ) -> Response:
+        """Переназначает реплики окна другому (или новому) говорящему (#40/#41).
+
+        Окно — выбранный вариант прослушивания говорящего ``speaker_id``. Цели
+        ровно одна: существующий ``target_speaker_id`` (#40) либо ``new_name``
+        (#41, создаётся говорящий). Результат сохраняется в JSON задачи, ручные
+        правки текста (#26) и вычисленные флаги реплик переносятся, возвращается
+        список изменений и одношаговая отмена.
+        """
+        job = _require_job(store, job_id)
+        raw = _require_result(paths, job)
+        start, end = _variant_window(payload.start, payload.end)
+        target_id = (payload.target_speaker_id or "").strip()
+        new_name = (payload.new_name or "").strip()
+        if bool(target_id) == bool(new_name):
+            raise HTTPException(
+                status_code=400,
+                detail="Укажите ровно одно: целевого говорящего или имя нового",
+            )
+        source = Path(job.source_path)
+        result = result_from_payload(raw, source_path=source)
+        if find_speaker(result, speaker_id) is None:
+            raise HTTPException(status_code=404, detail="Говорящий не найден")
+
+        created: dict[str, str] | None = None
+        if target_id:
+            target = find_speaker(result, target_id)
+            if target is None:
+                raise HTTPException(status_code=404, detail="Целевой говорящий не найден")
+        else:
+            existing = find_speaker_by_name(result, new_name)
+            if existing is not None:
+                target = existing
+            else:
+                target = make_speaker(result, new_name)
+                created = {"id": target.id, "display_name": target.display_name}
+
+        try:
+            new_result, changes = apply_window_reassign(
+                raw,
+                source_path=source,
+                start=start,
+                end=end,
+                target=target,
+                split=payload.split,
+                samples=_result_samples(raw),
+            )
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Не удалось переназначить реплики: {exc}"
+            ) from exc
+        if not changes:
+            raise HTTPException(
+                status_code=400, detail="В выбранном окне нет реплик для переназначения"
+            )
+        _write_result(paths, job, new_result)
+        speaker_undo[job_id] = raw
+        return JSONResponse(
+            {
+                "result": new_result,
+                "changes": [change.as_dict() for change in changes],
+                "target_speaker_id": target.id,
+                "created_speaker": created,
+                "speaker_id": speaker_id,
+            }
+        )
+
+    @router.post("/jobs/{job_id}/speakers/undo")
+    def undo_speaker_reassign(job_id: str) -> Response:
+        """Отменяет последний перенос окна (#40/#41), восстанавливая JSON задачи."""
+        job = _require_job(store, job_id)
+        previous = speaker_undo.pop(job_id, None)
+        if previous is None:
+            raise HTTPException(status_code=404, detail="Нечего отменять")
+        _write_result(paths, job, previous)
+        return JSONResponse(previous)
 
     @router.get("/jobs/{job_id}/audio")
     def job_audio(job_id: str, request: Request) -> Response:

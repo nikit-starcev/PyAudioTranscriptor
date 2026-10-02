@@ -19,6 +19,8 @@ import {
   type JobEvent,
   type LibraryWindow,
   type ProtocolResponse,
+  type ReassignRequest,
+  type ReassignResponse,
   type SampleMeta,
   type StageTime,
   type TranscriptEditsRequest,
@@ -121,6 +123,9 @@ function App() {
   const [progress, setProgress] = useState<JobEvent | null>(null)
   const [result, setResult] = useState<TranscriptResult | null>(null)
   const [samplesMeta, setSamplesMeta] = useState<Record<string, SampleMeta>>({})
+  //: Доступна ли одношаговая отмена последнего переноса окна (#40/#41). Флаг
+  //: сбрасывается любым другим изменением говорящих (сервер тоже забывает снимок).
+  const [speakerUndoAvailable, setSpeakerUndoAvailable] = useState(false)
   const [voicesOpen, setVoicesOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [glossaryOpen, setGlossaryOpen] = useState(false)
@@ -702,6 +707,44 @@ function App() {
         body: JSON.stringify(body),
       })
       setResult(updated)
+      // Любая другая правка говорящих сбрасывает одношаговую отмену переноса.
+      setSpeakerUndoAvailable(false)
+      await refreshSamples(jobId)
+    },
+    [refreshSamples],
+  )
+
+  //: Перенос окна варианта другому/новому говорящему (#40/#41): результат
+  //: перезаписывается на сервере, поэтому обновляем и состояние, и образцы.
+  const reassignSpeaker = useCallback(
+    async (
+      jobId: string,
+      speakerId: string,
+      body: ReassignRequest,
+    ): Promise<ReassignResponse> => {
+      const response = await api<ReassignResponse>(
+        `/api/jobs/${jobId}/speakers/${encodeURIComponent(speakerId)}/reassign`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        },
+      )
+      setResult(response.result)
+      setSpeakerUndoAvailable(true)
+      await refreshSamples(jobId)
+      return response
+    },
+    [refreshSamples],
+  )
+
+  const undoSpeakers = useCallback(
+    async (jobId: string) => {
+      const restored = await api<TranscriptResult>(`/api/jobs/${jobId}/speakers/undo`, {
+        method: 'POST',
+      })
+      setResult(restored)
+      setSpeakerUndoAvailable(false)
       await refreshSamples(jobId)
     },
     [refreshSamples],
@@ -728,6 +771,7 @@ function App() {
       })
       setResult(response.result)
       await refreshSamples(jobId)
+      setSpeakerUndoAvailable(false)
       return response
     },
     [refreshSamples],
@@ -760,6 +804,7 @@ function App() {
   //: Смена активной задачи делает прежний итог сопоставления неактуальным.
   useEffect(() => {
     setApplyNotice(null)
+    setSpeakerUndoAvailable(false)
   }, [activeJobId])
 
   const saveToLibrary = useCallback(
@@ -1371,6 +1416,11 @@ function App() {
               onToLibrary={(speakerId, name, window) =>
                 saveToLibrary(activeJobId, speakerId, name, window)
               }
+              onReassign={(speakerId, body) =>
+                reassignSpeaker(activeJobId, speakerId, body)
+              }
+              onUndo={() => undoSpeakers(activeJobId)}
+              undoAvailable={speakerUndoAvailable}
               onApplyNames={() => applyNames(activeJobId)}
               onOpenVoices={() => setVoicesOpen(true)}
             />

@@ -17,7 +17,13 @@ from pathlib import Path
 
 from audio_transcriber.diarization.enrollment import EnrollmentOutcome, enroll_speakers
 from audio_transcriber.diarization.voices import merge_references
-from audio_transcriber.domain.editing import merge_speakers, rename_speaker
+from audio_transcriber.domain.editing import (
+    EntrySpeakerChange,
+    merge_speakers,
+    next_speaker_id,
+    reassign_window,
+    rename_speaker,
+)
 from audio_transcriber.domain.models import (
     Speaker,
     SpeakerSegment,
@@ -123,10 +129,85 @@ def apply_speaker_changes(
     _sync_renamed_files(updated_samples, renames, data_dir)
     _sync_merged_files(updated_samples, merges, displays, data_dir)
 
-    new_payload = serialize_result(result, samples=updated_samples)
-    new_payload["samples"] = updated_samples
+    return _reserialize(payload, result, updated_samples)
+
+
+def _reserialize(
+    payload: Mapping[str, object],
+    result: TranscriptionResult,
+    samples: Mapping[str, str],
+) -> dict[str, object]:
+    """Сериализует результат, сохраняя вычисленные флаги исходных реплик.
+
+    ``low_confidence`` не восстанавливается из ``result`` (у доменной модели нет
+    порога), поэтому переносится из исходного JSON по индексу реплики. Порядок и
+    число реплик при правке говорящих не меняются, поэтому индекс устойчив.
+    """
+    cleaned = {key: value for key, value in samples.items() if isinstance(value, str)}
+    new_payload = serialize_result(result, samples=cleaned)
+    new_payload["samples"] = cleaned
     _preserve_entry_flags(payload, new_payload)
     return new_payload
+
+
+def find_speaker(result: TranscriptionResult, speaker_id: str) -> Speaker | None:
+    """Находит говорящего по id среди списка и участников реплик (включая доп.)."""
+    for speaker in result.speakers:
+        if speaker.id == speaker_id:
+            return speaker
+    for entry in result.entries:
+        if entry.speaker is not None and entry.speaker.id == speaker_id:
+            return entry.speaker
+        for extra in entry.extra_speakers:
+            if extra.id == speaker_id:
+                return extra
+    return None
+
+
+def find_speaker_by_name(result: TranscriptionResult, name: str) -> Speaker | None:
+    """Находит говорящего с таким отображаемым именем (без учёта регистра)."""
+    needle = name.casefold()
+    seen: set[str] = set()
+    candidates = list(result.speakers)
+    for entry in result.entries:
+        if entry.speaker is not None:
+            candidates.append(entry.speaker)
+        candidates.extend(entry.extra_speakers)
+    for speaker in candidates:
+        if speaker.id in seen:
+            continue
+        seen.add(speaker.id)
+        if speaker.display_name.casefold() == needle:
+            return speaker
+    return None
+
+
+def make_speaker(result: TranscriptionResult, name: str) -> Speaker:
+    """Создаёт нового говорящего с именем и свободным id (``SPEAKER_NN``, #41)."""
+    return Speaker(id=next_speaker_id(result), display_name=name)
+
+
+def apply_window_reassign(
+    payload: Mapping[str, object],
+    *,
+    source_path: Path,
+    start: float,
+    end: float,
+    target: Speaker,
+    split: bool,
+    samples: Mapping[str, str],
+) -> tuple[dict[str, object], list[EntrySpeakerChange]]:
+    """Переназначает реплики окна ``[start, end)`` целевому говорящему (#40/#41).
+
+    Возвращает новый JSON результата (с сохранением ручных правок текста #26 и
+    вычисленных флагов) и список изменённых реплик. Файлы образцов не трогаются:
+    перенос реплик не меняет уже сохранённые образцы говорящих.
+    """
+    result = result_from_payload(payload, source_path=source_path)
+    updated, changes = reassign_window(
+        result, start=start, end=end, target=target, split=split
+    )
+    return _reserialize(payload, updated, samples), changes
 
 
 def build_speaker_segments(payload: Mapping[str, object]) -> list[SpeakerSegment]:

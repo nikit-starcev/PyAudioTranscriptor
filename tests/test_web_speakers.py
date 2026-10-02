@@ -565,3 +565,181 @@ def test_to_library_rejects_invalid_window(client: TestClient) -> None:
     )
 
     assert response.status_code == 400
+
+
+# --- переназначение окна другому/новому говорящему (#40/#41) ----------------
+
+
+def test_reassign_window_to_existing_speaker(
+    client: TestClient, web_paths: WebPaths
+) -> None:
+    job_id, _ = _prepared_job(client)
+
+    response = client.post(
+        f"/api/jobs/{job_id}/speakers/SPEAKER_00/reassign",
+        json={"start": 0.0, "end": 1.0, "target_speaker_id": "SPEAKER_01"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["target_speaker_id"] == "SPEAKER_01"
+    assert body["created_speaker"] is None
+    assert [change["index"] for change in body["changes"]] == [0]
+    assert body["changes"][0]["before_speaker_id"] == "SPEAKER_00"
+    assert body["changes"][0]["after_speaker_id"] == "SPEAKER_01"
+    assert body["result"]["entries"][0]["speaker_id"] == "SPEAKER_01"
+    # Не пересекающаяся с окном реплика не тронута.
+    assert body["result"]["entries"][2]["speaker_id"] == "SPEAKER_00"
+
+    on_disk = json.loads((web_paths.results_dir / f"{job_id}.json").read_text("utf-8"))
+    assert on_disk["entries"][0]["speaker_id"] == "SPEAKER_01"
+
+
+def test_reassign_partial_overlap_moves_touching_entries(client: TestClient) -> None:
+    job_id, _ = _prepared_job(client)
+
+    response = client.post(
+        f"/api/jobs/{job_id}/speakers/SPEAKER_00/reassign",
+        json={"start": 0.5, "end": 2.5, "target_speaker_id": "SPEAKER_01"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    # Реплика 1 уже принадлежит цели (без изменений), 0 и 2 заходят в окно краем.
+    assert [change["index"] for change in body["changes"]] == [0, 2]
+    assert {entry["speaker_id"] for entry in body["result"]["entries"]} == {"SPEAKER_01"}
+
+
+def test_reassign_creates_new_speaker(client: TestClient) -> None:
+    job_id, _ = _prepared_job(client)
+
+    response = client.post(
+        f"/api/jobs/{job_id}/speakers/SPEAKER_00/reassign",
+        json={"start": 0.0, "end": 1.0, "new_name": "Новый"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["created_speaker"] == {"id": "SPEAKER_02", "display_name": "Новый"}
+    assert body["target_speaker_id"] == "SPEAKER_02"
+    assert body["result"]["entries"][0]["speaker_id"] == "SPEAKER_02"
+    names = {speaker["id"]: speaker["display_name"] for speaker in body["result"]["speakers"]}
+    assert names["SPEAKER_02"] == "Новый"
+
+
+def test_reassign_new_name_reuses_existing_speaker(client: TestClient) -> None:
+    job_id, _ = _prepared_job(client)
+
+    response = client.post(
+        f"/api/jobs/{job_id}/speakers/SPEAKER_00/reassign",
+        json={"start": 0.0, "end": 1.0, "new_name": "Пётр"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["created_speaker"] is None
+    assert body["target_speaker_id"] == "SPEAKER_01"
+    assert body["result"]["entries"][0]["speaker_id"] == "SPEAKER_01"
+
+
+def test_reassign_split_marks_co_speaker(client: TestClient) -> None:
+    job_id, _ = _prepared_job(client)
+
+    response = client.post(
+        f"/api/jobs/{job_id}/speakers/SPEAKER_00/reassign",
+        json={"start": 0.5, "end": 1.0, "new_name": "Новый", "split": True},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    entry = body["result"]["entries"][0]
+    # Основной говорящий сохранён, целевой добавлен сов-участником.
+    assert entry["speaker_id"] == "SPEAKER_00"
+    assert entry["extra_speaker_ids"] == ["SPEAKER_02"]
+    assert body["changes"][0]["after_extra_ids"] == ["SPEAKER_02"]
+
+
+def test_reassign_preserves_manual_text_edit(client: TestClient) -> None:
+    job_id, _ = _prepared_job(client)
+    edited = client.patch(
+        f"/api/jobs/{job_id}/transcript",
+        json={"edits": [{"index": 0, "text": "исправлено вручную"}]},
+    )
+    assert edited.status_code == 200
+
+    response = client.post(
+        f"/api/jobs/{job_id}/speakers/SPEAKER_00/reassign",
+        json={"start": 0.0, "end": 1.0, "target_speaker_id": "SPEAKER_01"},
+    )
+
+    assert response.status_code == 200
+    entry = response.json()["result"]["entries"][0]
+    assert entry["text"] == "исправлено вручную"
+    assert entry["edited"] is True
+    assert entry["original_text"] == "привет"
+    assert entry["low_confidence"] is True
+
+
+def test_reassign_undo_restores_previous_result(client: TestClient) -> None:
+    job_id, original = _prepared_job(client)
+    client.post(
+        f"/api/jobs/{job_id}/speakers/SPEAKER_00/reassign",
+        json={"start": 0.0, "end": 1.0, "target_speaker_id": "SPEAKER_01"},
+    )
+
+    undone = client.post(f"/api/jobs/{job_id}/speakers/undo")
+
+    assert undone.status_code == 200
+    body = undone.json()
+    assert body["entries"] == original["entries"]
+    assert body["speakers"] == original["speakers"]
+    # Отменять больше нечего.
+    assert client.post(f"/api/jobs/{job_id}/speakers/undo").status_code == 404
+
+
+def test_other_speaker_edit_clears_undo(client: TestClient) -> None:
+    job_id, _ = _prepared_job(client)
+    client.post(
+        f"/api/jobs/{job_id}/speakers/SPEAKER_00/reassign",
+        json={"start": 0.0, "end": 1.0, "target_speaker_id": "SPEAKER_01"},
+    )
+    client.patch(
+        f"/api/jobs/{job_id}/speakers",
+        json={"renames": {"SPEAKER_00": "Иван Иванов"}},
+    )
+
+    assert client.post(f"/api/jobs/{job_id}/speakers/undo").status_code == 404
+
+
+def test_reassign_validation_errors(client: TestClient) -> None:
+    job_id, _ = _prepared_job(client)
+    url = f"/api/jobs/{job_id}/speakers/SPEAKER_00/reassign"
+
+    bad_window = client.post(url, json={"start": 0.6, "end": 0.2, "target_speaker_id": "SPEAKER_01"})
+    assert bad_window.status_code == 400
+
+    neither = client.post(url, json={"start": 0.0, "end": 1.0})
+    assert neither.status_code == 400
+
+    both = client.post(
+        url,
+        json={"start": 0.0, "end": 1.0, "target_speaker_id": "SPEAKER_01", "new_name": "X"},
+    )
+    assert both.status_code == 400
+
+    unknown_target = client.post(
+        url, json={"start": 0.0, "end": 1.0, "target_speaker_id": "SPEAKER_99"}
+    )
+    assert unknown_target.status_code == 404
+
+    unknown_source = client.post(
+        f"/api/jobs/{job_id}/speakers/SPEAKER_99/reassign",
+        json={"start": 0.0, "end": 1.0, "target_speaker_id": "SPEAKER_01"},
+    )
+    assert unknown_source.status_code == 404
+
+    no_overlap = client.post(
+        url, json={"start": 10.0, "end": 11.0, "target_speaker_id": "SPEAKER_01"}
+    )
+    assert no_overlap.status_code == 400
+
