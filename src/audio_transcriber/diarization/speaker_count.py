@@ -27,12 +27,8 @@
 
 from __future__ import annotations
 
-import importlib.util
 import logging
-import os
-import tempfile
 import time
-import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -43,7 +39,8 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
     DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
 )
-from audio_transcriber.progress import ProgressCallback, ProgressEvent
+from audio_transcriber.diarization import embeddings as embedding_utils
+from audio_transcriber.progress import ProgressCallback
 from audio_transcriber.utils.audio import SAMPLE_RATE, load_waveform
 
 if TYPE_CHECKING:
@@ -67,10 +64,7 @@ SILERO_VAD_FILENAME = "silero_vad.onnx"
 
 #: URL модели эмбеддингов по умолчанию (release ``speaker-recongition-models``
 #: — да, с опечаткой в имени релиза у k2-fsa, это исторически так).
-ESTIMATE_MODEL_URL = (
-    "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
-    f"speaker-recongition-models/{DEFAULT_DIARIZATION_ESTIMATE_MODEL}"
-)
+ESTIMATE_MODEL_URL = embedding_utils.EMBEDDING_MODEL_URL
 
 #: URL silero VAD из релиза ``asr-models``.
 SILERO_VAD_URL = (
@@ -102,36 +96,20 @@ _MIN_ANALYZED_SECONDS = 2.0
 #: при превышении sherpa-onnx мягко расширяет буфер без потери данных.
 _VAD_BUFFER_SECONDS = 300.0
 
-#: Таймаут загрузки одной модели (секунды).
-_DOWNLOAD_TIMEOUT = 120.0
-
 
 def _sherpa_available() -> bool:
     """Установлен ли ``sherpa-onnx`` (без импорта — ``find_spec``)."""
-    try:
-        return importlib.util.find_spec("sherpa_onnx") is not None
-    except (ImportError, ValueError):
-        return False
+    return embedding_utils.sherpa_available()
 
 
 def default_model_cache_dir() -> Path:
     """Каталог кэша моделей оценщика (``XDG_CACHE_HOME`` или ``~/.cache``)."""
-    raw = os.environ.get("XDG_CACHE_HOME", "").strip()
-    base = Path(raw).expanduser() if raw else Path.home() / ".cache"
-    return base / "audio-transcriber" / "sherpa"
-
-
-def _emit(on_progress: ProgressCallback | None, message: str, fraction: float | None) -> None:
-    if on_progress is None:
-        return
-    on_progress(ProgressEvent("diarization", message=message, fraction=fraction))
+    return embedding_utils.default_model_cache_dir()
 
 
 def _is_valid_file(path: Path) -> bool:
-    try:
-        return path.is_file() and path.stat().st_size > 0
-    except OSError:
-        return False
+    """Непустой существующий файл (мягко: ошибки доступа → ``False``)."""
+    return embedding_utils.is_valid_file(path)
 
 
 def _download_file(
@@ -140,53 +118,10 @@ def _download_file(
     *,
     on_progress: ProgressCallback | None = None,
 ) -> Path | None:
-    """Скачивает ``url`` в ``target`` атомарно; ``None`` при любой ошибке.
-
-    Пишет во временный файл рядом с целевым и делает ``replace`` — недокачанный
-    файл никогда не выглядит как готовая модель.
-    """
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd, raw_tmp = tempfile.mkstemp(prefix=".download-", suffix=".part", dir=target.parent)
-    os.close(fd)
-    tmp_path = Path(raw_tmp)
-    _emit(on_progress, f"Загрузка модели оценки говорящих: {target.name}", 0.0)
-    try:
-        request = urllib.request.Request(
-            url, headers={"User-Agent": "audio-transcriber"}
-        )
-        with urllib.request.urlopen(request, timeout=_DOWNLOAD_TIMEOUT) as response:
-            total_header = response.headers.get("Content-Length")
-            total = int(total_header) if total_header and total_header.isdigit() else 0
-            received = 0
-            with open(tmp_path, "wb") as handle:
-                while True:
-                    chunk = response.read(1 << 20)
-                    if not chunk:
-                        break
-                    handle.write(chunk)
-                    received += len(chunk)
-                    if total > 0:
-                        _emit(
-                            on_progress,
-                            f"Загрузка модели оценки говорящих: {target.name}",
-                            min(1.0, received / total),
-                        )
-        if received == 0:
-            raise OSError("получен пустой ответ")
-        tmp_path.replace(target)
-    except Exception as exc:  # noqa: BLE001 — мягкая деградация: оценка не критична
-        logger.warning(
-            "Не удалось скачать модель оценки говорящих %s: %s — оценка пропущена",
-            url,
-            exc,
-        )
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except OSError:
-            logger.debug("Не удалось удалить временный файл %s", tmp_path)
-        return None
-    _emit(on_progress, f"Модель оценки говорящих готова: {target.name}", 1.0)
-    return target
+    """Скачивает ``url`` в ``target`` атомарно; ``None`` при любой ошибке."""
+    return embedding_utils.download_file(
+        url, target, on_progress=on_progress, label="модели оценки говорящих"
+    )
 
 
 def _resolve_named_model(
@@ -196,28 +131,14 @@ def _resolve_named_model(
     default_url: str,
     on_progress: ProgressCallback | None,
 ) -> Path | None:
-    """Находит модель ``model``: существующий путь или файл в каталоге кэша.
-
-    Для модели по умолчанию недостающий файл скачивается. Неизвестное имя без
-    файла на диске не скачивается — модель не критична, вернём ``None``.
-    """
-    candidate = Path(model).expanduser()
-    if _is_valid_file(candidate):
-        return candidate
-
-    in_cache = cache_dir / model
-    if _is_valid_file(in_cache):
-        return in_cache
-
-    if not candidate.is_absolute() and model == DEFAULT_DIARIZATION_ESTIMATE_MODEL:
-        return _download_file(default_url, in_cache, on_progress=on_progress)
-
-    logger.info(
-        "Модель оценки говорящих %r не найдена и не будет скачана (ожидается путь "
-        "к .onnx или имя модели по умолчанию)",
+    """Находит модель ``model``: существующий путь или файл в каталоге кэша."""
+    return embedding_utils.resolve_named_model(
         model,
+        cache_dir,
+        default_url=default_url,
+        on_progress=on_progress,
+        label="модели оценки говорящих",
     )
-    return None
 
 
 def _resolve_models(
@@ -227,19 +148,16 @@ def _resolve_models(
     on_progress: ProgressCallback | None,
 ) -> tuple[Path, Path] | None:
     """Возвращает пути ``(модель эмбеддингов, модель VAD)`` или ``None``."""
-    resolved_cache = cache_dir or default_model_cache_dir()
-    embedding = _resolve_named_model(
-        model,
-        resolved_cache,
-        default_url=ESTIMATE_MODEL_URL,
-        on_progress=on_progress,
+    resolved_cache = cache_dir or embedding_utils.default_model_cache_dir()
+    embedding = embedding_utils.resolve_embedding_model(
+        model, resolved_cache, on_progress=on_progress
     )
     if embedding is None:
         return None
 
     candidate_vad = resolved_cache / SILERO_VAD_FILENAME
     vad_path: Path | None
-    if _is_valid_file(candidate_vad):
+    if embedding_utils.is_valid_file(candidate_vad):
         vad_path = candidate_vad
     else:
         vad_path = _download_file(SILERO_VAD_URL, candidate_vad, on_progress=on_progress)
@@ -351,45 +269,12 @@ def _sample_windows(
 
 def _compute_embeddings(windows: Sequence[np.ndarray], model: Path) -> np.ndarray:
     """L2-нормированные эмбеддинги говорящего для каждого окна."""
-    import sherpa_onnx
-
-    config = sherpa_onnx.SpeakerEmbeddingExtractorConfig()
-    config.model = str(model)
-    config.provider = "cpu"
-    config.num_threads = max(1, min(4, os.cpu_count() or 1))
-    extractor = sherpa_onnx.SpeakerEmbeddingExtractor(config)
-
-    vectors: list[np.ndarray] = []
-    for window in windows:
-        stream = extractor.create_stream()
-        stream.accept_waveform(SAMPLE_RATE, window)
-        stream.input_finished()
-        vector = np.asarray(extractor.compute(stream), dtype=np.float32).reshape(-1)
-        norm = float(np.linalg.norm(vector))
-        if norm > 0.0:
-            vector = vector / norm
-        vectors.append(vector)
-    return np.stack(vectors)
+    return embedding_utils.compute_embeddings(windows, model)
 
 
 def _cluster_embeddings(embeddings: np.ndarray, *, threshold: float) -> int:
     """Агломеративная кластеризация по косинусному расстоянию → число кластеров."""
-    from sklearn.cluster import AgglomerativeClustering
-
-    count = int(embeddings.shape[0])
-    if count <= 1:
-        return max(count, 1)
-
-    distance = 1.0 - embeddings @ embeddings.T
-    np.fill_diagonal(distance, 0.0)
-    distance = np.clip(distance, 0.0, 2.0)
-    labels = AgglomerativeClustering(
-        n_clusters=None,
-        distance_threshold=float(threshold),
-        metric="precomputed",
-        linkage="average",
-    ).fit_predict(distance)
-    return max(1, len(set(labels.tolist())))
+    return embedding_utils.count_clusters(embeddings, threshold=threshold)
 
 
 def _ensemble_speaker_count(

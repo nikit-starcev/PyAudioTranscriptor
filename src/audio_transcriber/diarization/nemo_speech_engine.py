@@ -134,6 +134,111 @@ def parse_rttm(
     return segments
 
 
+def _diarize_command(
+    wav_path: Path, *, binary: str, device: str, model: str
+) -> list[str]:
+    """Команда запуска ``nemo-speech diarize`` в формате RTTM."""
+    return [
+        binary,
+        "diarize",
+        str(wav_path),
+        "--model",
+        model,
+        "--device",
+        device,
+        "--format",
+        "rttm",
+    ]
+
+
+def _prepare_wav(audio_path: Path, waveform: np.ndarray | None) -> Path:
+    """Готовит 16-кГц моно WAV для ``nemo-speech``.
+
+    Возвращает путь к временному файлу; вызывающий обязан его удалить.
+    Переданный waveform переиспользуется — повторного декодирования нет;
+    при ``None`` файл декодируется через :func:`load_waveform`.
+    """
+    if waveform is None:
+        waveform = load_waveform(audio_path)
+    fd, raw_path = tempfile.mkstemp(prefix="nemo-speech-", suffix=".wav")
+    os.close(fd)
+    wav_path = Path(raw_path)
+    write_wav(wav_path, waveform)
+    return wav_path
+
+
+def diarize_audio(
+    audio_path: Path,
+    *,
+    binary: str = DEFAULT_NEMO_SPEECH_BINARY,
+    device: str = DEFAULT_NEMO_SPEECH_DEVICE,
+    model: str = DEFAULT_NEMO_SPEECH_MODEL,
+    lib_path: str | None = None,
+    timeout: float = DEFAULT_NEMO_SPEECH_TIMEOUT,
+    waveform: np.ndarray | None = None,
+) -> list[SpeakerSegment] | None:
+    """Готовит 16-кГц моно WAV, запускает ``nemo-speech diarize`` и парсит RTTM.
+
+    Переиспользуемая обёртка: движок :class:`NemoSpeechSpeakerDiarizer` и
+    гибридная диаризация (#64) запускают один и тот же бинарник с одинаковым
+    окружением. Возвращает список сегментов либо ``None`` при любой ошибке
+    (нет бинарника, сбой subprocess, битый вывод) — вызывающий сам решает, как
+    деградировать.
+    """
+    if not binary_available(binary):
+        logger.warning(
+            "Бинарник nemo-speech не найден (%r) — диаризация пропущена. "
+            "Задайте NEMO_SPEECH_BINARY/--nemo-speech-binary.",
+            binary,
+        )
+        return None
+
+    wav_path: Path | None = None
+    try:
+        try:
+            wav_path = _prepare_wav(audio_path, waveform)
+        except Exception as exc:  # noqa: BLE001 — мягкая деградация
+            logger.warning(
+                "nemo-speech: не удалось подготовить аудио %s: %s — диаризация пропущена",
+                audio_path,
+                exc,
+            )
+            return None
+
+        env = with_library_path(os.environ, _effective_library_path(lib_path))
+        try:
+            proc = subprocess.run(
+                _diarize_command(wav_path, binary=binary, device=device, model=model),
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=timeout,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warning(
+                "nemo-speech: не удалось запустить диаризацию (%s) — пропущена",
+                exc,
+            )
+            return None
+
+        if proc.returncode != 0:
+            logger.warning(
+                "nemo-speech завершился с кодом %d — диаризация пропущена. stderr: %s",
+                proc.returncode,
+                (proc.stderr or "").strip()[-500:],
+            )
+            return None
+
+        return parse_rttm(proc.stdout or "")
+    finally:
+        if wav_path is not None:
+            try:
+                wav_path.unlink(missing_ok=True)
+            except OSError:
+                logger.debug("Не удалось удалить временный WAV %s", wav_path)
+
+
 class NemoSpeechSpeakerDiarizer:
     """Диаризация через NeMo-Speech.cpp. Реализует протокол ``SpeakerDiarizer``.
 
@@ -178,34 +283,6 @@ class NemoSpeechSpeakerDiarizer:
                 )
             )
 
-    def _command(self, wav_path: Path) -> list[str]:
-        return [
-            self._binary,
-            "diarize",
-            str(wav_path),
-            "--model",
-            self._model,
-            "--device",
-            self._device,
-            "--format",
-            "rttm",
-        ]
-
-    def _prepare_wav(self, audio_path: Path, waveform: np.ndarray | None) -> Path:
-        """Готовит 16-кГц моно WAV для ``nemo-speech``.
-
-        Возвращает путь к временному файлу; вызывающий обязан его удалить.
-        Переданный waveform переиспользуется — повторного декодирования нет;
-        при ``None`` файл декодируется через :func:`load_waveform`.
-        """
-        if waveform is None:
-            waveform = load_waveform(audio_path)
-        fd, raw_path = tempfile.mkstemp(prefix="nemo-speech-", suffix=".wav")
-        os.close(fd)
-        wav_path = Path(raw_path)
-        write_wav(wav_path, waveform)
-        return wav_path
-
     def diarize(
         self,
         audio_path: Path,
@@ -227,59 +304,18 @@ class NemoSpeechSpeakerDiarizer:
                     NEMO_SPEECH_MAX_SPEAKERS,
                 )
 
-        if not binary_available(self._binary):
-            logger.warning(
-                "Бинарник nemo-speech не найден (%r) — диаризация пропущена. "
-                "Задайте NEMO_SPEECH_BINARY/--nemo-speech-binary.",
-                self._binary,
-            )
+        self._emit("nemo-speech", fraction=None)
+        segments = diarize_audio(
+            audio_path,
+            binary=self._binary,
+            device=self._device,
+            model=self._model,
+            lib_path=self._lib_path,
+            timeout=self._timeout,
+            waveform=waveform,
+        )
+        if segments is None:
             return []
-
-        wav_path: Path | None = None
-        try:
-            try:
-                wav_path = self._prepare_wav(audio_path, waveform)
-            except Exception as exc:  # noqa: BLE001 — мягкая деградация
-                logger.warning(
-                    "nemo-speech: не удалось подготовить аудио %s: %s — диаризация пропущена",
-                    audio_path,
-                    exc,
-                )
-                return []
-
-            self._emit("nemo-speech", fraction=None)
-            env = with_library_path(os.environ, _effective_library_path(self._lib_path))
-            try:
-                proc = subprocess.run(
-                    self._command(wav_path),
-                    capture_output=True,
-                    text=True,
-                    env=env,
-                    timeout=self._timeout,
-                    check=False,
-                )
-            except (OSError, subprocess.SubprocessError) as exc:
-                logger.warning(
-                    "nemo-speech: не удалось запустить диаризацию (%s) — пропущена",
-                    exc,
-                )
-                return []
-
-            if proc.returncode != 0:
-                logger.warning(
-                    "nemo-speech завершился с кодом %d — диаризация пропущена. stderr: %s",
-                    proc.returncode,
-                    (proc.stderr or "").strip()[-500:],
-                )
-                return []
-
-            segments = parse_rttm(proc.stdout or "")
-        finally:
-            if wav_path is not None:
-                try:
-                    wav_path.unlink(missing_ok=True)
-                except OSError:
-                    logger.debug("Не удалось удалить временный WAV %s", wav_path)
 
         self._overlaps = compute_overlap_regions(segments)
         self._emit("nemo-speech", fraction=1.0)

@@ -72,7 +72,7 @@ DEFAULT_DIARIZATION_MIN_DURATION_OFF = 0.5
 DEFAULT_DIARIZATION_ENGINE = "auto"
 
 #: Допустимые движки диаризации.
-VALID_DIARIZATION_ENGINES = ("auto", "pyannote", "nemo-speech")
+VALID_DIARIZATION_ENGINES = ("auto", "pyannote", "nemo-speech", "hybrid")
 
 #: Имя/путь бинарника NeMo-Speech.cpp по умолчанию (ищется в ``PATH``).
 DEFAULT_NEMO_SPEECH_BINARY = "nemo-speech"
@@ -122,6 +122,35 @@ DEFAULT_DIARIZATION_ESTIMATE_MODEL = (
 #: nemo-speech. Совпадает с лимитом модели Sortformer (4 спикера). Выше —
 #: ``auto`` уходит на pyannote, чтобы не потерять говорящих.
 DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS = NEMO_SPEECH_MAX_SPEAKERS
+
+# --- Гибридная диаризация (#64, часть 2) ------------------------------------
+#: Включена ли гибридная диаризация (оконный EEND nemo-speech + глобальная
+#: склейка локальных говорящих по эмбеддингам). Она обходит лимит Sortformer в
+#: 4 спикера и даёт быстрый движок для записей с >4 говорящими. При ``auto`` и
+#: N выше ``DIARIZATION_ROUTE_MAX_SPEAKERS`` выбирается гибрид, если доступны
+#: бинарник nemo-speech и sherpa-onnx с моделью эмбеддингов; иначе — pyannote.
+DEFAULT_DIARIZATION_HYBRID_ENABLED = True
+
+#: Длительность окна гибридной диаризации (секунды). Короче окно — выше шанс,
+#: что в него попадут <=4 говорящих (лимит Sortformer), но больше запусков.
+DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS = 90.0
+
+#: Перекрытие соседних окон (секунды). Нужно, чтобы речь на границе не терялась:
+#: эмбеддинги локальных говорящих берутся из полного окна, а сегменты на
+#: выходе распределяются по непересекающимся «зонам владения» (дублей нет).
+DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS = 2.0
+
+#: Минимальная суммарная длительность речи локального говорящего в окне
+#: (секунды), при которой считается его эмбеддинг. Короче — вектор ненадёжен.
+DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS = 1.5
+
+#: Максимум аудио одного локального говорящего в окне, склеиваемого для одного
+#: эмбеддинга (секунды). Ограничивает стоимость инференса CAM++.
+DEFAULT_DIARIZATION_HYBRID_MAX_EMBEDDING_SECONDS = 15.0
+
+#: Порог косинусного расстояния глобальной кластеризации эмбеддингов гибрида.
+#: Совпадает с порогом оценщика (та же модель CAM++): выше — меньше говорящих.
+DEFAULT_DIARIZATION_HYBRID_THRESHOLD = DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD
 
 #: Разделяемые библиотеки, которые нельзя добавлять в ``LD_LIBRARY_PATH`` из
 #: каталога библиотек движка: бандл-libstdc++/libgcc_s затеняют системные и

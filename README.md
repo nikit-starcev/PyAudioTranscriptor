@@ -839,10 +839,14 @@ GPU считается через **Vulkan** (быстро и на AMD без RO
 
 Выбор движка задаётся `DIARIZATION_ENGINE` / `--diarization-engine`:
 
-- `auto` (по умолчанию) — `nemo-speech`, если его бинарник доступен (найден по
-  пути или в `PATH`), иначе `pyannote`;
+- `auto` (по умолчанию) — по числу говорящих: `N ≤ DIARIZATION_ROUTE_MAX_SPEAKERS`
+  — `nemo-speech` (быстро), `N` больше — `hybrid` (оконный EEND + глобальная
+  склейка по эмбеддингам, обходит лимит 4), иначе `pyannote`; `N` неизвестно —
+  `pyannote` (безопасно);
 - `pyannote` — всегда pyannote.audio (существующее поведение);
-- `nemo-speech` — всегда NeMo-Speech.cpp.
+- `nemo-speech` — всегда NeMo-Speech.cpp (лимит 4 говорящих);
+- `hybrid` — всегда оконный `nemo-speech` + глобальная склейка по эмбеддингам
+  (sherpa-onnx CAM++), быстрый движок без лимита 4.
 
 Параметры движка:
 
@@ -855,6 +859,13 @@ export NEMO_SPEECH_DEVICE=vulkan
 # или через CLI:
 # --diarization-engine nemo-speech --nemo-speech-binary ... --nemo-speech-device vulkan
 ```
+
+Гибрид (`DIARIZATION_HYBRID_ENABLED`, по умолчанию включён) настраивается
+`DIARIZATION_HYBRID_WINDOW_SECONDS` (окно, ~90 с),
+`DIARIZATION_HYBRID_OVERLAP_SECONDS` (перекрытие, ~2 с) и
+`DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS` (порог речи для эмбеддинга). Порог
+кластеризации берётся из `DIARIZATION_ESTIMATE_THRESHOLD`, модель эмбеддингов —
+из `DIARIZATION_ESTIMATE_MODEL` (обе из оценщика числа говорящих).
 
 Модель скачивается при первом запуске (её можно загрузить заранее командой
 `nemo-speech pull sortformer`) либо указывается путь к `.gguf` в
@@ -1058,7 +1069,13 @@ pyannote/torch и токена Hugging Face не считаются критич
 | `NUM_SPEAKERS`, `SPEAKER_NAMES` | Число говорящих и имена `ИНДЕКС=Имя` |
 | `SPEAKER_REFERENCES` | Образцы голоса `Имя=путь.wav` через запятую (можно несколько на имя) |
 | `ENROLLMENT_MIN_SIMILARITY` | Порог косинусного сходства для имён по голосу (`[-1; 1]`, по умолчанию `0.6`) |
-| `DIARIZATION_ENGINE` | Движок диаризации: `auto` (по умолчанию), `pyannote` или `nemo-speech` |
+| `DIARIZATION_ENGINE` | Движок диаризации: `auto` (по умолчанию), `pyannote`, `nemo-speech` или `hybrid` |
+| `DIARIZATION_HYBRID_ENABLED` | Гибрид (оконный EEND + склейка по эмбеддингам) для >4 говорящих (`true`/`false`, по умолчанию `true`) |
+| `DIARIZATION_HYBRID_WINDOW_SECONDS` | Длительность окна гибрида (сек, по умолчанию `90`) |
+| `DIARIZATION_HYBRID_OVERLAP_SECONDS` | Перекрытие соседних окон гибрида (сек, по умолчанию `2`) |
+| `DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS` | Минимальная речь локального говорящего для эмбеддинга (сек, по умолчанию `1.5`) |
+| `DIARIZATION_ESTIMATE_ENABLED` | Дешёвая оценка числа говорящих (sherpa-onnx) для `auto`/гибрида (`true`/`false`) |
+| `DIARIZATION_ROUTE_MAX_SPEAKERS` | До этого числа говорящих `auto` берёт `nemo-speech` (по умолчанию `4`) |
 | `NEMO_SPEECH_BINARY` | Путь/имя бинарника `nemo-speech` (по умолчанию `nemo-speech`) |
 | `NEMO_SPEECH_LIB_PATH` | Каталог `lib/` бандла nemo-speech (не подмешивается при наличии libstdc++/libgcc_s) |
 | `NEMO_SPEECH_MODEL` | Модель nemo-speech: имя, HF-репозиторий или путь к `.gguf` |

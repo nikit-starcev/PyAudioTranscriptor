@@ -1,8 +1,9 @@
 """Тесты выбора движка диаризации (#62) и маршрутизации по числу говорящих (#64).
 
-Явный ``pyannote``/``nemo-speech`` соблюдается всегда. В режиме ``auto``
-движок выбирается по числу говорящих: до cap — nemo-speech (если доступен),
-выше — pyannote (если доступен); неизвестное число → pyannote (безопасно).
+Явный ``pyannote``/``nemo-speech``/``hybrid`` соблюдается всегда. В режиме
+``auto`` движок выбирается по числу говорящих: до cap — nemo-speech (если
+доступен), выше — гибрид (оконный EEND + эмбеддинги, если доступен), иначе
+pyannote (если доступен); неизвестное число → pyannote (безопасно).
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import pytest
 
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.diarization import factory
+from audio_transcriber.diarization.hybrid_engine import HybridSpeakerDiarizer
 from audio_transcriber.diarization.nemo_speech_engine import NemoSpeechSpeakerDiarizer
 from audio_transcriber.diarization.pyannote_engine import PyannoteSpeakerDiarizer
 from audio_transcriber.domain.enums import Device
@@ -28,11 +30,15 @@ def engines(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
     state: dict[str, object] = {
         "nemo": True,
         "pyannote": True,
+        "hybrid": True,
         "estimate": 3,
         "estimate_calls": 0,
     }
     monkeypatch.setattr(factory, "binary_available", lambda _binary: bool(state["nemo"]))
     monkeypatch.setattr(factory, "pyannote_available", lambda: bool(state["pyannote"]))
+    monkeypatch.setattr(
+        factory, "hybrid_available", lambda _config: bool(state["hybrid"])
+    )
 
     def fake_estimate(*_args: object, **_kwargs: object) -> int | None:
         state["estimate_calls"] = int(state["estimate_calls"]) + 1
@@ -64,6 +70,15 @@ def test_resolve_explicit_nemo_speech(
     assert engines["estimate_calls"] == 0
 
 
+def test_resolve_explicit_hybrid(
+    audio_file: Path, monkeypatch: pytest.MonkeyPatch, engines: dict[str, object]
+) -> None:
+    config = _config(audio_file, diarization_engine="hybrid")
+
+    assert factory.resolve_diarization_engine(config) == "hybrid"
+    assert engines["estimate_calls"] == 0
+
+
 # --- auto: по num_speakers / max_speakers -----------------------------------
 
 
@@ -80,9 +95,21 @@ def test_auto_num_speakers_within_cap_prefers_nemo(
     assert engines["estimate_calls"] == 0
 
 
-def test_auto_num_speakers_above_cap_uses_pyannote(
+def test_auto_num_speakers_above_cap_uses_hybrid(
     audio_file: Path, engines: dict[str, object]
 ) -> None:
+    config = _config(audio_file, num_speakers=7)
+
+    decision = factory.decide_diarization(config)
+
+    assert decision.engine == "hybrid"
+    assert decision.speaker_count == 7
+
+
+def test_auto_num_speakers_above_cap_hybrid_disabled_uses_pyannote(
+    audio_file: Path, engines: dict[str, object]
+) -> None:
+    engines["hybrid"] = False
     config = _config(audio_file, num_speakers=7)
 
     decision = factory.decide_diarization(config)
@@ -119,16 +146,28 @@ def test_auto_estimated_within_cap_prefers_nemo(
     assert engines["estimate_calls"] == 1
 
 
-def test_auto_estimated_above_cap_uses_pyannote(
+def test_auto_estimated_above_cap_uses_hybrid(
     audio_file: Path, engines: dict[str, object]
 ) -> None:
     engines["estimate"] = 6
 
     decision = factory.decide_diarization(_config(audio_file))
 
-    assert decision.engine == "pyannote"
+    assert decision.engine == "hybrid"
     assert decision.speaker_count == 6
     assert decision.estimated is True
+
+
+def test_auto_estimated_above_cap_hybrid_missing_uses_pyannote(
+    audio_file: Path, engines: dict[str, object]
+) -> None:
+    engines["estimate"] = 6
+    engines["hybrid"] = False
+
+    decision = factory.decide_diarization(_config(audio_file))
+
+    assert decision.engine == "pyannote"
+    assert decision.speaker_count == 6
 
 
 def test_auto_estimate_unknown_uses_pyannote(
@@ -166,10 +205,11 @@ def test_auto_within_cap_falls_back_to_pyannote_when_nemo_missing(
     assert factory.resolve_diarization_engine(config) == "pyannote"
 
 
-def test_auto_above_cap_falls_back_to_nemo_when_pyannote_missing(
+def test_auto_above_cap_falls_back_to_nemo_when_pyannote_and_hybrid_missing(
     audio_file: Path, engines: dict[str, object]
 ) -> None:
     engines["pyannote"] = False
+    engines["hybrid"] = False
     config = _config(audio_file, num_speakers=6)
 
     assert factory.resolve_diarization_engine(config) == "nemo-speech"
@@ -232,6 +272,45 @@ def test_create_diarizer_pyannote_path_intact(
     diarizer = factory.create_diarizer(config, Device.CPU)
 
     assert isinstance(diarizer, PyannoteSpeakerDiarizer)
+
+
+def test_create_diarizer_hybrid_carries_settings(
+    audio_file: Path, engines: dict[str, object]
+) -> None:
+    config = _config(
+        audio_file,
+        diarization_engine="hybrid",
+        nemo_speech_binary="/opt/nemo/nemo-speech",
+        nemo_speech_model="sortformer",
+        nemo_speech_device="vulkan",
+        num_speakers=6,
+        diarization_hybrid_window_seconds=60.0,
+        diarization_hybrid_overlap_seconds=1.0,
+        diarization_estimate_threshold=0.65,
+    )
+
+    diarizer = factory.create_diarizer(config, Device.CPU)
+
+    assert isinstance(diarizer, HybridSpeakerDiarizer)
+    assert diarizer._binary == "/opt/nemo/nemo-speech"
+    assert diarizer._model == "sortformer"
+    assert diarizer._device == "vulkan"
+    assert diarizer._window_seconds == 60.0
+    assert diarizer._overlap_seconds == 1.0
+    assert diarizer._threshold == 0.65
+    assert diarizer._expected_speakers == 6
+    assert diarizer.supports_enrollment is False
+
+
+def test_create_diarizer_auto_above_cap_builds_hybrid(
+    audio_file: Path, engines: dict[str, object]
+) -> None:
+    engines["estimate"] = 6
+
+    diarizer = factory.create_diarizer(_config(audio_file), Device.CPU)
+
+    assert isinstance(diarizer, HybridSpeakerDiarizer)
+    assert diarizer._expected_speakers == 6
 
 
 def test_create_diarizer_auto_routes_and_emits_progress(

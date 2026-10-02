@@ -16,6 +16,9 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ESTIMATE_MODEL,
     DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
     DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
+    DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS,
+    DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS,
+    DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
     DEFAULT_GIGAAM_MODEL,
     DEFAULT_NEMO_SPEECH_MODEL,
 )
@@ -667,3 +670,62 @@ def test_build_job_config_maps_diarization_estimate(
     assert config.diarization_estimate_threshold == pytest.approx(0.6)
     assert config.diarization_estimate_model == "custom.onnx"
     assert config.diarization_route_max_speakers == 8
+
+
+# --- Гибридная диаризация (обход лимита 4 говорящих) -------------------------
+
+
+def test_diarization_hybrid_settings_roundtrip() -> None:
+    base = default_settings({})
+    assert base.diarization_hybrid_enabled is True
+    assert base.diarization_hybrid_window_seconds == pytest.approx(
+        DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS
+    )
+    assert base.diarization_hybrid_overlap_seconds == pytest.approx(
+        DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS
+    )
+    assert base.diarization_hybrid_min_speaker_seconds == pytest.approx(
+        DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS
+    )
+
+    merged = settings_from_mapping(
+        {
+            "diarization_hybrid_enabled": False,
+            "diarization_hybrid_window_seconds": 60,
+            "diarization_hybrid_overlap_seconds": "1.5",
+            "diarization_hybrid_min_speaker_seconds": 2.0,
+        },
+        base=base,
+    )
+
+    assert merged.diarization_hybrid_enabled is False
+    assert merged.diarization_hybrid_window_seconds == pytest.approx(60.0)
+    assert merged.diarization_hybrid_overlap_seconds == pytest.approx(1.5)
+    assert merged.diarization_hybrid_min_speaker_seconds == pytest.approx(2.0)
+
+    env = merged.env_overrides()
+    assert env["DIARIZATION_HYBRID_ENABLED"] == "false"
+    assert env["DIARIZATION_HYBRID_WINDOW_SECONDS"] == "60.0"
+    assert env["DIARIZATION_HYBRID_OVERLAP_SECONDS"] == "1.5"
+    assert env["DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS"] == "2.0"
+
+
+def test_build_job_config_maps_hybrid(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("audio_transcriber.web.config.env_defaults", lambda: {})
+
+    config = build_job_config(
+        audio_file,
+        output_dir=tmp_path / "out",
+        data_dir=tmp_path / "data",
+        overrides={
+            "DIARIZATION_HYBRID_ENABLED": "false",
+            "DIARIZATION_HYBRID_WINDOW_SECONDS": "75",
+            "DIARIZATION_HYBRID_OVERLAP_SECONDS": "3",
+        },
+    )
+
+    assert config.diarization_hybrid_enabled is False
+    assert config.diarization_hybrid_window_seconds == pytest.approx(75.0)
+    assert config.diarization_hybrid_overlap_seconds == pytest.approx(3.0)

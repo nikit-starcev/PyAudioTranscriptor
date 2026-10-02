@@ -26,6 +26,10 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ESTIMATE_MODEL,
     DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
     DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
+    DEFAULT_DIARIZATION_HYBRID_ENABLED,
+    DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS,
+    DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS,
+    DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
     DEFAULT_ENROLLMENT_MAX_SAMPLE_SECONDS,
@@ -135,6 +139,14 @@ class AppConfig:
     diarization_estimate_model: str = DEFAULT_DIARIZATION_ESTIMATE_MODEL
     # Cap маршрутизации: до него (включительно) ``auto`` берёт nemo-speech.
     diarization_route_max_speakers: int = DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS
+    # --- Гибридная диаризация (#64, часть 2) ---
+    # Оконный nemo-speech + глобальная склейка говорящих по эмбеддингам.
+    # Позволяет обойти лимит Sortformer в 4 спикера; при ``auto`` и N выше cap
+    # выбирается гибрид, если доступны бинарник и sherpa-onnx с моделью.
+    diarization_hybrid_enabled: bool = DEFAULT_DIARIZATION_HYBRID_ENABLED
+    diarization_hybrid_window_seconds: float = DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS
+    diarization_hybrid_overlap_seconds: float = DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS
+    diarization_hybrid_min_speaker_seconds: float = DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS
     speaker_names: dict[str, str] = field(default_factory=dict)
     # Образцы голоса участников для enrollment-диаризации: имя -> клип(ы).
     # Если заданы и сопоставление уверенное, имя говорящего берётся по голосу
@@ -586,6 +598,42 @@ class AppConfig:
         if isinstance(route_max, bool) or not isinstance(route_max, int) or route_max < 1:
             raise ConfigurationError(
                 "DIARIZATION_ROUTE_MAX_SPEAKERS должно быть целым числом >= 1"
+            )
+
+        self._validate_diarization_hybrid()
+
+    def _validate_diarization_hybrid(self) -> None:
+        """Проверяет параметры гибридной диаризации (#64, часть 2)."""
+        if not isinstance(self.diarization_hybrid_enabled, bool):
+            raise ConfigurationError("DIARIZATION_HYBRID_ENABLED должно быть true или false")
+
+        window = self.diarization_hybrid_window_seconds
+        if isinstance(window, bool) or not isinstance(window, (int, float)) or window <= 0.0:
+            raise ConfigurationError(
+                "DIARIZATION_HYBRID_WINDOW_SECONDS должно быть положительным числом"
+            )
+
+        overlap = self.diarization_hybrid_overlap_seconds
+        if isinstance(overlap, bool) or not isinstance(overlap, (int, float)):
+            raise ConfigurationError("DIARIZATION_HYBRID_OVERLAP_SECONDS должно быть числом")
+        if overlap < 0.0:
+            raise ConfigurationError(
+                "DIARIZATION_HYBRID_OVERLAP_SECONDS не может быть отрицательным"
+            )
+        if overlap >= window:
+            raise ConfigurationError(
+                "DIARIZATION_HYBRID_OVERLAP_SECONDS должно быть меньше "
+                "DIARIZATION_HYBRID_WINDOW_SECONDS"
+            )
+
+        min_speaker = self.diarization_hybrid_min_speaker_seconds
+        if (
+            isinstance(min_speaker, bool)
+            or not isinstance(min_speaker, (int, float))
+            or min_speaker <= 0.0
+        ):
+            raise ConfigurationError(
+                "DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS должно быть положительным числом"
             )
 
     def _validate_llm_provider(self) -> None:

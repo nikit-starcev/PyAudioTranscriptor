@@ -23,6 +23,10 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ESTIMATE_MODEL,
     DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
     DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
+    DEFAULT_DIARIZATION_HYBRID_ENABLED,
+    DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS,
+    DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS,
+    DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
     DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
     DEFAULT_NEMO_SPEECH_BINARY,
     DEFAULT_NEMO_SPEECH_DEVICE,
@@ -109,6 +113,12 @@ class WebSettings:
     diarization_estimate_threshold: float = DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD
     diarization_estimate_model: str = DEFAULT_DIARIZATION_ESTIMATE_MODEL
     diarization_route_max_speakers: int = DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS
+    #: Гибридная диаризация (#64, часть 2): оконный nemo-speech + глобальная
+    #: склейка говорящих по эмбеддингам (обход лимита 4). Окно/перекрытие/порог.
+    diarization_hybrid_enabled: bool = DEFAULT_DIARIZATION_HYBRID_ENABLED
+    diarization_hybrid_window_seconds: float = DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS
+    diarization_hybrid_overlap_seconds: float = DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS
+    diarization_hybrid_min_speaker_seconds: float = DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS
     #: GigaAM v3 (RU) через onnx-asr (бэкенд ``gigaam``): имя модели, локальный
     #: каталог снимка, квантизация (``int8``/пусто) и встроенный VAD. Пустое имя
     #: означает значение по умолчанию из ``config.defaults``.
@@ -156,6 +166,16 @@ class WebSettings:
             "DIARIZATION_ESTIMATE_THRESHOLD": str(self.diarization_estimate_threshold),
             "DIARIZATION_ESTIMATE_MODEL": self.diarization_estimate_model,
             "DIARIZATION_ROUTE_MAX_SPEAKERS": str(self.diarization_route_max_speakers),
+            "DIARIZATION_HYBRID_ENABLED": _format_bool(self.diarization_hybrid_enabled),
+            "DIARIZATION_HYBRID_WINDOW_SECONDS": str(
+                self.diarization_hybrid_window_seconds
+            ),
+            "DIARIZATION_HYBRID_OVERLAP_SECONDS": str(
+                self.diarization_hybrid_overlap_seconds
+            ),
+            "DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS": str(
+                self.diarization_hybrid_min_speaker_seconds
+            ),
             "GIGAAM_MODEL": self.gigaam_model,
             "GIGAAM_MODEL_PATH": self.gigaam_model_path,
             "GIGAAM_QUANTIZATION": self.gigaam_quantization,
@@ -225,6 +245,22 @@ def default_settings(defaults: Mapping[str, str] | None = None) -> WebSettings:
         diarization_route_max_speakers=_as_int(
             source.get("DIARIZATION_ROUTE_MAX_SPEAKERS"),
             DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
+        ),
+        diarization_hybrid_enabled=_as_bool(
+            source.get("DIARIZATION_HYBRID_ENABLED"),
+            default=DEFAULT_DIARIZATION_HYBRID_ENABLED,
+        ),
+        diarization_hybrid_window_seconds=_as_float(
+            source.get("DIARIZATION_HYBRID_WINDOW_SECONDS"),
+            DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
+        ),
+        diarization_hybrid_overlap_seconds=_as_float(
+            source.get("DIARIZATION_HYBRID_OVERLAP_SECONDS"),
+            DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS,
+        ),
+        diarization_hybrid_min_speaker_seconds=_as_float(
+            source.get("DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS"),
+            DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS,
         ),
         gigaam_model=source.get("GIGAAM_MODEL", "").strip()
         or config_defaults.DEFAULT_GIGAAM_MODEL,
@@ -321,6 +357,19 @@ def settings_from_mapping(
         diarization_route_max_speakers=pick_int(
             "diarization_route_max_speakers", current.diarization_route_max_speakers
         ),
+        diarization_hybrid_enabled=pick_bool(
+            "diarization_hybrid_enabled", current.diarization_hybrid_enabled
+        ),
+        diarization_hybrid_window_seconds=pick_float(
+            "diarization_hybrid_window_seconds", current.diarization_hybrid_window_seconds
+        ),
+        diarization_hybrid_overlap_seconds=pick_float(
+            "diarization_hybrid_overlap_seconds", current.diarization_hybrid_overlap_seconds
+        ),
+        diarization_hybrid_min_speaker_seconds=pick_float(
+            "diarization_hybrid_min_speaker_seconds",
+            current.diarization_hybrid_min_speaker_seconds,
+        ),
         gigaam_model=pick_str("gigaam_model", current.gigaam_model),
         gigaam_model_path=pick_str("gigaam_model_path", current.gigaam_model_path),
         gigaam_quantization=pick_str("gigaam_quantization", current.gigaam_quantization),
@@ -390,6 +439,29 @@ def validate_settings(settings: WebSettings) -> None:
     )
     if settings.diarization_route_max_speakers < 1:
         raise SettingsError("DIARIZATION_ROUTE_MAX_SPEAKERS должно быть целым числом >= 1")
+
+    if not isinstance(settings.diarization_hybrid_enabled, bool):
+        raise SettingsError("DIARIZATION_HYBRID_ENABLED должно быть true или false")
+    if settings.diarization_hybrid_window_seconds <= 0.0:
+        raise SettingsError(
+            "DIARIZATION_HYBRID_WINDOW_SECONDS должно быть положительным числом"
+        )
+    if settings.diarization_hybrid_overlap_seconds < 0.0:
+        raise SettingsError(
+            "DIARIZATION_HYBRID_OVERLAP_SECONDS не может быть отрицательным"
+        )
+    if (
+        settings.diarization_hybrid_overlap_seconds
+        >= settings.diarization_hybrid_window_seconds
+    ):
+        raise SettingsError(
+            "DIARIZATION_HYBRID_OVERLAP_SECONDS должно быть меньше "
+            "DIARIZATION_HYBRID_WINDOW_SECONDS"
+        )
+    if settings.diarization_hybrid_min_speaker_seconds <= 0.0:
+        raise SettingsError(
+            "DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS должно быть положительным числом"
+        )
 
     if settings.llm_base_url and not _is_http_url(settings.llm_base_url):
         raise SettingsError(

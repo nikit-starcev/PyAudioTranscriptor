@@ -11,13 +11,15 @@ GPU через Vulkan, быстро, но модель рассчитана на
   (sherpa-onnx, секунды);
 * ``N <= DIARIZATION_ROUTE_MAX_SPEAKERS`` → ``nemo-speech`` (если бинарник
   доступен) — быстро;
-* ``N`` больше лимита → ``pyannote`` (если доступен) — точно;
+* ``N`` больше лимита → ``hybrid`` (оконный nemo-speech + глобальная склейка
+  говорящих по эмбеддингам), если доступны бинарник и эмбеддер; иначе
+  ``pyannote`` — точно;
 * ``N`` неизвестно (``None``) → ``pyannote`` (безопасно);
 * если предпочтительный движок недоступен, берётся другой; если недоступны
   оба — возвращается предпочтительный, а движок деградирует сам.
 
-Явно заданные ``pyannote``/``nemo-speech`` маршрутизацию не проходят — поведение
-не меняется. Решение логируется и отдаётся в прогресс.
+Явно заданные ``pyannote``/``nemo-speech``/``hybrid`` маршрутизацию не
+проходят — поведение не меняется. Решение логируется и отдаётся в прогресс.
 """
 
 from __future__ import annotations
@@ -32,7 +34,9 @@ import numpy as np
 
 from audio_transcriber.config.defaults import DEFAULT_DIARIZATION_ENGINE
 from audio_transcriber.config.settings import AppConfig
+from audio_transcriber.diarization import embeddings as embedding_utils
 from audio_transcriber.diarization.base import SpeakerDiarizer
+from audio_transcriber.diarization.hybrid_engine import HybridSpeakerDiarizer
 from audio_transcriber.diarization.nemo_speech_engine import NemoSpeechSpeakerDiarizer
 from audio_transcriber.diarization.pyannote_engine import PyannoteSpeakerDiarizer
 from audio_transcriber.diarization.speaker_count import estimate_speaker_count
@@ -44,6 +48,7 @@ logger = logging.getLogger(__name__)
 
 PYANNOTE_ENGINE = "pyannote"
 NEMO_SPEECH_ENGINE = "nemo-speech"
+HYBRID_ENGINE = "hybrid"
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +77,21 @@ def pyannote_available() -> bool:
 def nemo_speech_available(config: AppConfig) -> bool:
     """Доступен ли бинарник nemo-speech."""
     return binary_available(config.nemo_speech_binary)
+
+
+def hybrid_available(config: AppConfig) -> bool:
+    """Доступна ли гибридная диаризация (оконный EEND + эмбеддинги).
+
+    Нужны: включённый флаг, бинарник ``nemo-speech``, ``sherpa-onnx`` и уже
+    скачанная модель эмбеддингов. Проверка **не** скачивает модель: если её
+    нет на диске, гибрид не выбирается (маршрут уходит на pyannote), но в
+    режиме ``auto`` оценщик числа говорящих обычно скачивает её раньше.
+    """
+    if not config.diarization_hybrid_enabled:
+        return False
+    if not nemo_speech_available(config):
+        return False
+    return embedding_utils.embedder_available(config.diarization_estimate_model)
 
 
 def _estimate(
@@ -114,7 +134,7 @@ def decide_diarization(
 ) -> DiarizationDecision:
     """Выбирает движок диаризации по настройкам и (для ``auto``) числу говорящих."""
     engine = (config.diarization_engine or DEFAULT_DIARIZATION_ENGINE).strip().casefold()
-    if engine in (PYANNOTE_ENGINE, NEMO_SPEECH_ENGINE):
+    if engine in (PYANNOTE_ENGINE, NEMO_SPEECH_ENGINE, HYBRID_ENGINE):
         return DiarizationDecision(
             engine=engine,
             speaker_count=config.num_speakers,
@@ -137,6 +157,7 @@ def decide_diarization(
         origin = "оценка отключена"
 
     nemo_ok = nemo_speech_available(config)
+    hybrid_ok = hybrid_available(config)
     pyannote_ok = pyannote_available()
     cap = config.diarization_route_max_speakers
 
@@ -164,13 +185,19 @@ def decide_diarization(
             engine = NEMO_SPEECH_ENGINE
             reason = f"{origin} ≤ {cap}; доступных движков нет — nemo-speech"
     else:
-        if pyannote_ok:
+        if hybrid_ok:
+            engine = HYBRID_ENGINE
+            reason = (
+                f"{origin} > {cap} — hybrid (быстро, обход лимита {cap} "
+                "говорящих включён)"
+            )
+        elif pyannote_ok:
             engine = PYANNOTE_ENGINE
             reason = f"{origin} > {cap} — pyannote (точно)"
         elif nemo_ok:
             engine = NEMO_SPEECH_ENGINE
             reason = (
-                f"{origin} > {cap}, pyannote недоступен — nemo-speech "
+                f"{origin} > {cap}, pyannote/hybrid недоступны — nemo-speech "
                 f"(лимит {cap} говорящих)"
             )
         else:
@@ -244,6 +271,26 @@ def create_diarizer(
             lib_path=config.nemo_speech_lib_path,
             model=config.nemo_speech_model,
             on_progress=on_progress,
+        )
+    if decision.engine == HYBRID_ENGINE:
+        logger.info(
+            "hybrid: окно %.1f с, перекрытие %.1f с, эмбеддер %s",
+            config.diarization_hybrid_window_seconds,
+            config.diarization_hybrid_overlap_seconds,
+            config.diarization_estimate_model,
+        )
+        return HybridSpeakerDiarizer(
+            config.nemo_speech_device,
+            binary=config.nemo_speech_binary,
+            lib_path=config.nemo_speech_lib_path,
+            model=config.nemo_speech_model,
+            on_progress=on_progress,
+            window_seconds=config.diarization_hybrid_window_seconds,
+            overlap_seconds=config.diarization_hybrid_overlap_seconds,
+            min_speaker_seconds=config.diarization_hybrid_min_speaker_seconds,
+            embedding_model=config.diarization_estimate_model,
+            threshold=config.diarization_estimate_threshold,
+            expected_speakers=decision.speaker_count,
         )
     return PyannoteSpeakerDiarizer(
         device,

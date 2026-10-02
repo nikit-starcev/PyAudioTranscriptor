@@ -520,3 +520,42 @@ def test_nemo_speech_absent_when_diarization_disabled(
     checks = doctor.run_doctor(None, _base_env(tmp_path))
 
     assert all(check.key != "bin:nemo-speech" for check in checks)
+
+
+# --- гибридная диаризация ----------------------------------------------------
+
+
+def test_hybrid_missing_binary_is_critical(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+    _patch_nemo(monkeypatch, binary=False, doctor_result=None)
+
+    env = _base_env(tmp_path, DIARIZATION_ENABLED="true", DIARIZATION_ENGINE="hybrid")
+    checks = doctor.run_doctor(None, env)
+
+    binary_check = _find(checks, "bin:nemo-speech")
+    assert not binary_check.ok
+    assert binary_check.critical
+
+
+def test_hybrid_skips_pyannote_dependency_and_token(tmp_path: Path) -> None:
+    env = _base_env(tmp_path, DIARIZATION_ENABLED="true", DIARIZATION_ENGINE="hybrid")
+
+    deps = {label: critical for _module, label, critical in doctor._dependencies(env)}
+    assert deps["pyannote.audio (диаризация)"] is False
+    assert deps["torch"] is False
+    assert doctor._check_hf_token(env).ok
+
+
+def test_hybrid_requires_sherpa_even_without_estimate(tmp_path: Path) -> None:
+    env = _base_env(
+        tmp_path,
+        DIARIZATION_ENABLED="true",
+        DIARIZATION_ENGINE="hybrid",
+        DIARIZATION_ESTIMATE_ENABLED="false",
+    )
+
+    modules = {module for module, _label, _critical in doctor._dependencies(env)}
+    assert "sherpa_onnx" in modules

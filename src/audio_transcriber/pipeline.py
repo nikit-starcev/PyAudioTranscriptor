@@ -43,6 +43,10 @@ from audio_transcriber.diarization.enrollment import (
     assign_speaker_names,
 )
 from audio_transcriber.diarization.factory import create_diarizer
+from audio_transcriber.diarization.hybrid_engine import (
+    DIARIZATION_HYBRID_IMPL_VERSION,
+    HybridSpeakerDiarizer,
+)
 from audio_transcriber.diarization.overlap import DIARIZATION_IMPL_VERSION
 from audio_transcriber.diarization.pyannote_engine import (
     DEFAULT_PIPELINE as DIARIZATION_PIPELINE,
@@ -314,7 +318,7 @@ def _diarization_cache_params(
     config: AppConfig, device: Device, diarizer: SpeakerDiarizer
 ) -> dict[str, object]:
     """Релевантные параметры стадии диаризации для ключа кэша."""
-    return {
+    params: dict[str, object] = {
         "engine": type(diarizer).__name__,
         "device": device.value,
         # Выбранный движок и его параметры: смена nemo-speech -> pyannote (или
@@ -344,6 +348,17 @@ def _diarization_cache_params(
         # Пометка наложения влияет на то, собираются ли зоны перекрытий.
         "mark_overlap": config.mark_overlap,
     }
+    if isinstance(diarizer, HybridSpeakerDiarizer):
+        # Параметры гибрида (окна/порог/модель эмбеддингов) меняют результат при
+        # том же входе, поэтому входят в ключ только для гибридного движка —
+        # иначе каждый апгрейд инвалидировал бы кэш и остальных движков.
+        params["hybrid_impl_version"] = DIARIZATION_HYBRID_IMPL_VERSION
+        params["hybrid_window_seconds"] = config.diarization_hybrid_window_seconds
+        params["hybrid_overlap_seconds"] = config.diarization_hybrid_overlap_seconds
+        params["hybrid_min_speaker_seconds"] = config.diarization_hybrid_min_speaker_seconds
+        params["hybrid_embedding_model"] = config.diarization_estimate_model
+        params["hybrid_threshold"] = config.diarization_estimate_threshold
+    return params
 
 
 def _ensure_not_cancelled(

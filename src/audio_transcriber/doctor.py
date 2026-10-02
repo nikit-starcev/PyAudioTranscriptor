@@ -285,9 +285,12 @@ def _dependencies(env: Mapping[str, str]) -> list[tuple[str, str, bool]]:
     # Оценщик числа говорящих нужен режиму auto, но не критичен: без него
     # маршрутизация безопасно выбирает pyannote (мягкая деградация).
     estimate_enabled = _truthy(env.get("DIARIZATION_ESTIMATE_ENABLED"), default=True)
-    # При явном движке nemo-speech pyannote/torch не нужны (нет fallback);
+    # Гибридная диаризация тоже использует sherpa-onnx (эмбеддинги CAM++).
+    hybrid_enabled = _truthy(env.get("DIARIZATION_HYBRID_ENABLED"), default=True)
+    engine = _diarization_engine(env)
+    # При явном nemo-speech/hybrid pyannote/torch не нужны (нет fallback);
     # в режиме auto pyannote остаётся резервом, поэтому критичен.
-    pyannote_needed = diarization and _diarization_engine(env) != "nemo-speech"
+    pyannote_needed = diarization and engine not in {"nemo-speech", "hybrid"}
     checks = [
         ("av", "av (декодирование аудио)", True),
         ("faster_whisper", "faster-whisper", backend == AsrBackend.FASTER_WHISPER.value),
@@ -298,9 +301,9 @@ def _dependencies(env: Mapping[str, str]) -> list[tuple[str, str, bool]]:
         ("pymorphy3", "pymorphy3 (автоисправление)", correction),
         ("df", "deepfilternet (денойз)", False),
     ]
-    if diarization and estimate_enabled:
+    if diarization and (estimate_enabled or (hybrid_enabled and engine == "hybrid")):
         checks.append(
-            ("sherpa_onnx", "sherpa-onnx (оценка числа говорящих, auto)", False)
+            ("sherpa_onnx", "sherpa-onnx (оценка говорящих / гибрид)", False)
         )
     return checks
 
@@ -423,7 +426,7 @@ def _check_nemo_speech(env: Mapping[str, str]) -> list[DoctorCheck]:
     if engine == "pyannote":
         return []
 
-    explicit = engine == "nemo-speech"
+    explicit = engine in {"nemo-speech", "hybrid"}
     binary = (
         env.get("NEMO_SPEECH_BINARY", DEFAULT_NEMO_SPEECH_BINARY).strip()
         or DEFAULT_NEMO_SPEECH_BINARY
@@ -616,7 +619,7 @@ def _check_models(env: Mapping[str, str]) -> list[DoctorCheck]:
             )
         )
 
-    if diarization and _diarization_engine(env) != "nemo-speech":
+    if diarization and _diarization_engine(env) not in {"nemo-speech", "hybrid"}:
         raw = env.get("PYANNOTE_LOCAL_MODEL", "").strip()
         if raw:
             path = Path(raw)
@@ -748,7 +751,7 @@ def _check_hf_token(env: Mapping[str, str]) -> DoctorCheck:
     diarization = _truthy(env.get("DIARIZATION_ENABLED"), default=True)
     local_model = env.get("PYANNOTE_LOCAL_MODEL", "").strip()
     engine = _diarization_engine(env)
-    needed = diarization and not local_model and engine != "nemo-speech"
+    needed = diarization and not local_model and engine not in {"nemo-speech", "hybrid"}
     if not needed:
         return DoctorCheck(
             key="hf_token",

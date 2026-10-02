@@ -20,6 +20,10 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ESTIMATE_MODEL,
     DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
     DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
+    DEFAULT_DIARIZATION_HYBRID_ENABLED,
+    DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS,
+    DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS,
+    DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
     DEFAULT_ENROLLMENT_MAX_SAMPLE_SECONDS,
@@ -253,6 +257,22 @@ def build_job_config(
         diarization_route_max_speakers=_as_int(
             defaults.get("DIARIZATION_ROUTE_MAX_SPEAKERS"),
             DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
+        ),
+        diarization_hybrid_enabled=_as_bool(
+            defaults.get("DIARIZATION_HYBRID_ENABLED"),
+            default=DEFAULT_DIARIZATION_HYBRID_ENABLED,
+        ),
+        diarization_hybrid_window_seconds=_as_float(
+            defaults.get("DIARIZATION_HYBRID_WINDOW_SECONDS"),
+            DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
+        ),
+        diarization_hybrid_overlap_seconds=_as_float(
+            defaults.get("DIARIZATION_HYBRID_OVERLAP_SECONDS"),
+            DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS,
+        ),
+        diarization_hybrid_min_speaker_seconds=_as_float(
+            defaults.get("DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS"),
+            DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS,
         ),
         initial_prompt=defaults.get("INITIAL_PROMPT") or None,
         hotwords=defaults.get("HOTWORDS") or None,

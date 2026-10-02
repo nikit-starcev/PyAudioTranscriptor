@@ -9,6 +9,22 @@
 
 ### Added
 
+- Гибридная диаризация для записей с более чем 4 говорящими (#64, часть 2):
+  движок `hybrid` (`diarization/hybrid_engine.py`) режет аудио на окна ~90 с с
+  перекрытием 2 с (границы сдвигаются на паузы), в каждом окне запускает
+  `nemo-speech` (не более 4 локальных говорящих), считает эмбеддинги локальных
+  говорящих общим модулем `diarization/embeddings.py` (sherpa-onnx, 3D-Speaker
+  CAM++) и глобально кластеризует их, после чего склеивает локальные сегменты в
+  глобальные `SPEAKER_XX` (зоны владения окон исключают дубли и пропуски).
+  В режиме `auto` при числе говорящих выше `DIARIZATION_ROUTE_MAX_SPEAKERS`
+  выбирается гибрид, если доступны бинарник `nemo-speech` и модель эмбеддингов,
+  иначе pyannote. Настройки: `DIARIZATION_HYBRID_ENABLED`,
+  `DIARIZATION_HYBRID_WINDOW_SECONDS`, `DIARIZATION_HYBRID_OVERLAP_SECONDS`,
+  `DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS` (AppConfig/WebSettings/CLI/доктор).
+  На 15-мин записи гибрид находит 6 говорящих за ~153 с против ~1001 с у
+  pyannote. Запуск/парсинг `nemo-speech` вынесен в переиспользуемую
+  `diarize_audio`; оценщик числа говорящих переведён на общий модуль эмбеддингов.
+
 - Автоустановка опциональных пакетов из мастера первого запуска (#66): реестр
   разрешённых зависимостей (`gigaam` → `onnx-asr[cpu,hub]`, `denoise` →
   `deepfilternet`), эндпоинты `GET /api/deps`, `POST /api/deps/{key}/install`

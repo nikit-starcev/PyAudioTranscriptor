@@ -870,3 +870,53 @@ def test_diarization_estimate_enabled_must_be_bool(audio_file: Path) -> None:
             input_file=audio_file,
             diarization_estimate_enabled="yes",  # type: ignore[arg-type]
         )
+
+
+# --- Гибридная диаризация (#64, часть 2) ------------------------------------
+
+
+def test_diarization_hybrid_defaults(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file)
+
+    assert config.diarization_hybrid_enabled is True
+    assert config.diarization_hybrid_window_seconds == 90.0
+    assert config.diarization_hybrid_overlap_seconds == 2.0
+    assert config.diarization_hybrid_min_speaker_seconds == 1.5
+
+
+def test_diarization_hybrid_engine_is_valid(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file, diarization_engine="HYBRID")
+
+    assert config.diarization_engine == "hybrid"
+
+
+def test_diarization_hybrid_window_must_be_positive(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, diarization_hybrid_window_seconds=0.0)
+
+
+def test_diarization_hybrid_overlap_must_be_smaller_than_window(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(
+            input_file=audio_file,
+            diarization_hybrid_window_seconds=10.0,
+            diarization_hybrid_overlap_seconds=10.0,
+        )
+
+
+def test_diarization_hybrid_overlap_not_negative(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, diarization_hybrid_overlap_seconds=-1.0)
+
+
+def test_diarization_hybrid_min_speaker_must_be_positive(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, diarization_hybrid_min_speaker_seconds=0.0)
+
+
+def test_diarization_hybrid_enabled_must_be_bool(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(
+            input_file=audio_file,
+            diarization_hybrid_enabled="yes",  # type: ignore[arg-type]
+        )

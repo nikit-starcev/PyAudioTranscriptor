@@ -19,6 +19,10 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ESTIMATE_MODEL,
     DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
     DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
+    DEFAULT_DIARIZATION_HYBRID_ENABLED,
+    DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS,
+    DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS,
+    DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
     DEFAULT_ENROLLMENT_MIN_SIMILARITY,
@@ -361,6 +365,48 @@ def transcribe(
         help=(
             "Cap маршрутизации auto: до этого числа говорящих выбирается быстрый "
             f"nemo-speech. По умолчанию {DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS}."
+        ),
+    ),
+    diarization_hybrid: bool = typer.Option(
+        DEFAULT_DIARIZATION_HYBRID_ENABLED,
+        "--diarization-hybrid/--no-diarization-hybrid",
+        envvar="DIARIZATION_HYBRID_ENABLED",
+        help=(
+            "Гибридная диаризация для >4 говорящих: оконный nemo-speech + "
+            "глобальная склейка говорящих по эмбеддингам (sherpa-onnx). В auto "
+            "выбирается при N выше cap, если доступны бинарник и модель."
+        ),
+    ),
+    diarization_hybrid_window_seconds: float = typer.Option(
+        DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
+        "--diarization-hybrid-window-seconds",
+        envvar="DIARIZATION_HYBRID_WINDOW_SECONDS",
+        min=1.0,
+        help=(
+            "Длительность окна гибридной диаризации (секунды). Короче — выше шанс "
+            f"уложиться в 4 говорящих, но больше запусков. "
+            f"По умолчанию {DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS}."
+        ),
+    ),
+    diarization_hybrid_overlap_seconds: float = typer.Option(
+        DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS,
+        "--diarization-hybrid-overlap-seconds",
+        envvar="DIARIZATION_HYBRID_OVERLAP_SECONDS",
+        min=0.0,
+        help=(
+            "Перекрытие соседних окон гибрида (секунды): речь на границе не "
+            f"теряется. По умолчанию {DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS}."
+        ),
+    ),
+    diarization_hybrid_min_speaker_seconds: float = typer.Option(
+        DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS,
+        "--diarization-hybrid-min-speaker-seconds",
+        envvar="DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS",
+        min=0.1,
+        help=(
+            "Минимальная суммарная речь локального говорящего в окне (секунды) "
+            "для эмбеддинга. Короче — вектор ненадёжен. По умолчанию "
+            f"{DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS}."
         ),
     ),
     initial_prompt: str | None = typer.Option(
@@ -862,6 +908,10 @@ def transcribe(
             diarization_estimate_threshold=diarization_estimate_threshold,
             diarization_estimate_model=diarization_estimate_model,
             diarization_route_max_speakers=diarization_route_max_speakers,
+            diarization_hybrid_enabled=diarization_hybrid,
+            diarization_hybrid_window_seconds=diarization_hybrid_window_seconds,
+            diarization_hybrid_overlap_seconds=diarization_hybrid_overlap_seconds,
+            diarization_hybrid_min_speaker_seconds=diarization_hybrid_min_speaker_seconds,
             initial_prompt=initial_prompt,
             hotwords=hotwords,
             clean_artifacts=clean_artifacts,
