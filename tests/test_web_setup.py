@@ -96,6 +96,68 @@ def test_binary_requirements() -> None:
     assert all(item["needed"] for item in requirements)
 
 
+def test_required_models_include_gigaam_only_for_gigaam_backend() -> None:
+    for backend in ("faster-whisper", "whisper-cpp"):
+        ids = web_setup.required_model_ids(WebSettings(asr_backend=backend))
+        assert web_setup.GIGAAM_MODEL_ID not in ids
+
+    ids = web_setup.required_model_ids(WebSettings(asr_backend="gigaam"))
+    assert web_setup.GIGAAM_MODEL_ID in ids
+    # Для gigaam не нужна модель whisper.cpp, а диаризация остаётся.
+    assert "whisper-large-v3-turbo" not in ids
+    assert "pyannote-community-1" in ids
+
+
+def test_binary_requirements_include_onnx_asr_for_gigaam() -> None:
+    assert web_setup.binary_requirements(WebSettings()) == []
+    assert [
+        item["key"] for item in web_setup.binary_requirements(WebSettings(asr_backend="gigaam"))
+    ] == ["onnx-asr"]
+
+    gigaam = web_setup.binary_requirements(WebSettings(asr_backend="gigaam"))[0]
+    assert gigaam["needed"] is True
+    assert gigaam["check_id"] == "dep:onnx_asr"
+    assert "onnx-asr[cpu,hub]" in str(gigaam["instructions"])
+
+    # Бинарные пункты не сломаны: у них check_id по-прежнему не задан вручную.
+    whisper = web_setup.binary_requirements(WebSettings(asr_backend="whisper-cpp"))
+    assert [item["key"] for item in whisper] == ["whisper-cli"]
+    assert "check_id" not in whisper[0]
+
+
+def test_setup_steps_gigaam_check_package_and_model() -> None:
+    settings = WebSettings(asr_backend="gigaam")
+    required = tuple(web_setup.required_model_ids(settings))
+    report = _report([_check("hf_token", "ok"), _check("dep:onnx_asr", "fail")])
+
+    plan = web_setup.build_setup_steps(
+        settings=settings,
+        report=report,
+        models=_models(present=set(), required_ids=required),
+        hf_token_set=False,
+    )
+
+    by_id = {step["id"]: step for step in plan["steps"]}
+    assert web_setup.GIGAAM_MODEL_ID in plan["required_models"]
+    assert web_setup.GIGAAM_MODEL_ID in plan["missing_models"]
+    assert by_id["models"]["status"] == "todo"
+    onnx = next(item for item in plan["binaries"] if item["key"] == "onnx-asr")
+    assert onnx["available"] is False
+    assert onnx["status"] == "fail"
+    assert by_id["binaries"]["status"] == "todo"
+
+    # Проверка доктора ``ok`` — пакет найден (check_id резолвится не в bin:).
+    ready = web_setup.build_setup_steps(
+        settings=settings,
+        report=_report([_check("dep:onnx_asr", "ok")]),
+        models=_models(present=set(required), required_ids=required),
+        hf_token_set=False,
+    )
+    onnx_ok = next(item for item in ready["binaries"] if item["key"] == "onnx-asr")
+    assert onnx_ok["available"] is True
+    assert ready["missing_models"] == []
+
+
 def test_steps_all_ok_when_ready() -> None:
     settings = WebSettings()
     required = tuple(web_setup.required_model_ids(settings))

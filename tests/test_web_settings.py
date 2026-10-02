@@ -12,11 +12,14 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from audio_transcriber.config.defaults import DEFAULT_GIGAAM_MODEL
+from audio_transcriber.domain.enums import AsrBackend
 from audio_transcriber.storage.glossary_builder import build_glossary
 from audio_transcriber.storage.glossary_db import GlossaryDB
 from audio_transcriber.web.app import create_app
 from audio_transcriber.web.config import build_job_config
 from audio_transcriber.web.paths import WebPaths
+from audio_transcriber.web.settings import default_settings, settings_from_mapping
 
 
 @pytest.fixture
@@ -354,3 +357,106 @@ def test_reference_prepare_options_defaults(monkeypatch: pytest.MonkeyPatch) -> 
     assert options.min_speech_seconds == pytest.approx(3.0)
     assert options.max_seconds == pytest.approx(10.0)
     assert options.target_dbfs == pytest.approx(-30.0)
+
+
+# --- GigaAM v3 (onnx-asr) -----------------------------------------------------
+
+
+def test_gigaam_settings_roundtrip() -> None:
+    base = default_settings({})
+    # Значение по умолчанию согласовано с config.defaults.
+    assert base.gigaam_model == DEFAULT_GIGAAM_MODEL
+    assert base.gigaam_model_path == ""
+    assert base.gigaam_quantization == ""
+    assert base.gigaam_vad is True
+
+    merged = settings_from_mapping(
+        {
+            "gigaam_model": "gigaam-v3-ctc",
+            "gigaam_model_path": "/models/gigaam",
+            "gigaam_quantization": "int8",
+            "gigaam_vad": False,
+        },
+        base=base,
+    )
+    assert merged.gigaam_model == "gigaam-v3-ctc"
+    assert merged.gigaam_vad is False
+
+    env = merged.env_overrides()
+    assert env["GIGAAM_MODEL"] == "gigaam-v3-ctc"
+    assert env["GIGAAM_MODEL_PATH"] == "/models/gigaam"
+    assert env["GIGAAM_QUANTIZATION"] == "int8"
+    assert env["GIGAAM_VAD"] == "false"
+
+
+def test_gigaam_settings_from_env() -> None:
+    settings = default_settings(
+        {
+            "GIGAAM_MODEL": "gigaam-v3-e2e-ctc",
+            "GIGAAM_MODEL_PATH": "/models/gigaam",
+            "GIGAAM_QUANTIZATION": "int8",
+            "GIGAAM_VAD": "false",
+        }
+    )
+
+    assert settings.gigaam_model == "gigaam-v3-e2e-ctc"
+    assert settings.gigaam_model_path == "/models/gigaam"
+    assert settings.gigaam_quantization == "int8"
+    assert settings.gigaam_vad is False
+
+
+def test_put_settings_persists_gigaam(client: TestClient, tmp_path: Path) -> None:
+    model_dir = tmp_path / "gigaam"
+    response = client.put(
+        "/api/settings",
+        json={
+            "gigaam_model": "gigaam-v3-ctc",
+            "gigaam_model_path": str(model_dir),
+            "gigaam_quantization": "int8",
+            "gigaam_vad": False,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["gigaam_model"] == "gigaam-v3-ctc"
+    assert body["gigaam_model_path"] == str(model_dir)
+    assert body["gigaam_quantization"] == "int8"
+    assert body["gigaam_vad"] is False
+
+    saved = client.get("/api/settings").json()
+    assert saved["gigaam_model"] == "gigaam-v3-ctc"
+
+
+def test_put_settings_accepts_web_settings_gigaam_defaults(client: TestClient) -> None:
+    payload = client.get("/api/settings").json()
+
+    assert payload["gigaam_model"] == DEFAULT_GIGAAM_MODEL
+    assert payload["gigaam_model_path"] == ""
+    assert payload["gigaam_vad"] is True
+
+
+def test_build_job_config_maps_gigaam(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("audio_transcriber.web.config.env_defaults", lambda: {})
+
+    model_dir = tmp_path / "gigaam"
+    config = build_job_config(
+        audio_file,
+        output_dir=tmp_path / "out",
+        data_dir=tmp_path / "data",
+        overrides={
+            "ASR_BACKEND": "gigaam",
+            "GIGAAM_MODEL": "gigaam-v3-ctc",
+            "GIGAAM_MODEL_PATH": str(model_dir),
+            "GIGAAM_QUANTIZATION": "int8",
+            "GIGAAM_VAD": "false",
+        },
+    )
+
+    assert config.asr_backend == AsrBackend.GIGAAM
+    assert config.gigaam_model == "gigaam-v3-ctc"
+    assert config.gigaam_model_path == model_dir
+    assert config.gigaam_quantization == "int8"
+    assert config.gigaam_vad is False

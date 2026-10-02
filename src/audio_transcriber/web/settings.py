@@ -56,7 +56,7 @@ class WebSettings:
     #: Отдельная настройка веб-интерфейса; переопределяет ``NOTIFICATIONS``
     #: из ``config.env`` для веб-задач.
     notifications: bool = True
-    #: Бэкенд распознавания (``faster-whisper`` или ``whisper-cpp``).
+    #: Бэкенд распознавания (``faster-whisper``, ``whisper-cpp`` или ``gigaam``).
     asr_backend: str = "faster-whisper"
     #: Устройство вычислений (``auto`` / ``cpu`` / ``cuda``).
     device: str = "auto"
@@ -73,6 +73,13 @@ class WebSettings:
     #: API-ключ внешней LLM — секрет: хранится в ``secrets.json``, не в
     #: ``settings.json``. В этом срезе намеренно отсутствует.
     pyannote_local_model: str = ""
+    #: GigaAM v3 (RU) через onnx-asr (бэкенд ``gigaam``): имя модели, локальный
+    #: каталог снимка, квантизация (``int8``/пусто) и встроенный VAD. Пустое имя
+    #: означает значение по умолчанию из ``config.defaults``.
+    gigaam_model: str = ""
+    gigaam_model_path: str = ""
+    gigaam_quantization: str = ""
+    gigaam_vad: bool = True
 
     def as_dict(self) -> dict[str, object]:
         """Плоское представление для JSON-ответа API (без секретов)."""
@@ -103,6 +110,10 @@ class WebSettings:
             "LLM_BASE_URL": self.llm_base_url,
             "LLM_MODEL_NAME": self.llm_model_name,
             "PYANNOTE_LOCAL_MODEL": self.pyannote_local_model,
+            "GIGAAM_MODEL": self.gigaam_model,
+            "GIGAAM_MODEL_PATH": self.gigaam_model_path,
+            "GIGAAM_QUANTIZATION": self.gigaam_quantization,
+            "GIGAAM_VAD": _format_bool(self.gigaam_vad),
         }
 
     def resolved_glossary_db(self) -> Path:
@@ -142,6 +153,11 @@ def default_settings(defaults: Mapping[str, str] | None = None) -> WebSettings:
         llm_base_url=source.get("LLM_BASE_URL", "").strip(),
         llm_model_name=source.get("LLM_MODEL_NAME", "").strip(),
         pyannote_local_model=source.get("PYANNOTE_LOCAL_MODEL", "").strip(),
+        gigaam_model=source.get("GIGAAM_MODEL", "").strip()
+        or config_defaults.DEFAULT_GIGAAM_MODEL,
+        gigaam_model_path=source.get("GIGAAM_MODEL_PATH", "").strip(),
+        gigaam_quantization=source.get("GIGAAM_QUANTIZATION", "").strip(),
+        gigaam_vad=_as_bool(source.get("GIGAAM_VAD"), default=True),
     )
 
 
@@ -189,6 +205,10 @@ def settings_from_mapping(
         llm_base_url=pick_str("llm_base_url", current.llm_base_url),
         llm_model_name=pick_str("llm_model_name", current.llm_model_name),
         pyannote_local_model=pick_str("pyannote_local_model", current.pyannote_local_model),
+        gigaam_model=pick_str("gigaam_model", current.gigaam_model),
+        gigaam_model_path=pick_str("gigaam_model_path", current.gigaam_model_path),
+        gigaam_quantization=pick_str("gigaam_quantization", current.gigaam_quantization),
+        gigaam_vad=pick_bool("gigaam_vad", current.gigaam_vad),
     )
 
 
@@ -237,6 +257,7 @@ def validate_settings(settings: WebSettings) -> None:
         ("whisper_cpp_model", settings.whisper_cpp_model),
         ("llm_model", settings.llm_model),
         ("pyannote_local_model", settings.pyannote_local_model),
+        ("gigaam_model_path", settings.gigaam_model_path),
     )
     for label, value in paths:
         if not value.strip():

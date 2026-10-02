@@ -126,7 +126,12 @@ def test_catalog_shape_and_uniqueness() -> None:
     ids = [entry.id for entry in web_models.MODEL_CATALOG]
     assert len(ids) == len(set(ids))
     kinds = {entry.kind for entry in web_models.MODEL_CATALOG}
-    assert kinds == {web_models.KIND_WHISPER, web_models.KIND_LLM, web_models.KIND_PYANNOTE}
+    assert kinds == {
+        web_models.KIND_WHISPER,
+        web_models.KIND_LLM,
+        web_models.KIND_PYANNOTE,
+        web_models.KIND_GIGAAM,
+    }
     pyannote = web_models.find_model("pyannote-community-1")
     assert pyannote is not None
     assert pyannote.gated is True
@@ -189,6 +194,44 @@ def test_resolve_target_uses_configured_path(tmp_path: Path) -> None:
         ).name
         == "ggml-small.bin"
     )
+
+
+def test_gigaam_snapshot_entry(tmp_path: Path) -> None:
+    entry = web_models.find_model("gigaam-v3-onnx")
+    assert entry is not None
+    assert entry.kind == web_models.KIND_GIGAAM
+    assert entry.snapshot is True
+    assert entry.gated is False
+    assert entry.repo == "istupakov/gigaam-v3-onnx"
+    assert entry.setting_key == "gigaam_model_path"
+    assert entry.target_dir == "gigaam-models/gigaam-v3-onnx"
+    assert entry.approx_size > 0
+
+    # Путь по умолчанию — каталог моделей; настроенный — используется как есть.
+    assert web_models.resolve_target(entry, models_root=tmp_path, settings=WebSettings()) == (
+        tmp_path / "gigaam-models" / "gigaam-v3-onnx"
+    )
+    configured = WebSettings(gigaam_model_path="/models/gigaam")
+    assert (
+        web_models.resolve_target(entry, models_root=tmp_path, settings=configured)
+        == Path("/models/gigaam")
+    )
+
+    # Статус снимка: пусто/только .cache — нет; содержательный файл — есть.
+    target = tmp_path / "gigaam-models" / "gigaam-v3-onnx"
+    assert web_models.local_status(entry, target).present is False
+    (target / ".cache").mkdir(parents=True)
+    (target / ".cache" / "tmp").write_bytes(b"cache")
+    assert web_models.local_status(entry, target).present is False
+    (target / "v3_e2e_rnnt_encoder.onnx").write_bytes(b"z" * 64)
+    status = web_models.local_status(entry, target)
+    assert status.present is True
+    assert status.size >= 64
+
+    # Удаление снимка работает без спец-кода (ограничено каталогом модели).
+    assert web_models.delete_model_files(entry, target) is True
+    assert not target.exists()
+    assert web_models.delete_model_files(entry, target) is False
 
 
 def test_get_models_endpoint_shape(client: TestClient) -> None:
@@ -256,6 +299,21 @@ def test_download_snapshot_pyannote_with_token(
     target = web_paths.models_dir / "pyannote-models" / "speaker-diarization-community-1"
     assert (target / "config.yaml").is_file()
     assert _find(client, "pyannote-community-1")["status"]["present"] is True
+
+
+def test_download_snapshot_gigaam(
+    client: TestClient, web_paths: WebPaths, downloader: FakeDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Снимок GigaAM большой — не упираемся в реальное свободное место на диске.
+    monkeypatch.setattr(web_app, "free_space", lambda _path: 10**12)
+
+    assert client.post("/api/models/gigaam-v3-onnx/download").status_code == 202
+    _manager(client).wait("gigaam-v3-onnx")
+
+    target = web_paths.models_dir / "gigaam-models" / "gigaam-v3-onnx"
+    assert (target / "config.yaml").is_file()
+    assert downloader.calls == [("istupakov/gigaam-v3-onnx", "<snapshot>")]
+    assert _find(client, "gigaam-v3-onnx")["status"]["present"] is True
 
 
 def test_download_gated_without_token_is_rejected(client: TestClient) -> None:

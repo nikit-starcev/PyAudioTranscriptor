@@ -378,6 +378,10 @@ class SettingsUpdate(BaseModel):
     llm_model_name: str | None = None
     llm_api_key: str | None = None
     pyannote_local_model: str | None = None
+    gigaam_model: str | None = None
+    gigaam_model_path: str | None = None
+    gigaam_quantization: str | None = None
+    gigaam_vad: bool | None = None
 
 
 class HfCheckRequest(BaseModel):

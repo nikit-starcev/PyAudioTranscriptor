@@ -20,6 +20,7 @@ const KIND_LABELS: Record<string, string> = {
   'whisper-cpp': 'Распознавание (whisper.cpp)',
   llm: 'LLM-постобработка',
   pyannote: 'Диаризация',
+  gigaam: 'Распознавание (GigaAM, onnx-asr)',
 }
 
 function statusBadge(model: ModelInfo) {

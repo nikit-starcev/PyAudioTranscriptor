@@ -73,6 +73,8 @@ DEFAULT_WHISPER_MODEL_ID = "whisper-large-v3-turbo"
 DEFAULT_LLM_MODEL_ID = "qwen2.5-7b-instruct-q4_k_m"
 #: Модель диаризации.
 PYANNOTE_MODEL_ID = "pyannote-community-1"
+#: Снимок GigaAM v3 (onnx-asr) — нужен при бэкенде ``gigaam``.
+GIGAAM_MODEL_ID = "gigaam-v3-onnx"
 
 
 def current_hardware(settings: object) -> str:
@@ -97,8 +99,11 @@ def hardware_option(option_id: str) -> HardwareOption | None:
 def required_model_ids(settings: object) -> list[str]:
     """Модели, нужные для текущего режима (для шага «Модели»)."""
     ids: list[str] = []
-    if getattr(settings, "asr_backend", AsrBackend.FASTER_WHISPER.value) == AsrBackend.WHISPER_CPP.value:
+    backend = getattr(settings, "asr_backend", AsrBackend.FASTER_WHISPER.value)
+    if backend == AsrBackend.WHISPER_CPP.value:
         ids.append(DEFAULT_WHISPER_MODEL_ID)
+    elif backend == AsrBackend.GIGAAM.value:
+        ids.append(GIGAAM_MODEL_ID)
     if bool(getattr(settings, "llm_enabled", False)):
         ids.append(DEFAULT_LLM_MODEL_ID)
     ids.append(PYANNOTE_MODEL_ID)
@@ -106,7 +111,13 @@ def required_model_ids(settings: object) -> list[str]:
 
 
 def binary_requirements(settings: object) -> list[dict[str, object]]:
-    """Нужные бинарники, их доступность и инструкции (авто-скачивания нет)."""
+    """Нужные внешние компоненты (бинарники/пакеты), их доступность и инструкции.
+
+    Авто-скачивания нет: бинарники whisper.cpp/llama.cpp собираются под ОС/GPU
+    вручную, а пакет ``onnx-asr`` ставится из PyPI. Поле ``check_id`` задаёт
+    идентификатор проверки доктора (по умолчанию ``bin:<key>``); для пакета
+    используется ``dep:<модуль>``.
+    """
     backend = getattr(settings, "asr_backend", AsrBackend.FASTER_WHISPER.value)
     llm_enabled = bool(getattr(settings, "llm_enabled", False))
     requirements: list[dict[str, object]] = []
@@ -122,6 +133,21 @@ def binary_requirements(settings: object) -> list[dict[str, object]]:
                     "(WHISPER_CPP_BINARY / WHISPER_CPP_LIB_PATH)."
                 ),
                 "links": [LINK_WHISPER_CPP],
+            }
+        )
+    if backend == AsrBackend.GIGAAM.value:
+        requirements.append(
+            {
+                "key": "onnx-asr",
+                "check_id": "dep:onnx_asr",
+                "label": "Пакет onnx-asr (GigaAM)",
+                "needed": True,
+                "instructions": (
+                    "Установите пакет: pip install 'onnx-asr[cpu,hub]' "
+                    "(в venv проекта: uv pip install 'onnx-asr[cpu,hub]'). "
+                    "Модель GigaAM подтянется из каталога моделей или с Hugging Face."
+                ),
+                "links": [],
             }
         )
     if llm_enabled:
@@ -187,7 +213,7 @@ def build_setup_steps(
 
     binaries = binary_requirements(settings)
     for requirement in binaries:
-        check_id = f"bin:{requirement['key']}"
+        check_id = str(requirement.get("check_id") or f"bin:{requirement['key']}")
         requirement["available"] = _binary_available(report, check_id)
         requirement["status"] = "ok" if requirement["available"] else "fail"
     binaries_ok = all(

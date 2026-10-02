@@ -238,6 +238,12 @@ export type WebSettings = {
   llm_base_url: string
   llm_model_name: string
   pyannote_local_model: string
+  /** GigaAM v3 (onnx-asr): имя модели, локальный каталог снимка и квантизация. */
+  gigaam_model: string
+  gigaam_model_path: string
+  gigaam_quantization: string
+  /** Резать длинное аудио встроенным VAD onnx-asr. */
+  gigaam_vad: boolean
   input_dir: string
   output_dir: string
   glossary_db_path: string
@@ -249,11 +255,11 @@ export type WebSettings = {
   llm_api_key_masked: string | null
 }
 
-export const ASR_BACKENDS = ['faster-whisper', 'whisper-cpp'] as const
+export const ASR_BACKENDS = ['faster-whisper', 'whisper-cpp', 'gigaam'] as const
 export const DEVICES = ['auto', 'cpu', 'cuda'] as const
 export const LLM_PROVIDERS = ['llama', 'openai'] as const
 
-export type ModelKind = 'whisper-cpp' | 'llm' | 'pyannote'
+export type ModelKind = 'whisper-cpp' | 'llm' | 'pyannote' | 'gigaam'
 export type ModelDownloadStatus = 'idle' | 'downloading' | 'done' | 'error' | 'cancelled'
 
 export type ModelLocalStatus = {

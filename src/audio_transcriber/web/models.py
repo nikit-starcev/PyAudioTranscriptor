@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 KIND_WHISPER = "whisper-cpp"
 KIND_LLM = "llm"
 KIND_PYANNOTE = "pyannote"
+KIND_GIGAAM = "gigaam"
 
 #: Статусы загрузки.
 STATUS_IDLE = "idle"
@@ -155,6 +156,23 @@ MODEL_CATALOG: tuple[ModelEntry, ...] = (
         snapshot=True,
         setting_key="pyannote_local_model",
         note="Gated-модель: нужен токен HF и принятые условия использования.",
+    ),
+    ModelEntry(
+        id="gigaam-v3-onnx",
+        kind=KIND_GIGAAM,
+        title="GigaAM v3 (ONNX, onnx-asr)",
+        repo="istupakov/gigaam-v3-onnx",
+        files=(),
+        target_dir="gigaam-models/gigaam-v3-onnx",
+        approx_size=4_455_303_019,
+        snapshot=True,
+        setting_key="gigaam_model_path",
+        note=(
+            "GigaAM v3 для русского через onnx-asr: нужен пакет "
+            "onnx-asr[cpu,hub] и бэкенд gigaam. Снимок репозитория включает "
+            "варианты ctc/rnnt/e2e в fp32 и int8; при выборе квантизации "
+            "используется int8-часть."
+        ),
     ),
 )
 

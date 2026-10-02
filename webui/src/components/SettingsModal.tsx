@@ -148,6 +148,10 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
         llm_base_url: settings.llm_base_url,
         llm_model_name: settings.llm_model_name,
         pyannote_local_model: settings.pyannote_local_model,
+        gigaam_model: settings.gigaam_model,
+        gigaam_model_path: settings.gigaam_model_path,
+        gigaam_quantization: settings.gigaam_quantization,
+        gigaam_vad: settings.gigaam_vad,
         ...(hfTokenTouched ? { hf_token: hfToken } : {}),
         ...(llmApiKeyTouched ? { llm_api_key: llmApiKey } : {}),
       }
@@ -381,7 +385,7 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
                     >
                       {ASR_BACKENDS.map((backend) => (
                         <option key={backend} value={backend}>
-                          {backend}
+                          {backend === 'gigaam' ? 'gigaam (GigaAM v3, RU, onnx-asr)' : backend}
                         </option>
                       ))}
                     </select>
@@ -421,6 +425,68 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
                     className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                   />
                 </label>
+                {settings.asr_backend === 'gigaam' && (
+                  <div className="space-y-3 rounded-md border border-blue-200 bg-blue-50/50 p-3 dark:border-blue-900 dark:bg-blue-950/30">
+                    <p className="text-xs text-slate-600 dark:text-slate-300">
+                      Бэкенд gigaam требует пакет <code>onnx-asr[cpu,hub]</code>:
+                      <code className="ml-1">pip install 'onnx-asr[cpu,hub]'</code>. Модель
+                      GigaAM v3 (RU) скачивается на шаге «Модели» или подтягивается с Hugging
+                      Face при первом запуске.
+                    </p>
+                    <label className="block text-sm">
+                      <span className="text-slate-600 dark:text-slate-300">
+                        Модель GigaAM (onnx-asr)
+                      </span>
+                      <input
+                        value={settings.gigaam_model}
+                        onChange={(event) => update({ gigaam_model: event.target.value })}
+                        placeholder="gigaam-v3-e2e-rnnt"
+                        className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                      />
+                    </label>
+                    <label className="block text-sm">
+                      <span className="text-slate-600 dark:text-slate-300">
+                        Каталог модели GigaAM
+                      </span>
+                      <input
+                        value={settings.gigaam_model_path}
+                        onChange={(event) => update({ gigaam_model_path: event.target.value })}
+                        placeholder="gigaam-models/gigaam-v3-onnx"
+                        className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                      />
+                      <span className="mt-0.5 block text-xs text-slate-400 dark:text-slate-500">
+                        Если указан существующий каталог — модель грузится офлайн, без сети.
+                      </span>
+                    </label>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="block text-sm">
+                        <span className="text-slate-600 dark:text-slate-300">Квантизация</span>
+                        <select
+                          value={settings.gigaam_quantization}
+                          onChange={(event) => update({ gigaam_quantization: event.target.value })}
+                          className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                        >
+                          <option value="">fp32 (по умолчанию)</option>
+                          <option value="int8">int8 (меньше и быстрее)</option>
+                        </select>
+                      </label>
+                      <label className="flex items-start gap-2 text-sm sm:mt-6">
+                        <input
+                          type="checkbox"
+                          className="mt-0.5"
+                          checked={settings.gigaam_vad}
+                          onChange={(event) => update({ gigaam_vad: event.target.checked })}
+                        />
+                        <span>
+                          VAD-сегментация
+                          <span className="block text-xs text-slate-400 dark:text-slate-500">
+                            Резать длинное аудио встроенным VAD onnx-asr
+                          </span>
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+                )}
                 <label className="block text-sm">
                   <span className="text-slate-600 dark:text-slate-300">Модель LLM (GGUF)</span>
                   <input

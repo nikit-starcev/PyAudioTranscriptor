@@ -18,6 +18,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_ENROLLMENT_MAX_SAMPLE_SECONDS,
     DEFAULT_ENROLLMENT_MIN_SAMPLE_SECONDS,
+    DEFAULT_GIGAAM_MODEL,
     DEFAULT_GLOSSARY_DB,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
     DEFAULT_REFERENCE_PREPARE,
@@ -193,6 +194,7 @@ def build_job_config(
     voices_raw = defaults.get("VOICES_DIR", "").strip()
     pyannote_raw = defaults.get("PYANNOTE_LOCAL_MODEL", "").strip()
     wcp_model_raw = defaults.get("WHISPER_CPP_MODEL", "").strip()
+    gigaam_path_raw = defaults.get("GIGAAM_MODEL_PATH", "").strip()
     llm_model_raw = defaults.get("LLM_MODEL", "").strip()
     glossary_path_raw = defaults.get("GLOSSARY_PATH", "").strip()
     min_duration_off_raw = defaults.get("DIARIZATION_MIN_DURATION_OFF", "").strip()
@@ -245,6 +247,12 @@ def build_job_config(
             if defaults.get("WHISPER_CPP_THREADS", "").strip().isdigit()
             else None
         ),
+        # GigaAM v3 (бэкенд ``gigaam``) через onnx-asr: имя модели, локальный
+        # каталог снимка, квантизация и встроенный VAD.
+        gigaam_model=defaults.get("GIGAAM_MODEL", "").strip() or DEFAULT_GIGAAM_MODEL,
+        gigaam_model_path=Path(gigaam_path_raw) if gigaam_path_raw else None,
+        gigaam_quantization=defaults.get("GIGAAM_QUANTIZATION", "").strip() or None,
+        gigaam_vad=_as_bool(defaults.get("GIGAAM_VAD"), default=True),
         llm_enabled=_as_bool(defaults.get("LLM_ENABLED")),
         llm_provider=defaults.get("LLM_PROVIDER", "").strip().casefold() or "llama",
         llm_base_url=defaults.get("LLM_BASE_URL", "").strip() or None,
