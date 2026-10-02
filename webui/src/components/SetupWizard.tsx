@@ -11,6 +11,7 @@ import {
   type SetupPlan,
   type WebSettings,
 } from '../api'
+import BinaryRequirements from './BinaryRequirements'
 import ModelsPanel from './ModelsPanel'
 
 type Props = {
@@ -78,6 +79,13 @@ function SetupWizard({ open, onClose, report, onRecheck, onChanged }: Props) {
   // Обработчик изменения моделей для панели: стабильная идентичность, чтобы
   // не пересоздавать её на каждый рендер (и не рвать SSE-соединение, #65).
   const handleModelsChanged = useCallback(() => {
+    void refresh()
+    onChanged?.()
+  }, [refresh, onChanged])
+
+  // Стабильный обработчик для шага «Бинарники/Пакеты»: после автоустановки
+  // пакета пересобираем план (и доктор через onChanged), не пересоздавая SSE.
+  const handleDepsChanged = useCallback(() => {
     void refresh()
     onChanged?.()
   }, [refresh, onChanged])
@@ -403,54 +411,10 @@ function SetupWizard({ open, onClose, report, onRecheck, onChanged }: Props) {
               )}
 
               {currentStep === 'binaries' && (
-                <div className="space-y-3">
-                  <p className="text-sm text-slate-600 dark:text-slate-300">
-                    Авто-скачивания внешних компонентов нет. Бинарники whisper.cpp/llama.cpp
-                    собираются под ОС и GPU вручную (пути — в настройках), а пакет
-                    <code className="mx-1">onnx-asr</code> для бэкенда gigaam ставится из PyPI.
-                  </p>
-                  {plan.binaries.length === 0 ? (
-                    <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300">
-                      Для выбранного режима отдельные бинарники не требуются.
-                    </p>
-                  ) : (
-                    <ul className="space-y-2">
-                      {plan.binaries.map((binary) => (
-                        <li
-                          key={binary.key}
-                          className="rounded-md border border-slate-200 p-3 text-sm dark:border-slate-800"
-                        >
-                          <p className="font-medium">
-                            {binary.label}{' '}
-                            <span
-                              className={
-                                binary.available
-                                  ? 'text-emerald-600 dark:text-emerald-400'
-                                  : 'text-amber-600 dark:text-amber-400'
-                              }
-                            >
-                              {binary.available ? '✓ найден' : '✗ не найден'}
-                            </span>
-                          </p>
-                          <p className="text-xs text-slate-500 dark:text-slate-400">{binary.instructions}</p>
-                          <p className="mt-1 flex flex-wrap gap-x-3 text-xs">
-                            {binary.links.map((link) => (
-                              <a
-                                key={link}
-                                href={link}
-                                target="_blank"
-                                rel="noreferrer noopener"
-                                className="text-blue-600 underline hover:text-blue-500 dark:text-blue-400 dark:hover:text-blue-300"
-                              >
-                                {link}
-                              </a>
-                            ))}
-                          </p>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
+                <BinaryRequirements
+                  requirements={plan.binaries}
+                  onChanged={handleDepsChanged}
+                />
               )}
 
               {currentStep === 'readiness' && (

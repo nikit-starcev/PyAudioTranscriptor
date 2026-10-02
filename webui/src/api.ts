@@ -342,6 +342,46 @@ export type BinaryRequirement = {
   status: 'ok' | 'fail'
   instructions: string
   links: string[]
+  /** Ключ в реестре устанавливаемых пакетов (#66) — если это пакет, а не бинарник. */
+  dep_key?: string
+  /** Spec установки из allowlist (для пакетов). */
+  spec?: string
+  /** Есть ли установщик (uv/pip), чтобы показать кнопку «Установить». */
+  installable?: boolean
+}
+
+/** Статус фоновой установки опционального пакета (#66). */
+export type DependencyStatus = 'idle' | 'running' | 'done' | 'error'
+
+export type DependencyInfo = {
+  key: string
+  spec: string
+  label: string
+  check_id: string
+  needed_for: string
+  /** Модуль уже импортируем (``find_spec``). */
+  installed: boolean
+  /** Есть ли чем ставить (uv/pip). */
+  installable: boolean
+  status: DependencyStatus
+  message: string
+  error: string | null
+}
+
+export type DepsResponse = {
+  deps: DependencyInfo[]
+  /** Выбранный установщик: ``uv``, ``pip`` или ``null``. */
+  installer: string | null
+}
+
+/** Событие SSE установки пакета (``/api/deps/events``). */
+export type DependencyEvent = {
+  /** Монотонный номер события (SSE `id`) — защита от повторов истории. */
+  seq?: number
+  key: string
+  status: DependencyStatus
+  message: string
+  error: string | null
 }
 
 export type SetupPlan = {

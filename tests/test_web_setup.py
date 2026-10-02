@@ -118,6 +118,10 @@ def test_binary_requirements_include_onnx_asr_for_gigaam() -> None:
     assert gigaam["needed"] is True
     assert gigaam["check_id"] == "dep:onnx_asr"
     assert "onnx-asr[cpu,hub]" in str(gigaam["instructions"])
+    # Пакет связан с реестром автоустановки (#66): кнопка в мастере.
+    assert gigaam["dep_key"] == "gigaam"
+    assert gigaam["spec"] == "onnx-asr[cpu,hub]"
+    assert "installable" in gigaam
 
     # Бинарные пункты не сломаны: у них check_id по-прежнему не задан вручную.
     whisper = web_setup.binary_requirements(WebSettings(asr_backend="whisper-cpp"))

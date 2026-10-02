@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from audio_transcriber.doctor import LINK_LLAMA_CPP, LINK_WHISPER_CPP
 from audio_transcriber.domain.enums import AsrBackend
+from audio_transcriber.web import deps as deps_registry
 
 #: Идентификаторы шагов мастера (порядок отображения).
 STEP_HARDWARE = "hardware"
@@ -136,20 +137,28 @@ def binary_requirements(settings: object) -> list[dict[str, object]]:
             }
         )
     if backend == AsrBackend.GIGAAM.value:
-        requirements.append(
-            {
-                "key": "onnx-asr",
-                "check_id": "dep:onnx_asr",
-                "label": "Пакет onnx-asr (GigaAM)",
-                "needed": True,
-                "instructions": (
-                    "Установите пакет: pip install 'onnx-asr[cpu,hub]' "
-                    "(в venv проекта: uv pip install 'onnx-asr[cpu,hub]'). "
-                    "Модель GigaAM подтянется из каталога моделей или с Hugging Face."
-                ),
-                "links": [],
-            }
-        )
+        dep = deps_registry.find_dependency("gigaam")
+        if dep is not None:
+            requirements.append(
+                {
+                    "key": "onnx-asr",
+                    "check_id": dep.check_id,
+                    "label": dep.label,
+                    "needed": True,
+                    # Пакет можно поставить кнопкой из мастера (#66): spec берётся
+                    # из allowlist реестра, признак „есть установщик“ — из deps.
+                    "dep_key": dep.key,
+                    "spec": dep.spec,
+                    "installable": deps_registry.installer_available(),
+                    "instructions": (
+                        f"Пакет ставится кнопкой «Установить» ({dep.spec}). "
+                        "Вручную: uv pip install "
+                        f"'{dep.spec}'. Модель GigaAM подтянется из каталога "
+                        "моделей или с Hugging Face."
+                    ),
+                    "links": [],
+                }
+            )
     if llm_enabled:
         requirements.append(
             {
@@ -257,8 +266,11 @@ def build_setup_steps(
         },
         {
             "id": STEP_BINARIES,
-            "title": "Бинарники",
-            "description": "whisper-cli и llama-server собираются под вашу ОС/GPU вручную.",
+            "title": "Бинарники и пакеты",
+            "description": (
+                "whisper-cli и llama-server собираются под вашу ОС/GPU вручную, "
+                "а опциональные пакеты (onnx-asr и др.) ставятся кнопкой."
+            ),
             "status": "ok" if binaries_ok else "todo",
             "action": STEP_BINARIES,
         },

@@ -73,6 +73,7 @@ from audio_transcriber.storage.glossary_builder import build_active_glossary
 from audio_transcriber.utils.audio import load_waveform, write_wav
 from audio_transcriber.utils.playback import amplitude_envelope, read_duration
 from audio_transcriber.utils.text import sanitize_filename
+from audio_transcriber.web import deps as deps_registry
 from audio_transcriber.web.actions import (
     ACTION_CORRECTION,
     ACTION_ENROLLMENT,
@@ -87,6 +88,11 @@ from audio_transcriber.web.config import (
     env_defaults,
     public_config,
     reference_prepare_options,
+)
+from audio_transcriber.web.deps import (
+    DependencyInstaller,
+    InstallerUnavailable,
+    InstallRunner,
 )
 from audio_transcriber.web.doctor_api import (
     DoctorReportCache,
@@ -414,6 +420,7 @@ def create_app(
     protocol_fn: ProtocolFn | None = None,
     voices_dir: Path | None = None,
     downloader: Downloader | None = None,
+    dep_install_runner: InstallRunner | None = None,
     heartbeat: float = 15.0,
 ) -> FastAPI:
     """Собирает приложение FastAPI с изолированным окружением данных.
@@ -422,7 +429,8 @@ def create_app(
     подменяются в тестах, чтобы не требовать GPU/моделей, сети и реального
     ``config.env``. ``voices_dir`` позволяет подменить каталог библиотеки
     голосов (в тестах) вместо ``VOICES_DIR``; в остальных случаях он берётся
-    из сохранённых настроек.
+    из сохранённых настроек. ``dep_install_runner`` — заглушка запуска
+    установщика пакетов (#66): в тестах реальные ``uv``/``pip`` не вызываются.
     """
     resolved_paths = paths or WebPaths.default()
     resolved_paths.ensure()
@@ -441,6 +449,14 @@ def create_app(
     # Кратковременный кэш отчёта доктора: ``/api/setup`` и ``/api/doctor``
     # частые, но выполняют тяжёлые проверки; TTL гасит всплески запросов.
     doctor_cache = DoctorReportCache()
+    # Шина и менеджер автоустановки опциональных пакетов (#66): одна установка
+    # за раз, прогресс — отдельным SSE-каналом ``/api/deps/events``.
+    deps_bus = DownloadBus(heartbeat=heartbeat)
+    dependency_installer = DependencyInstaller(
+        bus=deps_bus,
+        runner=dep_install_runner,
+        on_success=doctor_cache.invalidate,
+    )
 
     def resolve_model_target(entry: ModelEntry) -> Path:
         return resolve_target(
@@ -517,6 +533,8 @@ def create_app(
     app.state.download_bus = download_bus
     app.state.models_dir = resolved_paths.models_dir
     app.state.doctor_cache = doctor_cache
+    app.state.dependency_installer = dependency_installer
+    app.state.deps_bus = deps_bus
     router = APIRouter(prefix="/api")
     register_api(
         router,
@@ -535,6 +553,8 @@ def create_app(
         models_root=resolved_paths.models_dir,
         action_bus=action_bus,
         doctor_cache=doctor_cache,
+        dependency_installer=dependency_installer,
+        deps_bus=deps_bus,
     )
     app.include_router(router)
 
@@ -575,6 +595,8 @@ def register_api(
     models_root: Path,
     action_bus: ActionEventBus,
     doctor_cache: DoctorReportCache,
+    dependency_installer: DependencyInstaller,
+    deps_bus: DownloadBus,
 ) -> None:
     """Регистрирует все маршруты API v1 на переданном роутере."""
 
@@ -763,6 +785,72 @@ def register_api(
             report=report,
             models=models,
             hf_token_set=_effective_token() is not None,
+        )
+
+    @router.get("/deps")
+    def list_deps() -> dict[str, object]:
+        """Опциональные пакеты: доступность, устанавливаемость и статус операции."""
+        available = deps_registry.installer_available()
+        items: list[dict[str, object]] = []
+        for spec in deps_registry.DEPENDENCIES:
+            state = dependency_installer.state(spec.key)
+            payload: dict[str, object] = dict(spec.as_dict())
+            payload.update(
+                {
+                    "installed": deps_registry.module_available(spec.module),
+                    "installable": available,
+                    "status": state.status,
+                    "message": state.message,
+                    "error": state.error,
+                }
+            )
+            items.append(payload)
+        return {"deps": items, "installer": deps_registry.installer_name()}
+
+    @router.post("/deps/{key}/install", status_code=202)
+    def install_dependency(key: str) -> dict[str, object]:
+        """Ставит пакет из allowlist (прогресс — ``/api/deps/events``, одна за раз)."""
+        spec = deps_registry.find_dependency(key)
+        if spec is None:
+            raise HTTPException(status_code=404, detail="Неизвестная зависимость")
+        if not deps_registry.installer_available():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Не найден установщик (uv/pip). Установите uv "
+                    "(https://docs.astral.sh/uv/) или модуль pip."
+                ),
+            )
+        if dependency_installer.is_running():
+            raise HTTPException(status_code=409, detail="Установка уже выполняется")
+        try:
+            started = dependency_installer.start(spec.key, spec.spec)
+        except InstallerUnavailable as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not started:
+            raise HTTPException(status_code=409, detail="Установка уже выполняется")
+        return {"key": spec.key, "status": "running"}
+
+    @router.get("/deps/events")
+    async def deps_events(
+        last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
+    ) -> StreamingResponse:
+        """SSE-поток прогресса установки: история (с учётом ``Last-Event-ID``), затем эфир."""
+        after: int | None = None
+        if last_event_id:
+            try:
+                after = int(last_event_id)
+            except ValueError:
+                after = None
+
+        async def stream() -> AsyncIterator[str]:
+            for event in deps_bus.history(after=after):
+                yield _sse(event)
+            async for update in deps_bus.subscribe():
+                yield ": ping\n\n" if update is None else _sse(update)
+
+        return StreamingResponse(
+            stream(), media_type="text/event-stream", headers=dict(SSE_HEADERS)
         )
 
     @router.get("/models")
