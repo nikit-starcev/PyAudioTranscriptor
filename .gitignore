@@ -243,3 +243,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Локальные правила/инструкции агентов (не коммитим)
+AGENTS.md
+CLAUDE.md
+.cursorrules
+.windsurfrules
