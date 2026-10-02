@@ -40,6 +40,12 @@ from starlette.background import BackgroundTask
 from audio_transcriber import __version__
 from audio_transcriber.config.defaults import DEFAULT_ENROLLMENT_MIN_SIMILARITY
 from audio_transcriber.config.settings import AppConfig
+from audio_transcriber.correction.editorial import (
+    Suggestion,
+    apply_suggestions,
+    build_suggestions,
+)
+from audio_transcriber.correction.morph_corrector import MorphTextCorrector
 from audio_transcriber.diarization.reference import (
     ReferencePrepareOptions,
     ReferenceQuality,
@@ -63,6 +69,7 @@ from audio_transcriber.domain.enums import ExportFormat
 from audio_transcriber.export.factory import create_exporter
 from audio_transcriber.llm.client import probe_openai_server
 from audio_transcriber.protocol import ProtocolArtifacts, generate_protocol
+from audio_transcriber.storage.glossary_builder import build_active_glossary
 from audio_transcriber.utils.audio import load_waveform, write_wav
 from audio_transcriber.utils.playback import amplitude_envelope, read_duration
 from audio_transcriber.utils.text import sanitize_filename
@@ -279,6 +286,33 @@ class TranscriptEditsRequest(BaseModel):
 
     edits: list[TranscriptEdit] = Field(default_factory=list)
     resets: list[int] = Field(default_factory=list)
+
+
+class ApplyGlossaryRequest(BaseModel):
+    """Тело ``POST /api/jobs/{id}/apply-glossary`` (#32).
+
+    ``respect_edited=True`` (по умолчанию) не трогает реплики с ручными
+    правками (#26): их считают и возвращают в ``skipped_edited``. При
+    ``False`` матчер применяется и к тексту ручных правок.
+    """
+
+    respect_edited: bool = True
+
+
+class CorrectTextRequest(BaseModel):
+    """Тело ``POST /api/jobs/{id}/correct-text`` (#51).
+
+    ``dry_run=True`` возвращает только список предложений, ничего не сохраняя.
+    ``selection`` — id выбранных предложений; ``None`` — применить все.
+    ``fix_common``/``check_spelling`` включают соответствующие виды проверки.
+    ``respect_edited=True`` (по умолчанию) не трогает реплики с ручными правками.
+    """
+
+    dry_run: bool = False
+    selection: list[str] | None = None
+    fix_common: bool = True
+    check_spelling: bool = True
+    respect_edited: bool = True
 
 
 class SettingsUpdate(BaseModel):
@@ -971,6 +1005,179 @@ def register_api(
         _write_result(paths, job, updated)
         return JSONResponse(updated)
 
+    @router.post("/jobs/{job_id}/apply-glossary")
+    def apply_glossary(job_id: str, payload: ApplyGlossaryRequest | None = None) -> Response:
+        """Применяет матчер глоссария к текущему результату без распознавания (#32).
+
+        Источник терминов — актуальная ``GlossaryDB`` (включённые источники) с
+        совместимостью с текстовыми глоссариями (см.
+        :func:`~audio_transcriber.storage.glossary_builder.build_active_glossary`).
+        Матчер детерминированный, LLM не требуется. Результат перезаписывается,
+        повторный запуск идемпотентен. Реплики с ручными правками (#26) по
+        умолчанию не трогаются — они считаются в ``skipped_edited``.
+        """
+        job = _require_job(store, job_id)
+        result = _require_result(paths, job)
+        entries = result.get("entries")
+        if not isinstance(entries, list):
+            raise HTTPException(status_code=400, detail="В результате нет реплик")
+        respect_edited = payload.respect_edited if payload is not None else True
+        source = Path(job.source_path)
+        try:
+            config = config_builder(job_id, source)
+            glossary = build_active_glossary(config)
+        except Exception as exc:  # noqa: BLE001 — БД/пути могут быть недоступны
+            return _glossary_apply_error(result, f"Глоссарий недоступен: {exc}")
+        if glossary is None or len(glossary) == 0:
+            return _glossary_apply_error(
+                result, "Глоссарий пуст: нет включённых терминов"
+            )
+
+        updated_entries: list[object] = []
+        details: list[dict[str, object]] = []
+        skipped_edited = 0
+        replacements_total = 0
+        for index, raw in enumerate(entries):
+            if not isinstance(raw, Mapping):
+                updated_entries.append(raw)
+                continue
+            item = dict(raw)
+            if respect_edited and item.get("edited"):
+                skipped_edited += 1
+                updated_entries.append(item)
+                continue
+            text = item.get("text")
+            if not isinstance(text, str) or not text.strip():
+                updated_entries.append(item)
+                continue
+            new_text, replacements = glossary.correct_text(text)
+            if replacements and new_text != text:
+                item["text"] = new_text
+                replacements_total += len(replacements)
+                details.append(
+                    {
+                        "index": index,
+                        "before": text,
+                        "after": new_text,
+                        "replacements": [
+                            {"before": before, "after": after}
+                            for before, after in replacements
+                        ],
+                    }
+                )
+            updated_entries.append(item)
+        updated: dict[str, object] = dict(result)
+        if replacements_total:
+            updated["entries"] = updated_entries
+            _write_result(paths, job, updated)
+        return JSONResponse(
+            {
+                "result": updated,
+                "replacements": replacements_total,
+                "details": details,
+                "skipped_edited": skipped_edited,
+                "terms": len(glossary),
+                "error": None,
+            }
+        )
+
+    @router.post("/jobs/{job_id}/correct-text")
+    def correct_text(job_id: str, payload: CorrectTextRequest | None = None) -> Response:
+        """Редакторская проверка/исправление текущего текста (#51).
+
+        Правила частых ошибок (пунктуация/пробелы/тире) и консервативная
+        орфография по морфологии. При ``dry_run`` возвращает список предложений
+        с «принять/отклонить»; при применении накладывает выбранные (``selection``
+        или все) и сохраняет результат. Реплики с ручными правками (#26) по
+        умолчанию не трогаются.
+        """
+        job = _require_job(store, job_id)
+        result = _require_result(paths, job)
+        entries = result.get("entries")
+        if not isinstance(entries, list):
+            raise HTTPException(status_code=400, detail="В результате нет реплик")
+        request = payload or CorrectTextRequest()
+        if not request.fix_common and not request.check_spelling:
+            raise HTTPException(
+                status_code=400, detail="Не выбран ни один вид проверки"
+            )
+
+        corrector = MorphTextCorrector() if request.check_spelling else None
+        groups: dict[int, list[Suggestion]] = {}
+        skipped_edited = 0
+        for index, raw in enumerate(entries):
+            if not isinstance(raw, Mapping):
+                continue
+            if request.respect_edited and raw.get("edited"):
+                skipped_edited += 1
+                continue
+            text = raw.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            items = build_suggestions(
+                text,
+                entry_index=index,
+                fix_common=request.fix_common,
+                check_spelling=request.check_spelling,
+                corrector=corrector,
+            )
+            if items:
+                groups[index] = items
+        suggestions = [item for group in groups.values() for item in group]
+
+        if request.dry_run:
+            return JSONResponse(
+                {
+                    "result": dict(result),
+                    "suggestions": [item.as_dict() for item in suggestions],
+                    "applied": [],
+                    "applied_count": 0,
+                    "skipped_edited": skipped_edited,
+                    "error": None,
+                }
+            )
+
+        selected = (
+            set(request.selection)
+            if request.selection is not None
+            else {item.id for item in suggestions}
+        )
+        updated_entries: list[object] = list(entries)
+        applied_items: list[dict[str, object]] = []
+        for index, group in groups.items():
+            chosen = [item for item in group if item.id in selected]
+            if not chosen:
+                continue
+            raw = entries[index]
+            if not isinstance(raw, Mapping):
+                continue
+            text = raw.get("text")
+            if not isinstance(text, str):
+                continue
+            new_text, applied = apply_suggestions(text, chosen)
+            if not applied:
+                continue
+            item = dict(raw)
+            item["text"] = new_text
+            updated_entries[index] = item
+            applied_items.extend(item.as_dict() for item in applied)
+        updated: dict[str, object] = dict(result)
+        if applied_items:
+            updated["entries"] = updated_entries
+            _write_result(paths, job, updated)
+        # После применения возвращаем пустой список: оставшиеся (отклонённые)
+        # предложения лучше пересобрать заново — смещения текста изменились.
+        return JSONResponse(
+            {
+                "result": updated,
+                "suggestions": [],
+                "applied": applied_items,
+                "applied_count": len(applied_items),
+                "skipped_edited": skipped_edited,
+                "error": None,
+            }
+        )
+
     @router.post("/jobs/{job_id}/protocol")
     def job_protocol(job_id: str) -> dict[str, object]:
         """Формирует протокол по текущему результату (резюме + экспорт).
@@ -1553,6 +1760,20 @@ def _apply_names_error(
             "matched": {},
             "best_candidates": {},
             "threshold": threshold,
+            "error": message,
+        }
+    )
+
+
+def _glossary_apply_error(result: Mapping[str, object], message: str) -> Response:
+    """Мягкий ответ ``apply-glossary``: 200 без изменений и с текстом причины."""
+    return JSONResponse(
+        {
+            "result": dict(result),
+            "replacements": 0,
+            "details": [],
+            "skipped_edited": 0,
+            "terms": 0,
             "error": message,
         }
     )

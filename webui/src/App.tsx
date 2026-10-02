@@ -27,6 +27,7 @@ import {
   type WebSettings,
 } from './api'
 import GlossaryModal from './components/GlossaryModal'
+import EditorPanel from './components/EditorPanel'
 import ModelsModal from './components/ModelsModal'
 import ProgressSummary from './components/ProgressSummary'
 import ReadinessBanner from './components/ReadinessBanner'
@@ -1390,6 +1391,8 @@ function App() {
                 return patchTranscript(activeJobId, { resets: [index] })
               }}
             />
+
+            <EditorPanel jobId={activeJobId} onResult={setResult} />
 
             <div className="rounded-md border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-800/50">
               <div className="flex flex-wrap items-center gap-3">

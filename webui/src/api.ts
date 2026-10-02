@@ -395,6 +395,58 @@ export type TranscriptEditsRequest = {
   resets?: number[]
 }
 
+/** Одна замена термина при применении глоссария (#32). */
+export type GlossaryReplacement = { before: string; after: string }
+
+/** Отчёт по одной реплике при применении глоссария (#32). */
+export type GlossaryApplyDetail = {
+  index: number
+  before: string
+  after: string
+  replacements: GlossaryReplacement[]
+}
+
+/** Ответ ``POST /api/jobs/{id}/apply-glossary`` (#32). */
+export type GlossaryApplyResponse = {
+  result: TranscriptResult
+  replacements: number
+  details: GlossaryApplyDetail[]
+  skipped_edited: number
+  terms: number
+  error: string | null
+}
+
+/** Предложение редакторской правки текущей стенограммы (#51). */
+export type TextSuggestion = {
+  id: string
+  index: number
+  start: number
+  end: number
+  before: string
+  after: string
+  kind: string
+  reason: string
+}
+
+/** Тело ``POST /api/jobs/{id}/correct-text`` (#51). */
+export type CorrectTextRequest = {
+  dry_run?: boolean
+  selection?: string[] | null
+  fix_common?: boolean
+  check_spelling?: boolean
+  respect_edited?: boolean
+}
+
+/** Ответ ``POST /api/jobs/{id}/correct-text`` (#51). */
+export type CorrectTextResponse = {
+  result: TranscriptResult
+  suggestions: TextSuggestion[]
+  applied: TextSuggestion[]
+  applied_count: number
+  skipped_edited: number
+  error: string | null
+}
+
 export type GlossaryStats = { sources: number; entries: number; enabled: number }
 
 export type GlossaryImportReport = {

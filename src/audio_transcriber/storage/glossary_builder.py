@@ -36,7 +36,23 @@ def build_glossary(config: AppConfig) -> Glossary | None:
     """
     if not config.glossary_enabled:
         return None
+    return _assemble_glossary(config)
 
+
+def build_active_glossary(config: AppConfig) -> Glossary | None:
+    """Собирает глоссарий независимо от :attr:`AppConfig.glossary_enabled`.
+
+    Нужен для ручного применения глоссария к текущей стенограмме по кнопке
+    (#32): пользователь явно нажал «Применить глоссарий», поэтому источником
+    служат включённые записи БД и текстовые глоссарии даже при выключенном в
+    настройках автоматическом применении. Возвращает ``None``, если терминов
+    нет ни в БД, ни в текстовых файлах.
+    """
+    return _assemble_glossary(config)
+
+
+def _assemble_glossary(config: AppConfig) -> Glossary | None:
+    """Общая сборка: миграция текстовых путей в БД и термины включённых записей."""
     db_path = config.resolved_glossary_db()
     with GlossaryDB(db_path) as db:
         if config.glossary_path and db.count() == 0:

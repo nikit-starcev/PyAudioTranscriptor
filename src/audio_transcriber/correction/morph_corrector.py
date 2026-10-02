@@ -164,39 +164,64 @@ class MorphTextCorrector:
         self._suggestion_cache[folded] = result
         return result
 
+    def _suggestions(self, text: str) -> list[tuple[int, int, str, str]]:
+        """Находит замены-опечатки в тексте с позициями, не меняя сам текст.
+
+        Возвращает список ``(start, end, before, after)`` в порядке появления.
+        Общая основа и для :meth:`_correct_text`, и для :meth:`suggest_spans`.
+        """
+        found: list[tuple[int, int, str, str]] = []
+        for match in WORD_PATTERN.finditer(text):
+            original_word = match.group(0)
+
+            if len(original_word) < self._min_word_length:
+                continue
+            # Тех-заимствования с латиницей (login, reloadConfig) не трогаем.
+            if contains_latin(original_word):
+                continue
+            if self._is_known_russian_word(original_word):
+                continue
+
+            candidate = self._best_known_form(original_word)
+            if candidate is None:
+                continue
+            if candidate.casefold() == original_word.casefold():
+                continue
+
+            replacement = match_case(original_word, candidate)
+            found.append((match.start(), match.end(), original_word, replacement))
+        return found
+
+    def suggest_spans(self, text: str) -> list[tuple[int, int, str, str]]:
+        """Предложения правок с позициями ``(start, end, before, after)``.
+
+        Публичная точка входа для редакторской проверки (#51): в отличие от
+        :meth:`correct`, ничего не применяет и отдаёт позиции для «принять/
+        отклонить» на стороне UI.
+        """
+        self._ensure_loaded()
+        return self._suggestions(text)
+
     def _correct_text(self, text: str) -> tuple[str, list[tuple[str, str]]]:
         """Правит опечатки в одном тексте, возвращая его и список замен.
 
         Отдельный метод (а не замыкание в цикле) — так ``applied`` не является
         переменной цикла, и поведение не зависит от отложенного вызова.
         """
+        spans = self._suggestions(text)
+        if not spans:
+            return text, []
+
         applied: list[tuple[str, str]] = []
-
-        def replace_match(match: re.Match[str]) -> str:
-            original_word = match.group(0)
-
-            if len(original_word) < self._min_word_length:
-                return original_word
-
-            # Тех-заимствования с латиницей (login, reloadConfig) не трогаем.
-            if contains_latin(original_word):
-                return original_word
-
-            if self._is_known_russian_word(original_word):
-                return original_word
-
-            candidate = self._best_known_form(original_word)
-            if candidate is None:
-                return original_word
-
-            if candidate.casefold() == original_word.casefold():
-                return original_word
-
-            replacement = match_case(original_word, candidate)
+        parts: list[str] = []
+        cursor = 0
+        for start, end, original_word, replacement in spans:
+            parts.append(text[cursor:start])
+            parts.append(replacement)
+            cursor = end
             applied.append((original_word, replacement))
-            return replacement
-
-        return WORD_PATTERN.sub(replace_match, text), applied
+        parts.append(text[cursor:])
+        return "".join(parts), applied
 
     def correct(self, entries: list[TranscriptEntry]) -> list[TranscriptEntry]:
         self._ensure_loaded()
