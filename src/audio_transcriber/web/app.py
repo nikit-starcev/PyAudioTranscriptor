@@ -89,9 +89,9 @@ from audio_transcriber.web.config import (
     reference_prepare_options,
 )
 from audio_transcriber.web.doctor_api import (
+    DoctorReportCache,
     build_doctor_env,
     check_hf_access,
-    doctor_report,
 )
 from audio_transcriber.web.estimates import StageEstimator, probe_duration
 from audio_transcriber.web.events import JobEventBus
@@ -438,6 +438,9 @@ def create_app(
     action_bus = ActionEventBus(heartbeat=heartbeat)
     # Оценки прогресса/ETA/здоровья по истории завершённых задач (#15/#24).
     estimator = StageEstimator(store)
+    # Кратковременный кэш отчёта доктора: ``/api/setup`` и ``/api/doctor``
+    # частые, но выполняют тяжёлые проверки; TTL гасит всплески запросов.
+    doctor_cache = DoctorReportCache()
 
     def resolve_model_target(entry: ModelEntry) -> Path:
         return resolve_target(
@@ -513,6 +516,7 @@ def create_app(
     app.state.downloads = downloads
     app.state.download_bus = download_bus
     app.state.models_dir = resolved_paths.models_dir
+    app.state.doctor_cache = doctor_cache
     router = APIRouter(prefix="/api")
     register_api(
         router,
@@ -530,6 +534,7 @@ def create_app(
         download_bus=download_bus,
         models_root=resolved_paths.models_dir,
         action_bus=action_bus,
+        doctor_cache=doctor_cache,
     )
     app.include_router(router)
 
@@ -569,6 +574,7 @@ def register_api(
     download_bus: DownloadBus,
     models_root: Path,
     action_bus: ActionEventBus,
+    doctor_cache: DoctorReportCache,
 ) -> None:
     """Регистрирует все маршруты API v1 на переданном роутере."""
 
@@ -663,6 +669,8 @@ def register_api(
                 secrets_store.set_llm_api_key(raw_api_key)
         except (SettingsError, SecretsError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # Настройки/секреты могли повлиять на результат проверок — сбрасываем кэш.
+        doctor_cache.invalidate()
         result = saved.as_dict()
         result["input_dir"] = str(paths.input_dir)
         result["output_dir"] = str(paths.results_dir)
@@ -680,13 +688,13 @@ def register_api(
     def get_doctor() -> dict[str, object]:
         """Отчёт о готовности (те же проверки, что у CLI ``doctor``)."""
         config_path, env = build_doctor_env(settings_store, secrets_store, paths)
-        return doctor_report(config_path, env)
+        return doctor_cache.get(config_path, env)
 
     @router.post("/doctor/recheck")
     def recheck_doctor() -> dict[str, object]:
         """Повторная диагностика готовности («Проверить снова»)."""
         config_path, env = build_doctor_env(settings_store, secrets_store, paths)
-        return doctor_report(config_path, env)
+        return doctor_cache.refresh(config_path, env)
 
     @router.post("/doctor/hf-check")
     def hf_check(payload: HfCheckRequest | None = None) -> dict[str, object]:
@@ -740,7 +748,7 @@ def register_api(
         """План мастера первого запуска: шаги, варианты железа, нужные модели."""
         settings = settings_store.load()
         config_path, env = build_doctor_env(settings_store, secrets_store, paths)
-        report = doctor_report(config_path, env)
+        report = doctor_cache.get(config_path, env)
         models = [
             model_payload(
                 entry,
@@ -776,11 +784,25 @@ def register_api(
         }
 
     @router.get("/models/events")
-    async def models_events() -> StreamingResponse:
-        """SSE-поток прогресса скачивания (сначала история, затем живой поток)."""
+    async def models_events(
+        last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
+    ) -> StreamingResponse:
+        """SSE-поток прогресса скачивания (сначала история, затем живой поток).
+
+        При переподключении браузер присылает ``Last-Event-ID`` последнего
+        полученного события — отдаём из истории только более новые, чтобы не
+        дублировать уже обработанное. Первое подключение (заголовка нет)
+        получает всю историю и видит актуальное состояние загрузок.
+        """
+        after: int | None = None
+        if last_event_id:
+            try:
+                after = int(last_event_id)
+            except ValueError:
+                after = None
 
         async def stream() -> AsyncIterator[str]:
-            for event in download_bus.history():
+            for event in download_bus.history(after=after):
                 yield _sse(event)
             async for update in download_bus.subscribe():
                 yield ": ping\n\n" if update is None else _sse(update)
@@ -1893,7 +1915,11 @@ def _terminal_message(job: Job) -> str:
 
 
 def _sse(event: Mapping[str, object]) -> str:
-    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+    # ``seq`` (если есть) идёт как SSE-поле ``id``: браузер сам пришлёт его в
+    # ``Last-Event-ID`` при переподключении. В самом JSON поле тоже остаётся.
+    seq = event.get("seq")
+    prefix = f"id: {seq}\n" if isinstance(seq, int) else ""
+    return f"{prefix}data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
 def _require_result(paths: WebPaths, job: Job) -> dict[str, object]:

@@ -303,6 +303,8 @@ export type ModelsResponse = {
 }
 
 export type ModelEvent = {
+  /** Монотонный номер события на сервере (SSE `id`); защита от повторов истории. */
+  seq?: number
   id: string
   status: ModelDownloadStatus
   fraction: number | null

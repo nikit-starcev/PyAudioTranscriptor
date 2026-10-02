@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
   api,
@@ -43,21 +43,44 @@ function SetupWizard({ open, onClose, report, onRecheck, onChanged }: Props) {
   const [hfCheck, setHfCheck] = useState<HfCheckResult | null>(null)
   const [hfChecking, setHfChecking] = useState(false)
 
+  // Дедупликация refresh: параллельные вызовы схлопываются, а если запрос
+  // пришёл во время выполнения — выполняется ещё один проход после него.
+  const refreshBusy = useRef(false)
+  const refreshQueued = useRef(false)
+
   const refresh = useCallback(async () => {
-    setLoading(true)
-    setError(null)
+    if (refreshBusy.current) {
+      refreshQueued.current = true
+      return
+    }
+    refreshBusy.current = true
     try {
-      const nextPlan = await api<SetupPlan>('/api/setup')
-      const nextSettings = await api<WebSettings>('/api/settings')
-      setPlan(nextPlan)
-      setSettings(nextSettings)
-      setHardware((current) => current ?? nextPlan.hardware.current)
-    } catch (cause) {
-      setError(errorMessage(cause))
+      do {
+        refreshQueued.current = false
+        setLoading(true)
+        setError(null)
+        try {
+          const nextPlan = await api<SetupPlan>('/api/setup')
+          const nextSettings = await api<WebSettings>('/api/settings')
+          setPlan(nextPlan)
+          setSettings(nextSettings)
+          setHardware((current) => current ?? nextPlan.hardware.current)
+        } catch (cause) {
+          setError(errorMessage(cause))
+        }
+      } while (refreshQueued.current)
     } finally {
+      refreshBusy.current = false
       setLoading(false)
     }
   }, [])
+
+  // Обработчик изменения моделей для панели: стабильная идентичность, чтобы
+  // не пересоздавать её на каждый рендер (и не рвать SSE-соединение, #65).
+  const handleModelsChanged = useCallback(() => {
+    void refresh()
+    onChanged?.()
+  }, [refresh, onChanged])
 
   useEffect(() => {
     if (open) {
@@ -239,10 +262,15 @@ function SetupWizard({ open, onClose, report, onRecheck, onChanged }: Props) {
             </p>
           )}
 
-          {loading || !plan || !settings ? (
+          {!plan || !settings ? (
             <p className="py-6 text-center text-sm text-slate-400 dark:text-slate-500">Загрузка…</p>
           ) : (
             <>
+              {loading && (
+                <p className="text-center text-xs text-slate-400 dark:text-slate-500" role="status">
+                  Обновление…
+                </p>
+              )}
               {currentStep === 'hardware' && (
                 <div className="space-y-3">
                   <p className="text-sm text-slate-600 dark:text-slate-300">
@@ -369,10 +397,7 @@ function SetupWizard({ open, onClose, report, onRecheck, onChanged }: Props) {
                   </div>
                   <ModelsPanel
                     requiredIds={plan.required_models}
-                    onChanged={() => {
-                      void refresh()
-                      onChanged?.()
-                    }}
+                    onChanged={handleModelsChanged}
                   />
                 </div>
               )}

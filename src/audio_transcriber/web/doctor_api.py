@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Mapping
+import threading
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,6 +38,11 @@ HF_OK = "ok"
 HF_NO_TOKEN = "no_token"
 HF_NO_ACCESS = "no_access"
 HF_ERROR = "error"
+
+#: Время жизни кэша отчёта доктора (секунды). Проверки включают subprocess, а
+#: ``/api/setup`` и ``/api/doctor`` вызываются при отрисовке шагов мастера,
+#: поэтому короткий TTL гасит всплески, не показывая устаревшую картину.
+DOCTOR_CACHE_TTL = 20.0
 
 
 def check_status(check: DoctorCheck) -> str:
@@ -98,6 +105,58 @@ def doctor_report(config_path: Path | None, env: Mapping[str, str]) -> dict[str,
         "checks": [check_payload(check) for check in checks],
         "summary": summarize(checks),
     }
+
+
+class DoctorReportCache:
+    """Кратковременный кэш отчёта доктора с TTL.
+
+    Тяжёлые проверки (subprocess, файловая система) выполняются один раз на
+    TTL; ``/api/doctor`` и ``/api/setup`` делят этот кэш. ``refresh`` всегда
+    пересчитывает отчёт (для ``/api/doctor/recheck``), ``invalidate`` сбрасывает
+    его при изменении настроек/секретов.
+    """
+
+    def __init__(
+        self,
+        *,
+        ttl: float = DOCTOR_CACHE_TTL,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._ttl = ttl
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._cached: dict[str, object] | None = None
+        self._cached_at = 0.0
+
+    def get(
+        self, config_path: Path | None, env: Mapping[str, str]
+    ) -> dict[str, object]:
+        """Отчёт из кэша, если он свежий, иначе — новый расчёт."""
+        now = self._clock()
+        with self._lock:
+            if self._cached is not None and (now - self._cached_at) < self._ttl:
+                return self._cached
+        report = doctor_report(config_path, env)
+        with self._lock:
+            self._cached = report
+            self._cached_at = self._clock()
+        return report
+
+    def refresh(
+        self, config_path: Path | None, env: Mapping[str, str]
+    ) -> dict[str, object]:
+        """Принудительный пересчёт отчёта и обновление кэша."""
+        report = doctor_report(config_path, env)
+        with self._lock:
+            self._cached = report
+            self._cached_at = self._clock()
+        return report
+
+    def invalidate(self) -> None:
+        """Сбрасывает кэш (например, после сохранения настроек/секретов)."""
+        with self._lock:
+            self._cached = None
+            self._cached_at = 0.0
 
 
 @dataclass(frozen=True, slots=True)

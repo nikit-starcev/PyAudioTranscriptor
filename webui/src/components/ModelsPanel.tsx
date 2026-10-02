@@ -50,6 +50,16 @@ function ModelsPanel({ requiredIds = [], onChanged }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const initialized = useRef(false)
 
+  // Колбэк держим в ref: его идентичность не должна пересоздавать EventSource.
+  const onChangedRef = useRef(onChanged)
+  useEffect(() => {
+    onChangedRef.current = onChanged
+  }, [onChanged])
+
+  // Номер последнего обработанного SSE-события: сервер может повторно отдать
+  // историю при переподключении, а мы её второй раз не применяем.
+  const lastSeenSeq = useRef(-1)
+
   const refresh = useCallback(async () => {
     try {
       const next = await api<ModelsResponse>('/api/models')
@@ -73,10 +83,18 @@ function ModelsPanel({ requiredIds = [], onChanged }: Props) {
     initialized.current = true
   }, [data, requiredIds])
 
+  // Соединение создаётся один раз за время жизни панели. Зависимость только от
+  // стабильного `refresh`; сам `onChanged` берётся из ref. Иначе инлайн-стрелка
+  // из родителя пересоздавала бы EventSource на каждый рендер (петля #65).
   useEffect(() => {
     const source = new EventSource('/api/models/events')
     source.onmessage = (message) => {
       const event = JSON.parse(message.data) as ModelEvent
+      const seq = event.seq
+      if (typeof seq === 'number') {
+        if (seq <= lastSeenSeq.current) return
+        lastSeenSeq.current = seq
+      }
       setData((current) => {
         if (!current) return current
         return {
@@ -105,14 +123,14 @@ function ModelsPanel({ requiredIds = [], onChanged }: Props) {
       })
       if (event.status === 'done' || event.status === 'error' || event.status === 'cancelled') {
         void refresh()
-        onChanged?.()
+        onChangedRef.current?.()
       }
     }
     source.onerror = () => {
       // Соединение переподключится само; ошибку не показываем.
     }
     return () => source.close()
-  }, [refresh, onChanged])
+  }, [refresh])
 
   const toggle = (id: string) => {
     setSelected((current) => {

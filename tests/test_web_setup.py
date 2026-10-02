@@ -246,3 +246,29 @@ def test_get_setup_endpoint_shape(client: TestClient, monkeypatch: pytest.Monkey
     ]
     assert len(payload["hardware"]["options"]) == 3
     assert payload["required_models"] == ["pyannote-community-1"]
+
+
+def test_setup_shares_doctor_cache(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[int] = []
+    checks = [
+        DoctorCheck(
+            key="hf_token",
+            label="Токен Hugging Face",
+            ok=True,
+            critical=False,
+            detail="ok",
+        )
+    ]
+    monkeypatch.setattr(
+        doctor_api.doctor_module,
+        "run_doctor",
+        lambda _path, _env: (calls.append(1), checks)[1],
+    )
+
+    client.get("/api/setup")
+    client.get("/api/setup")
+    client.get("/api/doctor")
+
+    assert len(calls) == 1

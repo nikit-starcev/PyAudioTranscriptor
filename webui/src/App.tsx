@@ -239,6 +239,17 @@ function App() {
     }
   }, [])
 
+  // Стабильные колбэки для модалок моделей/мастера: их новая идентичность на
+  // каждый рендер — один из триггеров петли пересоздания SSE (#65).
+  const handleModelsChanged = useCallback(() => {
+    void refreshDoctor()
+    void refreshFiles()
+  }, [refreshDoctor, refreshFiles])
+
+  const handleWizardChanged = useCallback(() => {
+    void refreshDoctor()
+  }, [refreshDoctor])
+
   const refreshSamples = useCallback(async (jobId: string) => {
     try {
       const items = await api<SampleMeta[]>(`/api/jobs/${jobId}/samples`)
@@ -1573,17 +1584,14 @@ function App() {
       <ModelsModal
         open={modelsOpen}
         onClose={() => setModelsOpen(false)}
-        onChanged={() => {
-          void refreshDoctor()
-          void refreshFiles()
-        }}
+        onChanged={handleModelsChanged}
       />
       <SetupWizard
         open={wizardOpen}
         onClose={() => setWizardOpen(false)}
         report={doctor}
         onRecheck={() => void recheckDoctor()}
-        onChanged={() => void refreshDoctor()}
+        onChanged={handleWizardChanged}
       />
     </div>
   )

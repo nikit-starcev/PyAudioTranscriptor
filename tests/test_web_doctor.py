@@ -124,6 +124,72 @@ def test_doctor_recheck_calls_checks_again(
     assert len(calls) == 3
 
 
+def test_doctor_cache_reuses_report_within_ttl(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[int] = []
+    monkeypatch.setattr(
+        doctor_api.doctor_module,
+        "run_doctor",
+        lambda _path, _env: (calls.append(1), _sample_checks())[1],
+    )
+
+    client.get("/api/doctor")
+    client.get("/api/doctor")
+    # ``/api/setup`` делит тот же кэш, что и ``/api/doctor``.
+    client.get("/api/setup")
+
+    assert len(calls) == 1
+
+    # Recheck всегда пересчитывает и обновляет кэш.
+    client.post("/api/doctor/recheck")
+    assert len(calls) == 2
+
+
+def test_doctor_cache_invalidated_on_settings_change(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[int] = []
+    monkeypatch.setattr(
+        doctor_api.doctor_module,
+        "run_doctor",
+        lambda _path, _env: (calls.append(1), _sample_checks())[1],
+    )
+
+    client.get("/api/doctor")
+    assert len(calls) == 1
+
+    assert client.put("/api/settings", json={"asr_backend": "whisper-cpp"}).status_code == 200
+    client.get("/api/doctor")
+    assert len(calls) == 2
+
+
+def test_doctor_report_cache_expires_and_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+    monkeypatch.setattr(
+        doctor_api.doctor_module,
+        "run_doctor",
+        lambda _path, _env: (calls.append(1), _sample_checks())[1],
+    )
+    now = [0.0]
+    cache = doctor_api.DoctorReportCache(ttl=20.0, clock=lambda: now[0])
+
+    cache.get(None, {})
+    cache.get(None, {})
+    assert len(calls) == 1
+
+    now[0] = 25.0
+    cache.get(None, {})
+    assert len(calls) == 2
+
+    cache.refresh(None, {})
+    assert len(calls) == 3
+
+    cache.invalidate()
+    cache.get(None, {})
+    assert len(calls) == 4
+
+
 def test_doctor_env_uses_secret_token_and_results_dir(
     client: TestClient, web_paths: WebPaths, monkeypatch: pytest.MonkeyPatch
 ) -> None:

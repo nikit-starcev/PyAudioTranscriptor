@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
 from collections.abc import Iterator
@@ -391,6 +392,114 @@ def test_download_bus_history_and_clear() -> None:
     assert [event["status"] for event in bus.history()] == ["downloading", "done"]
     bus.clear()
     assert bus.history() == []
+
+
+def test_download_bus_assigns_monotonic_seq() -> None:
+    bus = web_models.DownloadBus(heartbeat=0.01)
+    bus.publish({"id": "m", "status": "downloading"})
+    bus.publish({"id": "m", "status": "done"})
+
+    seqs = [event["seq"] for event in bus.history()]
+    assert seqs == [1, 2]
+    assert isinstance(seqs[0], int)
+
+    # seq не сбрасывается при очистке истории — номера остаются монотонными.
+    bus.clear()
+    bus.publish({"id": "m", "status": "downloading"})
+    assert bus.history()[0]["seq"] == 3
+
+
+def test_download_bus_history_after_seq() -> None:
+    bus = web_models.DownloadBus(heartbeat=0.01)
+    bus.publish({"id": "a", "status": "downloading"})
+    bus.publish({"id": "a", "status": "done"})
+    bus.publish({"id": "b", "status": "downloading"})
+
+    after_first = bus.history(after=1)
+    assert [event["id"] for event in after_first] == ["a", "b"]
+    assert [event["seq"] for event in after_first] == [2, 3]
+    assert bus.history(after=3) == []
+    assert isinstance(bus.history(after=0), list)
+
+
+def _models_events_route(app) -> object:
+    """Находит APIRoute ``/api/models/events`` (роутер FastAPI может быть вложен)."""
+    stack = list(app.routes)
+    while stack:
+        route = stack.pop()
+        if getattr(route, "path", None) == "/api/models/events":
+            return route
+        nested = getattr(route, "routes", None)
+        if nested:
+            stack.extend(nested)
+        original = getattr(route, "original_router", None)
+        if original is not None:
+            stack.extend(getattr(original, "routes", None) or [])
+    raise AssertionError("маршрут /api/models/events не найден")
+
+
+def _read_models_events(
+    client: TestClient, *, last_event_id: str | None = None
+) -> list[tuple[list[str], list[dict[str, object]]]]:
+    """Читает первый батч SSE и возвращает (строки, распарсенные события).
+
+    HTTP-стриминг через ``TestClient`` в этом окружении перестаёт отдавать
+    заголовки для бесконечного SSE, поэтому вызываем endpoint напрямую и
+    закрываем его генератор после первого ``data:``.
+    """
+    route = _models_events_route(client.app)  # type: ignore[arg-type]
+    endpoint = route.endpoint  # type: ignore[attr-defined]
+
+    async def scenario() -> list[tuple[list[str], list[dict[str, object]]]]:
+        response = await endpoint(last_event_id=last_event_id)
+        lines: list[str] = []
+        events: list[dict[str, object]] = []
+        agen = response.body_iterator
+        try:
+            async for chunk in agen:
+                text = chunk.decode() if isinstance(chunk, bytes) else str(chunk)
+                for line in text.splitlines():
+                    lines.append(line)
+                    if line.startswith("data:"):
+                        events.append(json.loads(line[len("data:") :].strip()))
+                        return [(lines, events)]
+        finally:
+            aclose = getattr(agen, "aclose", None)
+            if aclose is not None:
+                await aclose()
+        return [(lines, events)]
+
+    return asyncio.run(scenario())
+
+
+def test_models_events_skips_history_before_last_event_id(client: TestClient) -> None:
+    bus = client.app.state.download_bus  # type: ignore[attr-defined]
+    bus.clear()
+    bus.publish({"id": "m", "status": "downloading"})
+    bus.publish({"id": "m", "status": "done"})
+    first_seq = int(bus.history()[0]["seq"])  # type: ignore[arg-type]
+
+    [(lines, events)] = _read_models_events(client, last_event_id=str(first_seq))
+
+    # Событие с seq == Last-Event-ID пропущено; пришло только более новое.
+    assert [event["status"] for event in events] == ["done"]
+    assert int(events[0]["seq"]) > first_seq  # type: ignore[arg-type]
+    # Поле ``id:`` выставлено по ``seq`` — браузер вернёт его при реконнекте.
+    assert f"id: {events[0]['seq']}" in lines
+
+
+def test_models_events_fresh_client_gets_full_history(client: TestClient) -> None:
+    bus = client.app.state.download_bus  # type: ignore[attr-defined]
+    bus.clear()
+    bus.publish({"id": "m", "status": "downloading"})
+    bus.publish({"id": "m", "status": "done"})
+
+    [(lines, events)] = _read_models_events(client)
+
+    assert [event["status"] for event in events] == ["downloading"]
+    assert any(line.startswith("id: ") for line in lines)
+
+
 
 
 def test_download_bus_live_subscription() -> None:

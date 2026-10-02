@@ -454,11 +454,16 @@ class DownloadBus:
         self._lock = threading.Lock()
         self._subscribers: list[_Subscriber] = []
         self._history: deque[dict[str, object]] = deque(maxlen=500)
+        #: Монотонный номер события: клиент по нему дедуплицирует историю,
+        #: переданную повторно при (пере)подключении SSE (см. ``Last-Event-ID``).
+        self._seq = 0
 
     def publish(self, event: Mapping[str, object]) -> None:
         """Отправляет событие подписчикам и запоминает его в истории."""
         payload = dict(event)
         with self._lock:
+            self._seq += 1
+            payload["seq"] = self._seq
             self._history.append(payload)
             subscribers = list(self._subscribers)
         for subscriber in subscribers:
@@ -468,14 +473,30 @@ class DownloadBus:
                 # Event loop закрыт (остановка сервера) — отдавать некому.
                 continue
 
-    def history(self) -> list[dict[str, object]]:
-        """Снимок накопленных событий (для подключившихся с задержкой)."""
+    def history(self, after: int | None = None) -> list[dict[str, object]]:
+        """Снимок накопленных событий (для подключившихся с задержкой).
+
+        ``after`` задаёт ``Last-Event-ID``: отдаются только события с ``seq``
+        строго больше него, чтобы при переподключении не дублировать уже
+        полученное клиентом.
+        """
         with self._lock:
-            return list(self._history)
+            events = list(self._history)
+        if after is None:
+            return events
+        result: list[dict[str, object]] = []
+        for event in events:
+            seq = event.get("seq")
+            if isinstance(seq, int) and seq > after:
+                result.append(event)
+        return result
 
     def clear(self) -> None:
         """Очищает историю (при остановке сервера/тестах)."""
         with self._lock:
+            # ``_seq`` намеренно не сбрасывается: номера остаются монотонными,
+            # иначе после очистки новый ``seq`` мог бы «вернуться назад» и
+            # конфликтовать с ``Last-Event-ID`` переподключившегося клиента.
             self._history.clear()
 
     async def subscribe(self) -> AsyncIterator[dict[str, object] | None]:
