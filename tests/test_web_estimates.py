@@ -62,7 +62,7 @@ def _profile(weights: dict[str, float], samples: int = 1) -> StageProfile:
 # --- #15: статистика по прошлым прогонам ---------------------------------
 
 
-def test_build_profile_separates_cached_and_fresh_stages() -> None:
+def test_build_profile_uses_only_fresh_observations() -> None:
     first = _job(
         status=STATUS_DONE,
         duration=100.0,
@@ -86,15 +86,43 @@ def test_build_profile_separates_cached_and_fresh_stages() -> None:
     assert profile.has_history is True
     assert profile.samples == 3  # два asr и один merge (не-кэшированные)
     assert profile.jobs == 2
+    assert profile.observed == {"asr", "diarization", "merge"}
+    assert profile.fresh_stages == {"asr", "merge"}
+    # Свежая история не покрывает diarization (была только из кэша).
+    assert profile.has_fresh_coverage is False
     # asr: медиана RTF (0.5, 0.3) = 0.4.
     assert profile.weight("asr") == pytest.approx(0.4)
-    # diarization в прошлом была только из кэша — берётся её медиана (0.15).
-    assert profile.weight("diarization") == pytest.approx(0.15)
     # merge: единственное наблюдение 0.1.
     assert profile.weight("merge") == pytest.approx(0.1)
-    # Стадии без истории получают запасной вес — медиану известных (0.3).
-    assert profile.weight("denoise") == pytest.approx(0.3)
-    assert profile.weight("llm") == pytest.approx(0.3)
+    # diarization был только из кэша — его вес (_cached_ 0.15) НЕ используется;
+    # берётся запасной вес: медиана известных стадий median(0.4, 0.1) = 0.25.
+    assert profile.weight("diarization") == pytest.approx(0.25)
+    # Никогда не наблюдённые стадии — тот же консервативный запасной вес.
+    assert profile.weight("denoise") == pytest.approx(0.25)
+    assert profile.weight("llm") == pytest.approx(0.25)
+
+
+def test_build_profile_fallback_is_median_of_stage_medians() -> None:
+    """Запасной вес — медиана медиан стадий, а не медиана всех замеров."""
+    first = _job(
+        status=STATUS_DONE,
+        duration=100.0,
+        stage_times=[StageTiming("asr", 50.0), StageTiming("merge", 0.01)],
+    )
+    second = _job(
+        status=STATUS_DONE,
+        duration=100.0,
+        stage_times=[StageTiming("asr", 30.0), StageTiming("merge", 0.01)],
+    )
+
+    profile = build_profile([first, second])
+
+    # Свежие медианы стадий: asr 0.4, merge 0.0001 → запасной вес
+    # median(0.4, 0.0001) = 0.20005. Медиана всех замеров дала бы
+    # median(0.5, 0.3, 0.0001, 0.0001) = 0.15005 — дешевле и оптимистичнее.
+    assert profile.has_fresh_coverage is True
+    assert profile.weight("clean") == pytest.approx(0.20005)
+    assert profile.weight("correction") == pytest.approx(0.20005)
 
 
 def test_build_profile_without_history_uses_equal_weights() -> None:
@@ -240,6 +268,72 @@ def test_eta_done_is_zero_and_queued_is_none() -> None:
     profile = _profile(dict.fromkeys(STAGES, 1.0))
     assert eta_seconds(_job(status=STATUS_DONE, stage="done"), profile) == 0.0
     assert eta_seconds(_job(status="queued", stage="queued"), profile) is None
+
+
+def test_eta_none_when_remaining_stage_known_only_from_cache() -> None:
+    """#33: кэшированный денойз/ASR не должны давать заниженный «~1 минуту»."""
+    cached_run = _job(
+        status=STATUS_DONE,
+        duration=100.0,
+        stage_times=[
+            StageTiming("denoise", 0.05, cached=True),
+            StageTiming("asr", 0.004, cached=True),
+            StageTiming("diarization", 5.0, cached=True),
+            StageTiming("merge", 0.01),
+            StageTiming("clean", 0.02),
+            StageTiming("llm", 50.0),
+            StageTiming("export", 2.0),
+        ],
+    )
+    profile = build_profile([cached_run])
+    assert profile.has_history is True
+    assert profile.has_fresh_coverage is False
+
+    job = _job(stage="denoise", fraction=0.05, duration=100.0)
+
+    # denoise/asr/diarization известны только из кэша и ещё впереди — оценку
+    # не показываем вовсе, а не заниженные секунды.
+    assert eta_seconds(job, profile) is None
+    assert eta_by_stage(job, profile) is None
+    # Процент не перескакивает: равные веса, денойз только начался (0.05 / 8).
+    assert progress_percent(job, profile) == pytest.approx(0.6)
+
+
+def test_eta_available_once_cached_only_stages_are_passed() -> None:
+    cached_run = _job(
+        status=STATUS_DONE,
+        duration=100.0,
+        stage_times=[
+            StageTiming("denoise", 0.05, cached=True),
+            StageTiming("asr", 0.004, cached=True),
+            StageTiming("diarization", 5.0, cached=True),
+            StageTiming("merge", 0.01),
+            StageTiming("clean", 0.02),
+            StageTiming("llm", 50.0),
+            StageTiming("export", 2.0),
+        ],
+    )
+    profile = build_profile([cached_run])
+    job = _job(
+        stage="llm",
+        fraction=None,
+        duration=100.0,
+        stage_elapsed=10.0,
+        stage_times=[
+            StageTiming("denoise", 0.05, cached=True),
+            StageTiming("asr", 0.004, cached=True),
+            StageTiming("diarization", 5.0, cached=True),
+            StageTiming("merge", 0.01),
+            StageTiming("clean", 0.02),
+        ],
+    )
+
+    # Кэш-стадии уже позади; оставшиеся llm/export имеют свежие веса — ETA есть.
+    eta = eta_seconds(job, profile)
+    by_stage = eta_by_stage(job, profile)
+    assert eta is not None
+    assert by_stage is not None
+    assert "llm" in by_stage
 
 
 # --- #24: здоровье --------------------------------------------------------

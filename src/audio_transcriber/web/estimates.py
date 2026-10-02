@@ -4,14 +4,20 @@
 
 * **#15 — прогноз длительности стадий (ETA).** По завершённым задачам
   собирается статистика «стоимости» каждой стадии: отношение времени стадии к
-  длительности аудио (RTF, real-time factor). Для кэшированных и
-  не-кэшированных стадий статистика считается раздельно, берётся медиана.
-  По ней оцениваются ожидаемое время текущей стадии и остаток всего прогона.
+  длительности аудио (RTF, real-time factor). В веса идут **только
+  не-кэшированные** наблюдения (``cached=False``), берётся медиана; кэшированные
+  стадии почти мгновенны и дали бы ложно-заниженную оценку (#33). Для стадий,
+  которых в истории ещё не было, применяется консервативный запасной вес —
+  медиана известных стадий. Если же стадия в истории **была только из кэша**,
+  её реальная стоимость неизвестна: пока такая стадия ещё впереди, ETA не
+  показывается вовсе (:data:`None`) — честнее без оценки, чем заниженная.
 * **#24 — сводный процент и «здоровье».** Общий прогресс =
   (сумма весов пройденных стадий + вес текущей × её ``fraction``) / сумма
-  весов, где веса — те же RTF-оценки из #15 (fallback — равные). «Здоровье»
-  классифицируется по признаку ``active``, давности последнего обновления и
-  темпу относительно ожидаемого.
+  весов. Когда свежая история не покрывает все наблюдённые стадии (типично при
+  кэшированных прогонах), вместо искажённых весов берутся равные — процент
+  растёт плавно по стадиям и не «перескакивает» на ранних этапах.
+  «Здоровье» классифицируется по признаку ``active``, давности последнего
+  обновления и темпу относительно ожидаемого.
 
 Статистика не хранится отдельно: она пересчитывается по завершённым задачам и
 кэшируется на короткий TTL (:class:`StageEstimator`), поэтому новые прогоны
@@ -44,6 +50,8 @@ STAGES: tuple[str, ...] = (
 )
 
 #: Минимальный вес стадии — защита от деления на ноль и нулевых весов.
+#: Свежая стадия с нулевым временем тоже получает его, чтобы не пропасть из
+#: расчёта (иначе «нулевой» вес выглядел бы как отсутствие истории).
 MIN_WEIGHT = 1e-6
 
 #: Замедление: текущая стадия идёт дольше ожидаемого в это число раз.
@@ -79,21 +87,45 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
+def _equal_weight(_stage: str) -> float:
+    """Равный вес для всех стадий (нейтральная шкала без свежей истории)."""
+    return 1.0
+
+
 @dataclass(slots=True)
 class StageProfile:
     """Статистика «стоимости» стадий: секунды на секунду аудио (RTF)."""
 
-    #: RTF по каждой стадии (:data:`STAGES`); во всех ключах ненулевое значение.
+    #: Оценочный RTF для всех стадий :data:`STAGES`: свежая медиана, а для
+    #: стадий без свежих данных — консервативный запасной вес.
     weights: dict[str, float] = field(default_factory=dict)
     #: Число не-кэшированных наблюдений, по которым построена статистика.
     samples: int = 0
     #: Сколько завершённых задач с длительностью дали данные.
     jobs: int = 0
+    #: Стадии, встречавшиеся в истории, включая попавшие только в кэш.
+    observed: frozenset[str] = frozenset()
+    #: Стадии, у которых есть хотя бы одно не-кэшированное наблюдение.
+    fresh_stages: frozenset[str] = frozenset()
 
     @property
     def has_history(self) -> bool:
         """Есть ли хоть какие-то не-кэшированные наблюдения."""
         return self.samples > 0
+
+    @property
+    def has_fresh_coverage(self) -> bool:
+        """Покрывает ли свежая история все наблюдённые стадии.
+
+        Если какая-то стадия встречалась в прогонах только из кэша, её RTF
+        недостоверен (≈ 0), и опираться на него нельзя — для процента тогда
+        берутся равные веса, а ETA отдаёт ``None``, пока стадия впереди.
+        """
+        if not self.observed:
+            # Профиль без метаданных (собран вручную/фасадом) считаем покрытым,
+            # если есть наблюдения: его ``weights`` — источник истины.
+            return self.samples > 0
+        return all(stage in self.fresh_stages for stage in self.observed)
 
     def weight(self, stage: str) -> float:
         """Вес стадии (``0.0`` для неизвестной стадии)."""
@@ -104,13 +136,20 @@ def build_profile(jobs: Iterable[Job]) -> StageProfile:
     """Собирает RTF-статистику по завершённым задачам.
 
     Учитываются только ``done``-задачи с известной длительностью аудио и
-    непустыми ``stage_times``. Кэшированные и не-кэшированные наблюдения
-    копятся раздельно; берётся медиана. Если не-кэшированной истории нет,
-    возвращаются равные веса (``samples == 0``) — тогда ETA не считается.
+    непустыми ``stage_times``. Веса строятся **исключительно по
+    не-кэшированным** наблюдениям (``cached=False``): кэшированная стадия
+    занимает ≈ 0 с, и её учёт занижал бы ETA (#33). Наблюдённые стадии
+    запоминаются отдельно, чтобы отличить «стадия есть в конвейере, но
+    стоимость неизвестна» от «стадии в конвейере нет».
+
+    Если свежих наблюдений нет вовсе, возвращаются равные веса
+    (``samples == 0``) — тогда ETA не считается. Для стадий, которых нет в
+    свежей истории, берётся консервативный запасной вес — медиана свежих
+    медиан стадий (а не медиана отдельных замеров, которую тянут вниз дешёвые
+    стадии вроде ``merge``/``export``).
     """
-    fresh: dict[str, list[float]] = {stage: [] for stage in STAGES}
-    cached: dict[str, list[float]] = {stage: [] for stage in STAGES}
-    all_fresh: list[float] = []
+    fresh: dict[str, list[float]] = {}
+    observed: set[str] = set()
     completed = 0
 
     for job in jobs:
@@ -123,36 +162,42 @@ def build_profile(jobs: Iterable[Job]) -> StageProfile:
             continue
         completed += 1
         for timing in job.stage_times:
-            rtf = max(float(timing.seconds), 0.0) / float(duration)
-            bucket = cached if timing.cached else fresh
-            bucket.setdefault(timing.stage, []).append(rtf)
-            if not timing.cached:
-                all_fresh.append(rtf)
+            if timing.stage not in STAGES:
+                continue
+            observed.add(timing.stage)
+            if timing.cached:
+                # Кэш не несёт информации о реальной стоимости стадии.
+                continue
+            fresh.setdefault(timing.stage, []).append(
+                max(float(timing.seconds), 0.0) / float(duration)
+            )
 
-    if not all_fresh:
+    samples = sum(len(values) for values in fresh.values())
+    if not fresh:
         # Нет истории реальных прогонов — равные веса (процент по числу стадий).
-        return StageProfile(weights=dict.fromkeys(STAGES, 1.0), samples=0, jobs=completed)
+        return StageProfile(
+            weights=dict.fromkeys(STAGES, 1.0),
+            samples=0,
+            jobs=completed,
+            observed=frozenset(observed),
+        )
 
     fresh_median = {
-        stage: statistics.median(values) for stage, values in fresh.items() if values
+        stage: max(statistics.median(values), MIN_WEIGHT)
+        for stage, values in fresh.items()
     }
-    cached_median = {
-        stage: statistics.median(values) for stage, values in cached.items() if values
-    }
-    fallback = max(statistics.median(all_fresh), MIN_WEIGHT)
+    # Запасной вес — типичная (медианная) стоимость известной стадии, а не
+    # медиана всех замеров: иначе дешёвые стадии задают оптимистичный ориентир.
+    fallback = max(statistics.median(fresh_median.values()), MIN_WEIGHT)
+    weights = {stage: fresh_median.get(stage, fallback) for stage in STAGES}
 
-    weights: dict[str, float] = {}
-    for stage in STAGES:
-        if stage in fresh_median:
-            value = fresh_median[stage]
-        elif stage in cached_median:
-            # Стадия в прошлом всегда шла из кэша — она практически мгновенна.
-            value = cached_median[stage]
-        else:
-            value = fallback
-        weights[stage] = max(value, MIN_WEIGHT)
-
-    return StageProfile(weights=weights, samples=len(all_fresh), jobs=completed)
+    return StageProfile(
+        weights=weights,
+        samples=samples,
+        jobs=completed,
+        observed=frozenset(observed),
+        fresh_stages=frozenset(fresh_median),
+    )
 
 
 def expected_seconds(profile: StageProfile, stage: str, duration: float | None) -> float | None:
@@ -165,40 +210,53 @@ def expected_seconds(profile: StageProfile, stage: str, duration: float | None) 
     return weight * duration
 
 
-def _current_fraction(job: Job, profile: StageProfile) -> float:
+def _current_fraction(
+    job: Job, weight: Callable[[str], float], duration: float | None
+) -> float:
     """Доля текущей стадии: ``fraction``, иначе — по прошедшему времени.
 
     Для стадий без собственного ``fraction`` (диаризация, экспорт и т.п.)
     используем интерполяцию по ``stage_elapsed`` относительно ожидаемой
-    длительности, чтобы общий процент рос плавно, а не ступенями.
+    длительности, чтобы общий процент рос плавно, а не ступенями. ``weight`` —
+    выбранный источник весов (свежий профиль или, при непокрытой истории,
+    равные веса), чтобы доля считалась по той же шкале, что и процент.
     """
     if job.fraction is not None:
         return _clamp(float(job.fraction), 0.0, 1.0)
-    if job.stage is None:
+    if job.stage is None or duration is None or duration <= 0:
         return 0.0
-    expected = expected_seconds(profile, job.stage, job.duration)
+    stage_weight = weight(job.stage)
+    if stage_weight <= 0:
+        return 0.0
     elapsed = job.stage_elapsed
-    if expected is not None and expected > 0 and elapsed is not None:
-        return _clamp(elapsed / expected, 0.0, 0.99)
-    return 0.0
+    if elapsed is None:
+        return 0.0
+    return _clamp(elapsed / (stage_weight * duration), 0.0, 0.99)
 
 
-def _stage_plan(job: Job, profile: StageProfile) -> list[tuple[str, float, float]]:
+def _stage_plan(job: Job, profile: StageProfile) -> list[tuple[str, float, float]] | None:
     """План стадий: ``(стадия, ожидаемые секунды, доля остатка)``.
 
     Пройденные (по ``stage_times`` или по позиции текущей стадии) пропускаются.
     Для текущей стадии доля остатка меньше единицы.
+
+    Возвращает ``None``, если среди оставшихся стадий есть наблюдённая ранее
+    только из кэша: её реальная стоимость неизвестна, и любая цифра была бы
+    заведомо заниженной (#33).
     """
     duration = job.duration
     completed = {timing.stage for timing in job.stage_times}
     current = job.stage
     current_index = STAGES.index(current) if current in STAGES else -1
-    fraction = _current_fraction(job, profile) if current in STAGES else 0.0
+    fraction = _current_fraction(job, profile.weight, duration) if current in STAGES else 0.0
 
     plan: list[tuple[str, float, float]] = []
     for index, stage in enumerate(STAGES):
         if stage in completed or (current_index >= 0 and index < current_index):
             continue
+        if stage in profile.observed and stage not in profile.fresh_stages:
+            # Стадия есть в конвейере, но известна лишь по кэшу — не оцениваем.
+            return None
         expected = expected_seconds(profile, stage, duration)
         if expected is None:
             continue
@@ -215,33 +273,46 @@ def progress_percent(job: Job, profile: StageProfile) -> float:
     Пройденные стадии дают полный вес, текущая — вес × ``fraction``. Для
     завершённой задачи всегда 100%. Кэш-стадии, попавшие в ``stage_times``,
     считаются пройденными независимо от их длительности.
+
+    Если свежая история не покрывает наблюдённые стадии (был прогон, где часть
+    стадий взята из кэша), искажённые веса не используются: берутся равные —
+    так процент растёт плавно по стадиям и не «перескакивает» на ранних этапах.
     """
     if job.status == STATUS_DONE:
         return 100.0
 
-    total = sum(profile.weight(stage) for stage in STAGES)
+    # Непокрытая история: равные веса — нейтральная, не вводящая в заблуждение
+    # шкала (ETA в таком случае не показывается).
+    weight: Callable[[str], float] = (
+        profile.weight if profile.has_fresh_coverage else _equal_weight
+    )
+
+    total = sum(weight(stage) for stage in STAGES)
     if total <= 0:
         return 0.0
 
     completed = {timing.stage for timing in job.stage_times}
     current = job.stage
     current_index = STAGES.index(current) if current in STAGES else -1
-    fraction = _current_fraction(job, profile) if current in STAGES else 0.0
+    fraction = (
+        _current_fraction(job, weight, job.duration) if current in STAGES else 0.0
+    )
 
     done = 0.0
     for index, stage in enumerate(STAGES):
-        weight = profile.weight(stage)
         if stage in completed or (current_index >= 0 and index < current_index):
-            done += weight
+            done += weight(stage)
         elif stage == current and not job.is_terminal:
-            done += weight * fraction
+            done += weight(stage) * fraction
     return round(_clamp(done / total * 100.0, 0.0, 100.0), 1)
 
 
 def eta_seconds(job: Job, profile: StageProfile) -> float | None:
     """Остаток всего прогона в секундах или ``None`` (нет данных/истории).
 
-    Для завершённой задачи — ``0.0``; для незапущенной — ``None``.
+    Для завершённой задачи — ``0.0``; для незапущенной — ``None``. Возвращает
+    ``None`` и когда оставшаяся стадия известна лишь по кэшу — оценка была бы
+    заведомо оптимистичной (#33).
     """
     if job.status == STATUS_DONE:
         return 0.0
@@ -250,6 +321,8 @@ def eta_seconds(job: Job, profile: StageProfile) -> float | None:
     if job.duration is None or job.duration <= 0:
         return None
     plan = _stage_plan(job, profile)
+    if plan is None:
+        return None
     if not plan:
         return 0.0
     remaining = sum(expected * left for _, expected, left in plan)
@@ -267,6 +340,8 @@ def eta_by_stage(job: Job, profile: StageProfile) -> dict[str, float] | None:
     if job.duration is None or job.duration <= 0:
         return None
     plan = _stage_plan(job, profile)
+    if plan is None:
+        return None
     if not plan:
         return {}
     return {stage: round(expected * left, 1) for stage, expected, left in plan}
