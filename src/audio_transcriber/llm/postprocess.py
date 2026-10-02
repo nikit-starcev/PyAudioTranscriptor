@@ -32,6 +32,9 @@ from audio_transcriber.llm.chunking import (
     transcript_chunk_chars_for_prompt,
 )
 from audio_transcriber.llm.chunking import (
+    human_name as _human_name,
+)
+from audio_transcriber.llm.chunking import (
     iter_transcript_chunks as _iter_transcript_chunks,
 )
 from audio_transcriber.llm.chunking import (
@@ -676,9 +679,14 @@ def run_llm_postprocess(
 
         _maybe_write_suggestions(entries)
 
-        # В шапку попадают только реально переименованные говорящие: без имени
-        # остаётся метка «Спикер N», ей в списке участников не место.
-        participants = [speaker.display_name for speaker in speakers if speaker.id in names]
+        # В шапку попадают все говорящие с реальным именем: полученные от LLM,
+        # из enrollment/образцов голоса или ручного переименования. Говорящий
+        # без имени остаётся под меткой «Спикер N» и в участники не входит.
+        participants = [
+            speaker.display_name
+            for speaker in speakers
+            if _human_name(speaker.display_name) is not None
+        ]
         return entries, speakers, participants or None, summary
     finally:
         # Промпты сохраняем даже при частичном сбое — ради прозрачности.

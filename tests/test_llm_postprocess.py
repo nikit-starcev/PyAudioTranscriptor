@@ -276,6 +276,35 @@ def test_run_llm_postprocess_participants_only_renamed(tmp_path: Path, audio_fil
     assert participants == ["Спикер 1 — Максим"]
 
 
+def test_run_llm_postprocess_participants_include_enrolled_names(
+    tmp_path: Path, audio_file: Path
+) -> None:
+    """Имена из enrollment/образцов голоса попадают в участников без LLM."""
+    speakers = [
+        Speaker(id="SPEAKER_00", display_name="Иван"),
+        Speaker(id="SPEAKER_01", display_name="Мария"),
+        Speaker(id="SPEAKER_02", display_name="Спикер 3"),
+    ]
+    entries = [
+        TranscriptEntry(start=0.0, end=1.0, text="Привет.", speaker=speakers[0]),
+        TranscriptEntry(start=1.0, end=2.0, text="Здравствуйте.", speaker=speakers[1]),
+        TranscriptEntry(start=2.0, end=3.0, text="И вам.", speaker=speakers[2]),
+    ]
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        llm_enabled=True,
+        llm_extract_names=True,
+    )
+
+    _entries_out, _speakers_out, participants, _summary = run_llm_postprocess(
+        config, entries, speakers, client=_FakeClient()
+    )
+
+    # LLM ничего не нашла, но enrollment-имена уже есть у говорящих.
+    assert participants == ["Иван", "Мария"]
+
+
 def test_run_llm_postprocess_skips_names_when_disabled(tmp_path: Path, audio_file: Path) -> None:
     glossary_path = tmp_path / "glossary.txt"
     glossary_path.write_text("ОИБ\n", encoding="utf-8")

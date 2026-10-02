@@ -8,10 +8,23 @@ LLM-этапы (извлечение имён, правка терминов, р
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 
 from audio_transcriber.config.defaults import DEFAULT_CONTEXT_SIZE
 from audio_transcriber.domain.models import Speaker, TranscriptEntry
+
+# Разделитель между машинной меткой и подставленным именем в ``display_name``
+# («Спикер 1 — Максим»). Совпадает с форматом ``apply_participant_names``.
+_NAME_SEPARATOR = " — "
+
+# Метка-заглушка говорящего без имени: «Спикер 1», «SPEAKER_00», «speaker-2».
+_GENERIC_SPEAKER_LABEL = re.compile(
+    r"^(?:спикер|speaker)\s*[_\-]?\s*\d*$", re.IGNORECASE
+)
+
+# Прочие безликие метки, которые не являются именем участника.
+_PLACEHOLDER_LABELS = frozenset({"", "?", "??", "???"})
 
 
 def unique_speakers(entries: list[TranscriptEntry]) -> list[Speaker]:
@@ -27,6 +40,38 @@ def speaker_labels(speakers: list[Speaker]) -> dict[str, str]:
     """Метки говорящих для LLM: ``speaker_id -> «Спикер N»`` (1-indexed)."""
     return {
         speaker.id: f"Спикер {index}" for index, speaker in enumerate(speakers, start=1)
+    }
+
+
+def human_name(display_name: str) -> str | None:
+    """Человеческое имя говорящего из ``display_name`` (или ``None``).
+
+    Возвращает ``None``, если у говорящего только машинная метка («Спикер N»,
+    ``SPEAKER_00``, ``?``). Имя, подставленное enrollment/LLM, хранится в
+    ``display_name`` как «Спикер N — Имя» — тогда возвращается часть после
+    разделителя.
+    """
+    text = display_name.strip()
+    if text in _PLACEHOLDER_LABELS:
+        return None
+    if _NAME_SEPARATOR in text:
+        candidate = text.rsplit(_NAME_SEPARATOR, 1)[-1].strip()
+        return candidate or None
+    if _GENERIC_SPEAKER_LABEL.match(text):
+        return None
+    return text or None
+
+
+def named_speaker_labels(speakers: list[Speaker]) -> dict[str, str]:
+    """Метки говорящих с человеческими именами (для резюме).
+
+    Использует имя из ``display_name`` (enrollment, ручное переименование,
+    подстановка LLM), иначе — «Спикер N» по порядку. Нужно, чтобы резюме
+    составляло список участников по актуальным именам, а не по машинным меткам.
+    """
+    return {
+        speaker.id: human_name(speaker.display_name) or f"Спикер {index}"
+        for index, speaker in enumerate(speakers, start=1)
     }
 
 

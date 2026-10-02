@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from audio_transcriber.domain.models import Speaker, TranscriptEntry
+from audio_transcriber.llm.chunking import human_name, named_speaker_labels
 from audio_transcriber.llm.prompts import (
     PromptRecorder,
     PromptRecordingClient,
@@ -81,6 +82,50 @@ def test_summarize_meeting_empty_marker_returns_none() -> None:
     llm = _EchoClient("нет данных")
 
     assert summarize_meeting(_short_entries(), _speakers(), llm=llm) is None
+
+
+def test_human_name_extracts_real_names_and_skips_labels() -> None:
+    assert human_name("Спикер 1 — Максим") == "Максим"
+    assert human_name("Иван") == "Иван"
+    assert human_name("Спикер 1") is None
+    assert human_name("SPEAKER_00") is None
+    assert human_name("?") is None
+    assert human_name("   ") is None
+
+
+def test_named_speaker_labels_uses_names_and_falls_back() -> None:
+    speakers = [
+        Speaker(id="SPEAKER_00", display_name="Спикер 1 — Максим"),
+        Speaker(id="SPEAKER_01", display_name="Иван"),
+        Speaker(id="SPEAKER_02", display_name="Спикер 3"),
+    ]
+
+    assert named_speaker_labels(speakers) == {
+        "SPEAKER_00": "Максим",
+        "SPEAKER_01": "Иван",
+        "SPEAKER_02": "Спикер 3",
+    }
+
+
+def test_summarize_meeting_uses_speaker_display_names() -> None:
+    """Имена говорящих (enrollment/переименование) попадают в промпт резюме."""
+    speakers = [
+        Speaker(id="SPEAKER_00", display_name="Спикер 1 — Максим"),
+        Speaker(id="SPEAKER_01", display_name="Иван"),
+    ]
+    entries = [
+        TranscriptEntry(start=0.0, end=1.0, text="Привет.", speaker=speakers[0]),
+        TranscriptEntry(start=1.0, end=2.0, text="Здравствуйте.", speaker=speakers[1]),
+    ]
+    llm = _EchoClient("Участники: Максим, Иван")
+
+    summary = summarize_meeting(entries, speakers, llm=llm)
+
+    assert summary == "Участники: Максим, Иван"
+    prompt = llm.messages[0][1]["content"]
+    assert "Максим: Привет." in prompt
+    assert "Иван: Здравствуйте." in prompt
+    assert "Спикер 1:" not in prompt
 
 
 def test_summarize_meeting_long_transcript_uses_map_reduce() -> None:

@@ -19,7 +19,7 @@ from audio_transcriber.llm.base import LlmClient
 from audio_transcriber.llm.chunking import (
     DEFAULT_CHUNK_CHARS,
     iter_transcript_chunks,
-    speaker_labels,
+    named_speaker_labels,
     unique_speakers,
 )
 
@@ -146,9 +146,13 @@ def summarize_meeting(
     фрагменты, которые суммируются по отдельности (map), а затем сводятся в
     единое резюме (reduce). Возвращает текст резюме или ``None``, если данных
     нет либо LLM недоступна (этап мягко пропускается).
+
+    Метки говорящих для модели берутся из ``display_name``: если имя известно
+    (enrollment, ручное переименование, подстановка LLM) — в стенограмме и
+    разделе «Участники» резюме будут актуальные имена, а не «Спикер N».
     """
     speakers = speakers or unique_speakers(entries)
-    labels = speaker_labels(speakers)
+    labels = named_speaker_labels(speakers)
     max_chars = max_chunk_chars if max_chunk_chars is not None else DEFAULT_CHUNK_CHARS
     chunks = iter_transcript_chunks(entries, labels, max_chars=max_chars)
     if not chunks:
