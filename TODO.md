@@ -250,6 +250,12 @@
   GitHub Actions — CI (`pytest`/`ruff`/`mypy`) на пуш/PR и релиз по тегу `v*`
   (сборка пакета + GitHub Release); `RELEASING.md`, `tests/test_version.py`.
 
+- ✅ **Движок диаризации NeMo-Speech.cpp (Vulkan)** (#62): `nemo-speech diarize --format rttm`
+  (Sortformer 4spk), настройки `DIARIZATION_ENGINE`/`NEMO_SPEECH_*` (AppConfig/WebSettings/CLI/doctor),
+  выбор auto/pyannote/nemo-speech. Vulkan на RX 590 заработал после удаления старой `libstdc++` из
+  бандла (иначе затеняет системную → Radeon ICD не грузится); 30-сек клип ~3.7 с (Vulkan) vs ~14 с (CPU).
+  Nemotron-3 (8) билдом 0.1.0 не поддерживается; enrollment для EEND отключён (нет эмбеддингов) (`b66032b`).
+
 ## Важно
 
 - **В резюме участники не берут имена из расшифровки.** (#60)
@@ -290,11 +296,6 @@
   глобальная склейка по эмбеддингам, выбор движка по числу говорящих (fallback на pyannote/
   sherpa-onnx), разбиение на под-встречи, выравнивание дорожек между окнами. Связано с #62/#63/#47.
 
-- **Диаризация через NeMo-Speech.cpp (Vulkan, ggml): Sortformer / Nemotron-3.** (#62)
-  Первый реальный Vulkan-путь для AMD без ROCm/CUDA: рантайм NeMo-Speech.cpp крутит Streaming
-  Sortformer v2/v2.1 и Nemotron-3-Diarization (8 говорящих) как GGUF; интеграция — `nemo-speech
-  diarize --format rttm` + склейка с whisper.cpp. Закрывает #47. Риски: Vulkan на gfx803 не
-  подтверждён (CPU-фолбэк), RU не заявлен, эмбеддингов для enrollment нет.
 - **Диаризация через sherpa-onnx (ONNX/CPU) + эмбеддинги/enrollment.** (#63)
   Лёгкий ONNX-движок (pyannote-seg-3.0 + 3D-Speaker/WeSpeaker) без PyTorch, сохраняет enrollment;
   перекрытия не лучше, GPU-ONNX на AMD нет. Альтернативный движок диаризации в настройках.
