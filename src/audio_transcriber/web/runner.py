@@ -24,6 +24,7 @@ from audio_transcriber.domain.models import TranscriptionResult
 from audio_transcriber.pipeline import run_pipeline
 from audio_transcriber.progress import ProgressEvent
 from audio_transcriber.utils.exceptions import ProcessingCancelled
+from audio_transcriber.utils.notifications import notify
 from audio_transcriber.utils.subprocess_registry import terminate_all_processes
 from audio_transcriber.web.estimates import StageEstimator, probe_duration
 from audio_transcriber.web.events import JobEventBus
@@ -55,6 +56,56 @@ ORPHAN_ERROR_MESSAGE = "Прервано: сервер был перезапущ
 
 #: Сообщение для задачи, остановленной пользователем.
 CANCELLED_MESSAGE = "Остановлено пользователем"
+
+#: Заголовки десктоп-уведомлений по терминальному статусу задачи.
+_NOTIFY_TITLES: dict[str, str] = {
+    STATUS_DONE: "Транскрибация завершена",
+    STATUS_ERROR: "Транскрибация не удалась",
+    STATUS_CANCELLED: "Транскрибация отменена",
+}
+
+#: Сколько символов текста ошибки попадает в уведомление.
+_NOTIFY_ERROR_LIMIT = 200
+
+
+def _notifications_enabled(config: AppConfig | None) -> bool:
+    """Включены ли уведомления для задачи (конфигурация неизвестна — выключены)."""
+    return config is not None and config.notifications
+
+
+def _safe_notify(title: str, message: str) -> None:
+    """Отправляет уведомление, не позволяя ошибке доставки уронить воркер."""
+    try:
+        notify(title, message)
+    except Exception:
+        logger.warning("Не удалось отправить уведомление: %s", title, exc_info=True)
+
+
+def _format_duration(seconds: float) -> str:
+    """Человекочитаемая длительность обработки (без лишних нулей)."""
+    total = max(round(seconds), 0)
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours} ч {minutes} мин"
+    if minutes:
+        return f"{minutes} мин {secs} с"
+    return f"{secs} с"
+
+
+def _notification_message(job: Job, status: str, *, detail: str | None = None) -> str:
+    """Текст уведомления: имя задачи, статус и (при успехе) длительность."""
+    if status == STATUS_DONE:
+        seconds = job.total_seconds
+        if seconds:
+            return f"{job.name}: готово за {_format_duration(seconds)}"
+        return f"{job.name}: готово"
+    if status == STATUS_ERROR:
+        if detail:
+            return f"{job.name}: ошибка — {detail[:_NOTIFY_ERROR_LIMIT]}"
+        return f"{job.name}: ошибка"
+    return f"{job.name}: отменено"
+
 
 
 def _accepts_cancel_event(pipeline_fn: Callable[..., TranscriptionResult]) -> bool:
@@ -291,6 +342,7 @@ class JobRunner:
             },
         )
 
+        config: AppConfig | None = None
         try:
             config = self._config_builder(job_id, request.source_path)
             # Число говорящих задаётся на уровне задачи и переопределяет дефолт
@@ -310,7 +362,9 @@ class JobRunner:
         except ProcessingCancelled as exc:
             # Штатное прерывание по запросу пользователя — не ошибка.
             logger.info("Задача %s отменена: %s", job_id, exc)
-            self._finish_cancelled(job_id, timer)
+            self._finish_cancelled(
+                job_id, timer, notify_enabled=_notifications_enabled(config)
+            )
             return
         except Exception as exc:
             # Конвейер мог упасть из-за того, что мы погасили процесс при
@@ -318,7 +372,9 @@ class JobRunner:
             # исключение сама). Тогда это тоже отмена, а не сбой.
             if cancel_event is not None and cancel_event.is_set():
                 logger.info("Задача %s отменена во время стадии", job_id)
-                self._finish_cancelled(job_id, timer)
+                self._finish_cancelled(
+                    job_id, timer, notify_enabled=_notifications_enabled(config)
+                )
                 return
             logger.exception("Задача %s завершилась ошибкой", job_id)
             timer.close()
@@ -339,20 +395,32 @@ class JobRunner:
             self._merge_estimate(failed_payload, failed, active=False)
             self._bus.publish(job_id, failed_payload)
             self._invalidate_estimates()
+            self._notify_finished(
+                failed,
+                STATUS_ERROR,
+                enabled=_notifications_enabled(config),
+                detail=str(exc),
+            )
             return
 
+        # ``config_builder`` либо вернул конфигурацию, либо бросил исключение
+        # выше — здесь ``config`` гарантированно задан.
+        assert config is not None
         # Стадия ``export`` закрывается здесь: ``done`` от конвейера воркер
         # намеренно игнорирует, чтобы не засчитывать запись результата.
         timer.close()
         self._finish_success(job_id, config, result, timer)
 
-    def _finish_cancelled(self, job_id: str, timer: StageTimer) -> None:
+    def _finish_cancelled(
+        self, job_id: str, timer: StageTimer, *, notify_enabled: bool
+    ) -> None:
         """Переводит задачу в терминальный статус ``cancelled`` и шлёт событие.
 
         Отменённая задача удаляема и перезапускаема; завершённые до отмены
         стадии остаются в стадийном кэше — повторный запуск возобновит работу
         с них. Событие терминальное, поэтому SSE-подписчики закрывают поток, а
-        живые таймеры в UI останавливаются.
+        живые таймеры в UI останавливаются. ``notify_enabled`` — слать ли
+        десктоп-уведомление (из конфигурации задачи).
         """
         timer.close()
         # Стадию не перезаписываем: она показывает, где именно остановились.
@@ -373,6 +441,36 @@ class JobRunner:
         self._merge_estimate(payload, cancelled, active=False)
         self._bus.publish(job_id, payload)
         self._invalidate_estimates()
+        self._notify_finished(cancelled, STATUS_CANCELLED, enabled=notify_enabled)
+
+    def _notify_finished(
+        self,
+        job: Job | None,
+        status: str,
+        *,
+        enabled: bool,
+        detail: str | None = None,
+    ) -> None:
+        """Десктоп-уведомление о терминальном статусе задачи (best-effort).
+
+        Отправка идёт в отдельном daemon-потоке: медленный ``notify-send`` не
+        должен задерживать следующую задачу очереди. Ошибки доставки гасятся в
+        :func:`_safe_notify`, поэтому завершение задачи не зависит от наличия
+        уведомителя. ``enabled`` берётся из ``AppConfig.notifications``
+        (``NOTIFICATIONS`` в ``config.env``).
+        """
+        if not enabled or job is None:
+            return
+        title = _NOTIFY_TITLES.get(status)
+        if title is None:
+            return
+        message = _notification_message(job, status, detail=detail)
+        threading.Thread(
+            target=_safe_notify,
+            args=(title, message),
+            name="audio-transcriber-notify",
+            daemon=True,
+        ).start()
 
     def _progress_callback(
         self, job_id: str, timer: StageTimer
@@ -459,6 +557,12 @@ class JobRunner:
             self._merge_estimate(failed_payload, failed, active=False)
             self._bus.publish(job_id, failed_payload)
             self._invalidate_estimates()
+            self._notify_finished(
+                failed,
+                STATUS_ERROR,
+                enabled=config.notifications,
+                detail=f"Не удалось сохранить результат: {exc}",
+            )
             return
 
         finished = self._store.update(
@@ -487,6 +591,7 @@ class JobRunner:
         self._merge_estimate(done_payload, finished, active=False)
         self._bus.publish(job_id, done_payload)
         self._invalidate_estimates()
+        self._notify_finished(finished, STATUS_DONE, enabled=config.notifications)
 
     def _invalidate_estimates(self) -> None:
         """Сбрасывает кэш статистики: завершённый прогон учтётся сразу."""

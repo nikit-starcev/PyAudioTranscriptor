@@ -2,8 +2,10 @@
 
 Единый источник настроек — ``config.env`` (как у TUI). Веб-специфичные
 отличия: результат не экспортируется автоматически (``protocol_auto=False``),
-десктоп-уведомления и таймлайн выключены, а образцы голоса сохраняются, чтобы
-их можно было прослушать в браузере.
+таймлайн выключен, а образцы голоса сохраняются, чтобы их можно было
+прослушать в браузере. Десктоп-уведомления управляются переменной
+``NOTIFICATIONS``; воркер шлёт их по завершении задачи
+(см. :mod:`audio_transcriber.web.runner`).
 """
 
 from __future__ import annotations
@@ -225,7 +227,7 @@ def build_job_config(
         mark_overlap=_as_bool(defaults.get("MARK_OVERLAP"), default=True),
         use_cache=_as_bool(defaults.get("USE_CACHE"), default=True),
         cache_dir=data_dir / "cache",
-        notifications=False,
+        notifications=_as_bool(defaults.get("NOTIFICATIONS"), default=True),
         timeline=False,
         low_confidence_threshold=_as_float(
             defaults.get("LOW_CONFIDENCE_THRESHOLD"), DEFAULT_LOW_CONFIDENCE_THRESHOLD
