@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Для создания GitHub Release нужен доступ на запись к содержимому репозитория.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish GitHub Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Вся история и теги нужны hatch-vcs, чтобы версия артефактов совпала
+          # с тегом (X.Y.Z), а не с dev-суффиксом.
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Install project and dev tools
+        run: uv sync --group dev
+
+      - name: Ruff
+        run: uv run ruff check src tests
+
+      - name: Mypy
+        run: uv run mypy
+
+      - name: Pytest
+        run: uv run pytest
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Verify built version matches the tag
+        run: |
+          uv run python - <<'PY'
+          import os
+          import zipfile
+          from glob import glob
+
+          tag_version = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          wheel = glob("dist/*.whl")[0]
+          with zipfile.ZipFile(wheel) as archive:
+              metadata = next(n for n in archive.namelist() if n.endswith("METADATA"))
+              built = next(
+                  line.split(": ", 1)[1]
+                  for line in archive.read(metadata).decode().splitlines()
+                  if line.startswith("Version: ")
+              )
+          if built != tag_version:
+              raise SystemExit(f"Версия артефакта {built!r} не совпадает с тегом {tag_version!r}")
+          print(f"OK: {wheel} -> {built}")
+          PY
+
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          uv run python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          version = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          text = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          header = re.search(rf"^## \[{re.escape(version)}\](?: - .*)?$", text, re.M)
+          if header is None:
+              notes = f"Полный список изменений см. в CHANGELOG.md (раздел {version})."
+          else:
+              rest = text[header.end():]
+              nxt = re.search(r"^## \[", rest, re.M)
+              notes = (rest[: nxt.start()] if nxt else rest).strip()
+          Path("RELEASE_NOTES.md").write_text(notes + "\n", encoding="utf-8")
+          print(f"Заметки для версии {version}:")
+          print(notes)
+          PY
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --verify-tag \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file RELEASE_NOTES.md \
+            dist/*
+
+      # Публикация в PyPI намеренно не настроена (issue #23). Чтобы включить,
+      # раскомментируйте шаги ниже и добавьте секрет PYPI_API_TOKEN.
+      #
+      # - name: Publish to PyPI
+      #   env:
+      #     UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+      #   run: uv publish dist/*
