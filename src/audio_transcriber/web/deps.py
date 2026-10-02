@@ -100,6 +100,14 @@ DEPENDENCIES: tuple[DependencySpec, ...] = (
         check_id="dep:df",
         needed_for="Шумоподавление (денойз)",
     ),
+    DependencySpec(
+        key="sherpa",
+        spec="sherpa-onnx",
+        label="Пакет sherpa-onnx (оценка числа говорящих)",
+        module="sherpa_onnx",
+        check_id="dep:sherpa_onnx",
+        needed_for="Быстрый выбор движка диаризации (auto)",
+    ),
 )
 
 _DEPENDENCIES_BY_KEY = {spec.key: spec for spec in DEPENDENCIES}

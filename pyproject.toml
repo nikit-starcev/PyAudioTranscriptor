@@ -41,6 +41,14 @@ denoise = [
 gigaam = [
     "onnx-asr[cpu,hub]>=0.12,<1",
 ]
+# Дешёвый оценщик числа говорящих (#64): silero VAD + эмбеддинги 3D-Speaker
+# CAM++ через sherpa-onnx (ONNX Runtime, без torch). Нужен режиму auto, чтобы
+# выбрать быстрый nemo-speech (<= 4 говорящих) или точный pyannote. Без него
+# маршрутизация мягко деградирует: auto безопасно выбирает pyannote.
+#   uv pip install --python .venv/bin/python sherpa-onnx
+sherpa = [
+    "sherpa-onnx>=1.10",
+]
 # Веб-интерфейс (этап 1): локальный сервер 127.0.0.1 + REST API + раздача SPA.
 web = [
     "fastapi>=0.115",

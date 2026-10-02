@@ -827,3 +827,46 @@ def test_nemo_speech_speaker_limit_not_warned_for_pyannote(
         AppConfig(input_file=audio_file, diarization_engine="pyannote", num_speakers=6)
 
     assert not any("не более 4" in record.message for record in caplog.records)
+
+
+# --- Оценщик числа говорящих и маршрутизация auto (#64) ---------------------
+
+
+def test_diarization_estimate_defaults(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file)
+
+    assert config.diarization_estimate_enabled is True
+    assert config.diarization_estimate_seconds == 30.0
+    assert config.diarization_estimate_threshold == 0.7
+    assert config.diarization_estimate_model.endswith(".onnx")
+    assert config.diarization_route_max_speakers == 4
+
+
+def test_diarization_estimate_seconds_must_be_positive(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, diarization_estimate_seconds=0.0)
+
+
+def test_diarization_estimate_threshold_range(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, diarization_estimate_threshold=2.5)
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, diarization_estimate_threshold=0.0)
+
+
+def test_diarization_estimate_model_must_be_nonempty(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, diarization_estimate_model="   ")
+
+
+def test_diarization_route_max_speakers_must_be_positive(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, diarization_route_max_speakers=0)
+
+
+def test_diarization_estimate_enabled_must_be_bool(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(
+            input_file=audio_file,
+            diarization_estimate_enabled="yes",  # type: ignore[arg-type]
+        )

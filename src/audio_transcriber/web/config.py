@@ -16,7 +16,12 @@ from pathlib import Path
 
 from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ENGINE,
+    DEFAULT_DIARIZATION_ESTIMATE_ENABLED,
+    DEFAULT_DIARIZATION_ESTIMATE_MODEL,
+    DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
+    DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
+    DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
     DEFAULT_ENROLLMENT_MAX_SAMPLE_SECONDS,
     DEFAULT_ENROLLMENT_MIN_SAMPLE_SECONDS,
     DEFAULT_GIGAAM_MODEL,
@@ -231,6 +236,24 @@ def build_job_config(
         or DEFAULT_NEMO_SPEECH_MODEL,
         nemo_speech_device=defaults.get("NEMO_SPEECH_DEVICE", "").strip().casefold()
         or DEFAULT_NEMO_SPEECH_DEVICE,
+        diarization_estimate_enabled=_as_bool(
+            defaults.get("DIARIZATION_ESTIMATE_ENABLED"),
+            default=DEFAULT_DIARIZATION_ESTIMATE_ENABLED,
+        ),
+        diarization_estimate_seconds=_as_float(
+            defaults.get("DIARIZATION_ESTIMATE_SECONDS"),
+            DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
+        ),
+        diarization_estimate_threshold=_as_float(
+            defaults.get("DIARIZATION_ESTIMATE_THRESHOLD"),
+            DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
+        ),
+        diarization_estimate_model=defaults.get("DIARIZATION_ESTIMATE_MODEL", "").strip()
+        or DEFAULT_DIARIZATION_ESTIMATE_MODEL,
+        diarization_route_max_speakers=_as_int(
+            defaults.get("DIARIZATION_ROUTE_MAX_SPEAKERS"),
+            DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
+        ),
         initial_prompt=defaults.get("INITIAL_PROMPT") or None,
         hotwords=defaults.get("HOTWORDS") or None,
         clean_artifacts=_as_bool(defaults.get("CLEAN_ARTIFACTS"), default=True),

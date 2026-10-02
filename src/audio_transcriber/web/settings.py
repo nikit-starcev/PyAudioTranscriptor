@@ -19,6 +19,11 @@ from urllib.parse import urlparse
 from audio_transcriber.config import defaults as config_defaults
 from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ENGINE,
+    DEFAULT_DIARIZATION_ESTIMATE_ENABLED,
+    DEFAULT_DIARIZATION_ESTIMATE_MODEL,
+    DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
+    DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
+    DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
     DEFAULT_NEMO_SPEECH_BINARY,
     DEFAULT_NEMO_SPEECH_DEVICE,
     DEFAULT_NEMO_SPEECH_MODEL,
@@ -28,7 +33,13 @@ from audio_transcriber.config.defaults import (
     VALID_NEMO_SPEECH_DEVICES,
 )
 from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
-from audio_transcriber.web.config import _as_bool, _env_export_formats, env_defaults
+from audio_transcriber.web.config import (
+    _as_bool,
+    _as_float,
+    _as_int,
+    _env_export_formats,
+    env_defaults,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +101,14 @@ class WebSettings:
     nemo_speech_lib_path: str = ""
     nemo_speech_model: str = DEFAULT_NEMO_SPEECH_MODEL
     nemo_speech_device: str = DEFAULT_NEMO_SPEECH_DEVICE
+    #: Оценщик числа говорящих и маршрутизация ``auto`` (#64): включение,
+    #: длительность анализа речи (сек), порог кластеризации, модель и cap
+    #: маршрутизации (до него ``auto`` выбирает nemo-speech).
+    diarization_estimate_enabled: bool = DEFAULT_DIARIZATION_ESTIMATE_ENABLED
+    diarization_estimate_seconds: float = DEFAULT_DIARIZATION_ESTIMATE_SECONDS
+    diarization_estimate_threshold: float = DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD
+    diarization_estimate_model: str = DEFAULT_DIARIZATION_ESTIMATE_MODEL
+    diarization_route_max_speakers: int = DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS
     #: GigaAM v3 (RU) через onnx-asr (бэкенд ``gigaam``): имя модели, локальный
     #: каталог снимка, квантизация (``int8``/пусто) и встроенный VAD. Пустое имя
     #: означает значение по умолчанию из ``config.defaults``.
@@ -132,6 +151,11 @@ class WebSettings:
             "NEMO_SPEECH_LIB_PATH": self.nemo_speech_lib_path,
             "NEMO_SPEECH_MODEL": self.nemo_speech_model,
             "NEMO_SPEECH_DEVICE": self.nemo_speech_device,
+            "DIARIZATION_ESTIMATE_ENABLED": _format_bool(self.diarization_estimate_enabled),
+            "DIARIZATION_ESTIMATE_SECONDS": str(self.diarization_estimate_seconds),
+            "DIARIZATION_ESTIMATE_THRESHOLD": str(self.diarization_estimate_threshold),
+            "DIARIZATION_ESTIMATE_MODEL": self.diarization_estimate_model,
+            "DIARIZATION_ROUTE_MAX_SPEAKERS": str(self.diarization_route_max_speakers),
             "GIGAAM_MODEL": self.gigaam_model,
             "GIGAAM_MODEL_PATH": self.gigaam_model_path,
             "GIGAAM_QUANTIZATION": self.gigaam_quantization,
@@ -184,6 +208,24 @@ def default_settings(defaults: Mapping[str, str] | None = None) -> WebSettings:
         or DEFAULT_NEMO_SPEECH_MODEL,
         nemo_speech_device=source.get("NEMO_SPEECH_DEVICE", "").strip().casefold()
         or DEFAULT_NEMO_SPEECH_DEVICE,
+        diarization_estimate_enabled=_as_bool(
+            source.get("DIARIZATION_ESTIMATE_ENABLED"),
+            default=DEFAULT_DIARIZATION_ESTIMATE_ENABLED,
+        ),
+        diarization_estimate_seconds=_as_float(
+            source.get("DIARIZATION_ESTIMATE_SECONDS"),
+            DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
+        ),
+        diarization_estimate_threshold=_as_float(
+            source.get("DIARIZATION_ESTIMATE_THRESHOLD"),
+            DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
+        ),
+        diarization_estimate_model=source.get("DIARIZATION_ESTIMATE_MODEL", "").strip()
+        or DEFAULT_DIARIZATION_ESTIMATE_MODEL,
+        diarization_route_max_speakers=_as_int(
+            source.get("DIARIZATION_ROUTE_MAX_SPEAKERS"),
+            DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
+        ),
         gigaam_model=source.get("GIGAAM_MODEL", "").strip()
         or config_defaults.DEFAULT_GIGAAM_MODEL,
         gigaam_model_path=source.get("GIGAAM_MODEL_PATH", "").strip(),
@@ -210,6 +252,29 @@ def settings_from_mapping(
         value = raw.get(key, fallback)
         if isinstance(value, str):
             return value.strip() or fallback
+        return fallback
+
+    def pick_float(key: str, fallback: float) -> float:
+        value = raw.get(key, fallback)
+        if isinstance(value, bool):
+            return fallback
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str) and value.strip():
+            try:
+                return float(value.strip())
+            except ValueError:
+                return fallback
+        return fallback
+
+    def pick_int(key: str, fallback: int) -> int:
+        value = raw.get(key, fallback)
+        if isinstance(value, bool):
+            return fallback
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.strip().lstrip("+-").isdigit():
+            return int(value.strip())
         return fallback
 
     return replace(
@@ -241,6 +306,21 @@ def settings_from_mapping(
         nemo_speech_lib_path=pick_str("nemo_speech_lib_path", current.nemo_speech_lib_path),
         nemo_speech_model=pick_nonempty("nemo_speech_model", current.nemo_speech_model),
         nemo_speech_device=pick_nonempty("nemo_speech_device", current.nemo_speech_device).casefold(),
+        diarization_estimate_enabled=pick_bool(
+            "diarization_estimate_enabled", current.diarization_estimate_enabled
+        ),
+        diarization_estimate_seconds=pick_float(
+            "diarization_estimate_seconds", current.diarization_estimate_seconds
+        ),
+        diarization_estimate_threshold=pick_float(
+            "diarization_estimate_threshold", current.diarization_estimate_threshold
+        ),
+        diarization_estimate_model=pick_nonempty(
+            "diarization_estimate_model", current.diarization_estimate_model
+        ),
+        diarization_route_max_speakers=pick_int(
+            "diarization_route_max_speakers", current.diarization_route_max_speakers
+        ),
         gigaam_model=pick_str("gigaam_model", current.gigaam_model),
         gigaam_model_path=pick_str("gigaam_model_path", current.gigaam_model_path),
         gigaam_quantization=pick_str("gigaam_quantization", current.gigaam_quantization),
@@ -296,6 +376,20 @@ def validate_settings(settings: WebSettings) -> None:
     settings.nemo_speech_binary = settings.nemo_speech_binary.strip() or DEFAULT_NEMO_SPEECH_BINARY
     settings.nemo_speech_model = settings.nemo_speech_model.strip() or DEFAULT_NEMO_SPEECH_MODEL
     settings.nemo_speech_lib_path = settings.nemo_speech_lib_path.strip()
+
+    if not isinstance(settings.diarization_estimate_enabled, bool):
+        raise SettingsError("DIARIZATION_ESTIMATE_ENABLED должно быть true или false")
+    if settings.diarization_estimate_seconds <= 0.0:
+        raise SettingsError("DIARIZATION_ESTIMATE_SECONDS должно быть положительным числом")
+    if not (0.0 < settings.diarization_estimate_threshold < 2.0):
+        raise SettingsError(
+            "DIARIZATION_ESTIMATE_THRESHOLD должно быть числом в диапазоне (0; 2)"
+        )
+    settings.diarization_estimate_model = (
+        settings.diarization_estimate_model.strip() or DEFAULT_DIARIZATION_ESTIMATE_MODEL
+    )
+    if settings.diarization_route_max_speakers < 1:
+        raise SettingsError("DIARIZATION_ROUTE_MAX_SPEAKERS должно быть целым числом >= 1")
 
     if settings.llm_base_url and not _is_http_url(settings.llm_base_url):
         raise SettingsError(

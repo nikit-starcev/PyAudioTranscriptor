@@ -88,6 +88,37 @@ def test_optional_dependency_missing_is_not_critical(
     assert not deepfilter.critical
 
 
+def test_sherpa_dependency_listed_and_optional_for_auto_estimate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(doctor, "_module_available", lambda name: name != "sherpa_onnx")
+    _patch_writable(monkeypatch)
+
+    env = _base_env(tmp_path, DIARIZATION_ENABLED="true", DIARIZATION_ENGINE="auto")
+    checks = doctor.run_doctor(None, env)
+
+    sherpa = _find(checks, "dep:sherpa_onnx")
+    assert not sherpa.ok
+    # Без sherpa-onnx auto безопасно уходит на pyannote — не критично.
+    assert not sherpa.critical
+
+
+def test_sherpa_dependency_absent_when_estimate_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+
+    env = _base_env(
+        tmp_path,
+        DIARIZATION_ENABLED="true",
+        DIARIZATION_ESTIMATE_ENABLED="false",
+    )
+    checks = doctor.run_doctor(None, env)
+
+    assert all(check.key != "dep:sherpa_onnx" for check in checks)
+
+
 def test_whisper_cpp_missing_binary_and_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -15,7 +15,12 @@ from audio_transcriber.cleaning.repetition_filter import (
 )
 from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ENGINE,
+    DEFAULT_DIARIZATION_ESTIMATE_ENABLED,
+    DEFAULT_DIARIZATION_ESTIMATE_MODEL,
+    DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
+    DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
+    DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
     DEFAULT_ENROLLMENT_MIN_SIMILARITY,
     DEFAULT_GIGAAM_MODEL,
     DEFAULT_GLOSSARY_DB,
@@ -306,6 +311,56 @@ def transcribe(
         help=(
             "Устройство nemo-speech: auto (по умолчанию), vulkan (GPU AMD/Intel) "
             f"или cpu. Допустимо: {', '.join(VALID_NEMO_SPEECH_DEVICES)}."
+        ),
+    ),
+    diarization_estimate: bool = typer.Option(
+        DEFAULT_DIARIZATION_ESTIMATE_ENABLED,
+        "--diarization-estimate/--no-diarization-estimate",
+        envvar="DIARIZATION_ESTIMATE_ENABLED",
+        help=(
+            "Дешёвая оценка числа говорящих (sherpa-onnx) для режима auto: до "
+            "лимита — nemo-speech (быстро), выше — pyannote (точно). При сбое "
+            "оценки auto безопасно выбирает pyannote."
+        ),
+    ),
+    diarization_estimate_seconds: float = typer.Option(
+        DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
+        "--diarization-estimate-seconds",
+        envvar="DIARIZATION_ESTIMATE_SECONDS",
+        min=0.1,
+        help=(
+            "Сколько секунд речи анализировать оценщику (распределённо по всей "
+            f"записи). По умолчанию {DEFAULT_DIARIZATION_ESTIMATE_SECONDS}."
+        ),
+    ),
+    diarization_estimate_threshold: float = typer.Option(
+        DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
+        "--diarization-estimate-threshold",
+        envvar="DIARIZATION_ESTIMATE_THRESHOLD",
+        min=0.01,
+        max=1.99,
+        help=(
+            "Порог косинусного расстояния кластеризации эмбеддингов оценщика "
+            f"(0; 2). По умолчанию {DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD}."
+        ),
+    ),
+    diarization_estimate_model: str = typer.Option(
+        DEFAULT_DIARIZATION_ESTIMATE_MODEL,
+        "--diarization-estimate-model",
+        envvar="DIARIZATION_ESTIMATE_MODEL",
+        help=(
+            "Модель эмбеддингов оценщика: имя файла в кэше (скачается с релиза "
+            "sherpa-onnx) или путь к локальному .onnx."
+        ),
+    ),
+    diarization_route_max_speakers: int = typer.Option(
+        DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
+        "--diarization-route-max-speakers",
+        envvar="DIARIZATION_ROUTE_MAX_SPEAKERS",
+        min=1,
+        help=(
+            "Cap маршрутизации auto: до этого числа говорящих выбирается быстрый "
+            f"nemo-speech. По умолчанию {DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS}."
         ),
     ),
     initial_prompt: str | None = typer.Option(
@@ -802,6 +857,11 @@ def transcribe(
             nemo_speech_lib_path=nemo_speech_lib_path,
             nemo_speech_model=nemo_speech_model,
             nemo_speech_device=nemo_speech_device,
+            diarization_estimate_enabled=diarization_estimate,
+            diarization_estimate_seconds=diarization_estimate_seconds,
+            diarization_estimate_threshold=diarization_estimate_threshold,
+            diarization_estimate_model=diarization_estimate_model,
+            diarization_route_max_speakers=diarization_route_max_speakers,
             initial_prompt=initial_prompt,
             hotwords=hotwords,
             clean_artifacts=clean_artifacts,
@@ -898,6 +958,13 @@ def transcribe(
         logger.info("Диаризация: %s", "включена" if config.diarization_enabled else "выключена")
         if config.diarization_enabled:
             logger.info("Движок диаризации: %s", config.diarization_engine)
+            if config.diarization_engine == "auto":
+                logger.info(
+                    "Маршрутизация auto: оценщик %s, анализ %s с речи, cap %d говорящих",
+                    "включён" if config.diarization_estimate_enabled else "выключен",
+                    config.diarization_estimate_seconds,
+                    config.diarization_route_max_speakers,
+                )
             if config.diarization_engine in ("auto", "nemo-speech"):
                 logger.info(
                     "NeMo-Speech.cpp: бинарник %s, модель %s, устройство %s%s",

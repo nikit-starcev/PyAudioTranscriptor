@@ -12,7 +12,13 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from audio_transcriber.config.defaults import DEFAULT_GIGAAM_MODEL, DEFAULT_NEMO_SPEECH_MODEL
+from audio_transcriber.config.defaults import (
+    DEFAULT_DIARIZATION_ESTIMATE_MODEL,
+    DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
+    DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
+    DEFAULT_GIGAAM_MODEL,
+    DEFAULT_NEMO_SPEECH_MODEL,
+)
 from audio_transcriber.domain.enums import AsrBackend
 from audio_transcriber.storage.glossary_builder import build_glossary
 from audio_transcriber.storage.glossary_db import GlossaryDB
@@ -558,3 +564,106 @@ def test_build_job_config_maps_diarization_engine(
     assert config.nemo_speech_lib_path == str(lib_dir)
     assert config.nemo_speech_model == "sortformer"
     assert config.nemo_speech_device == "vulkan"
+
+
+# --- Оценщик числа говорящих / маршрутизация auto (#64) ---------------------
+
+
+def test_diarization_estimate_settings_roundtrip() -> None:
+    base = default_settings({})
+    assert base.diarization_estimate_enabled is True
+    assert base.diarization_estimate_seconds == pytest.approx(
+        DEFAULT_DIARIZATION_ESTIMATE_SECONDS
+    )
+    assert base.diarization_estimate_threshold == pytest.approx(
+        DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD
+    )
+    assert base.diarization_estimate_model == DEFAULT_DIARIZATION_ESTIMATE_MODEL
+    assert base.diarization_route_max_speakers == 4
+
+    merged = settings_from_mapping(
+        {
+            "diarization_estimate_enabled": False,
+            "diarization_estimate_seconds": 45,
+            "diarization_estimate_threshold": "0.55",
+            "diarization_estimate_model": "/models/campplus.onnx",
+            "diarization_route_max_speakers": 8,
+        },
+        base=base,
+    )
+
+    assert merged.diarization_estimate_enabled is False
+    assert merged.diarization_estimate_seconds == pytest.approx(45.0)
+    assert merged.diarization_estimate_threshold == pytest.approx(0.55)
+    assert merged.diarization_estimate_model == "/models/campplus.onnx"
+    assert merged.diarization_route_max_speakers == 8
+
+    env = merged.env_overrides()
+    assert env["DIARIZATION_ESTIMATE_ENABLED"] == "false"
+    assert env["DIARIZATION_ESTIMATE_SECONDS"] == "45.0"
+    assert env["DIARIZATION_ESTIMATE_THRESHOLD"] == "0.55"
+    assert env["DIARIZATION_ESTIMATE_MODEL"] == "/models/campplus.onnx"
+    assert env["DIARIZATION_ROUTE_MAX_SPEAKERS"] == "8"
+
+
+def test_diarization_estimate_settings_from_env() -> None:
+    settings = default_settings(
+        {
+            "DIARIZATION_ESTIMATE_ENABLED": "false",
+            "DIARIZATION_ESTIMATE_SECONDS": "20",
+            "DIARIZATION_ESTIMATE_THRESHOLD": "0.65",
+            "DIARIZATION_ESTIMATE_MODEL": "custom.onnx",
+            "DIARIZATION_ROUTE_MAX_SPEAKERS": "6",
+        }
+    )
+
+    assert settings.diarization_estimate_enabled is False
+    assert settings.diarization_estimate_seconds == pytest.approx(20.0)
+    assert settings.diarization_estimate_threshold == pytest.approx(0.65)
+    assert settings.diarization_estimate_model == "custom.onnx"
+    assert settings.diarization_route_max_speakers == 6
+
+
+def test_validate_settings_rejects_bad_estimate_threshold() -> None:
+    from audio_transcriber.web.settings import SettingsError, validate_settings
+
+    settings = default_settings({})
+    settings.diarization_estimate_threshold = 3.0
+
+    with pytest.raises(SettingsError):
+        validate_settings(settings)
+
+
+def test_validate_settings_rejects_bad_route_max_speakers() -> None:
+    from audio_transcriber.web.settings import SettingsError, validate_settings
+
+    settings = default_settings({})
+    settings.diarization_route_max_speakers = 0
+
+    with pytest.raises(SettingsError):
+        validate_settings(settings)
+
+
+def test_build_job_config_maps_diarization_estimate(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("audio_transcriber.web.config.env_defaults", lambda: {})
+
+    config = build_job_config(
+        audio_file,
+        output_dir=tmp_path / "out",
+        data_dir=tmp_path / "data",
+        overrides={
+            "DIARIZATION_ESTIMATE_ENABLED": "false",
+            "DIARIZATION_ESTIMATE_SECONDS": "25",
+            "DIARIZATION_ESTIMATE_THRESHOLD": "0.6",
+            "DIARIZATION_ESTIMATE_MODEL": "custom.onnx",
+            "DIARIZATION_ROUTE_MAX_SPEAKERS": "8",
+        },
+    )
+
+    assert config.diarization_estimate_enabled is False
+    assert config.diarization_estimate_seconds == pytest.approx(25.0)
+    assert config.diarization_estimate_threshold == pytest.approx(0.6)
+    assert config.diarization_estimate_model == "custom.onnx"
+    assert config.diarization_route_max_speakers == 8

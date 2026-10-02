@@ -282,10 +282,13 @@ def _dependencies(env: Mapping[str, str]) -> list[tuple[str, str, bool]]:
     backend = env.get("ASR_BACKEND", DEFAULT_ASR_BACKEND.value).strip()
     diarization = _truthy(env.get("DIARIZATION_ENABLED"), default=True)
     correction = _truthy(env.get("ENABLE_CORRECTION"), default=False)
+    # Оценщик числа говорящих нужен режиму auto, но не критичен: без него
+    # маршрутизация безопасно выбирает pyannote (мягкая деградация).
+    estimate_enabled = _truthy(env.get("DIARIZATION_ESTIMATE_ENABLED"), default=True)
     # При явном движке nemo-speech pyannote/torch не нужны (нет fallback);
     # в режиме auto pyannote остаётся резервом, поэтому критичен.
     pyannote_needed = diarization and _diarization_engine(env) != "nemo-speech"
-    return [
+    checks = [
         ("av", "av (декодирование аудио)", True),
         ("faster_whisper", "faster-whisper", backend == AsrBackend.FASTER_WHISPER.value),
         ("onnx_asr", "onnx-asr (GigaAM)", backend == AsrBackend.GIGAAM.value),
@@ -295,6 +298,11 @@ def _dependencies(env: Mapping[str, str]) -> list[tuple[str, str, bool]]:
         ("pymorphy3", "pymorphy3 (автоисправление)", correction),
         ("df", "deepfilternet (денойз)", False),
     ]
+    if diarization and estimate_enabled:
+        checks.append(
+            ("sherpa_onnx", "sherpa-onnx (оценка числа говорящих, auto)", False)
+        )
+    return checks
 
 
 def _check_dependencies(env: Mapping[str, str]) -> list[DoctorCheck]:

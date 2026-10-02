@@ -501,8 +501,13 @@ def run_pipeline(
         # создании активного движка.
         enrollment_supported = True
         if config.diarization_enabled:
+            # ``audio_path`` нужен режиму ``auto``: дешёвый оценщик числа
+            # говорящих выбирает nemo-speech (<= лимита) или pyannote (#64).
             active_diarizer = diarizer or create_diarizer(
-                config, diarization_device, on_progress=emit
+                config,
+                diarization_device,
+                audio_path=audio_path,
+                on_progress=emit,
             )
             enrollment_supported = getattr(active_diarizer, "supports_enrollment", True)
             dia_key = cache.key(

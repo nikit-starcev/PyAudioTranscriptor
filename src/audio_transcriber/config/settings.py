@@ -22,7 +22,12 @@ from audio_transcriber.config.defaults import (
 )
 from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ENGINE,
+    DEFAULT_DIARIZATION_ESTIMATE_ENABLED,
+    DEFAULT_DIARIZATION_ESTIMATE_MODEL,
+    DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
+    DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
+    DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
     DEFAULT_ENROLLMENT_MAX_SAMPLE_SECONDS,
     DEFAULT_ENROLLMENT_MIN_SAMPLE_SECONDS,
     DEFAULT_ENROLLMENT_MIN_SIMILARITY,
@@ -117,6 +122,19 @@ class AppConfig:
     nemo_speech_lib_path: str | None = None
     nemo_speech_model: str = DEFAULT_NEMO_SPEECH_MODEL
     nemo_speech_device: str = DEFAULT_NEMO_SPEECH_DEVICE
+    # --- Оценщик числа говорящих и маршрутизация ``auto`` (#64) ---
+    # Дешёвый оценщик (sherpa-onnx: silero VAD + эмбеддинги CAM++) выбирает
+    # движок для ``auto``: N <= ``diarization_route_max_speakers`` — nemo-speech
+    # (быстро), иначе pyannote (точно). ``None``/сбой оценки → pyannote.
+    diarization_estimate_enabled: bool = DEFAULT_DIARIZATION_ESTIMATE_ENABLED
+    # Сколько секунд речи анализировать (распределённо по записи).
+    diarization_estimate_seconds: float = DEFAULT_DIARIZATION_ESTIMATE_SECONDS
+    # Порог косинусного расстояния кластеризации эмбеддингов (0; 2).
+    diarization_estimate_threshold: float = DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD
+    # Имя файла модели в кэше оценщика или путь к локальному .onnx.
+    diarization_estimate_model: str = DEFAULT_DIARIZATION_ESTIMATE_MODEL
+    # Cap маршрутизации: до него (включительно) ``auto`` берёт nemo-speech.
+    diarization_route_max_speakers: int = DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS
     speaker_names: dict[str, str] = field(default_factory=dict)
     # Образцы голоса участников для enrollment-диаризации: имя -> клип(ы).
     # Если заданы и сопоставление уверенное, имя говорящего берётся по голосу
@@ -282,6 +300,7 @@ class AppConfig:
         self._validate_speaker_range()
         self._validate_diarization_hyperparameters()
         self._validate_diarization_engine()
+        self._validate_diarization_routing()
 
         if not isinstance(self.diarization_enabled, bool):
             raise ConfigurationError("DIARIZATION_ENABLED должно быть true или false")
@@ -523,13 +542,50 @@ class AppConfig:
             for value in (self.num_speakers, self.max_speakers)
             if value is not None and value > NEMO_SPEECH_MAX_SPEAKERS
         ]
-        if requested and self.diarization_engine in ("auto", "nemo-speech"):
+        # Для ``auto`` предупреждение не нужно: маршрутизация (#64) при числе
+        # говорящих выше лимита сама уходит на pyannote. Предупреждаем только
+        # при явно выбранном nemo-speech.
+        if requested and self.diarization_engine == "nemo-speech":
             logger.warning(
                 "Движок диаризации nemo-speech (Sortformer) поддерживает не более "
                 "%d спикеров, но запрошено %d — число говорящих будет ограничено "
                 "возможностями модели",
                 NEMO_SPEECH_MAX_SPEAKERS,
                 max(requested),
+            )
+
+    def _validate_diarization_routing(self) -> None:
+        """Проверяет параметры оценщика числа говорящих и маршрутизации (#64)."""
+        if not isinstance(self.diarization_estimate_enabled, bool):
+            raise ConfigurationError("DIARIZATION_ESTIMATE_ENABLED должно быть true или false")
+
+        seconds = self.diarization_estimate_seconds
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or seconds <= 0.0:
+            raise ConfigurationError(
+                "DIARIZATION_ESTIMATE_SECONDS должно быть положительным числом"
+            )
+
+        threshold = self.diarization_estimate_threshold
+        if (
+            isinstance(threshold, bool)
+            or not isinstance(threshold, (int, float))
+            or not (0.0 < threshold < 2.0)
+        ):
+            raise ConfigurationError(
+                "DIARIZATION_ESTIMATE_THRESHOLD должно быть числом в диапазоне (0; 2)"
+            )
+
+        if (
+            not isinstance(self.diarization_estimate_model, str)
+            or not self.diarization_estimate_model.strip()
+        ):
+            raise ConfigurationError("DIARIZATION_ESTIMATE_MODEL должно быть непустой строкой")
+        self.diarization_estimate_model = self.diarization_estimate_model.strip()
+
+        route_max = self.diarization_route_max_speakers
+        if isinstance(route_max, bool) or not isinstance(route_max, int) or route_max < 1:
+            raise ConfigurationError(
+                "DIARIZATION_ROUTE_MAX_SPEAKERS должно быть целым числом >= 1"
             )
 
     def _validate_llm_provider(self) -> None:
