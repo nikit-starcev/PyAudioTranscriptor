@@ -4,10 +4,12 @@ import {
   api,
   ASR_BACKENDS,
   DEVICES,
+  DIARIZATION_ENGINES,
   errorMessage,
   EXPORT_FORMATS,
   HF_TOKEN_URL,
   LLM_PROVIDERS,
+  NEMO_SPEECH_DEVICES,
   PYANNOTE_MODEL_URL,
   type HfCheckResult,
   type LlmCheckResult,
@@ -49,8 +51,63 @@ const TOGGLES: { key: ToggleKey; label: string; hint: string }[] = [
   },
 ]
 
+/** Подсказка под селектором движка диаризации (#62/#64). */
+const ENGINE_HINTS: Record<string, string> = {
+  auto:
+    '≤ 4 говорящих → nemo-speech (Vulkan, быстро); > 4 → hybrid (оконный EEND + склейка); ' +
+    'если оценка не удалась или нет sherpa-onnx — pyannote (безопасно).',
+  pyannote:
+    'Точно и без лимита говорящих, но медленно (особенно на CPU). Нужны модель pyannote ' +
+    'и torch; для скачивания gated-модели — токен Hugging Face.',
+  'nemo-speech':
+    'Быстро на GPU через Vulkan (NeMo-Speech.cpp), жёсткий лимит 4 говорящих. Нужны ' +
+    'бинарник nemo-speech и модель Sortformer.',
+  hybrid:
+    'Оконный EEND (nemo-speech, ≤ 4 в окне) + глобальная склейка говорящих по ' +
+    'эмбеддингам (sherpa-onnx, 3D-Speaker CAM++). Обходит лимит 4; нужны sherpa-onnx, ' +
+    'модель эмбеддингов и бинарник nemo-speech.',
+}
+
+/** Класс полей нового раздела «Диаризация» (как у существующих input/select). */
+const INPUT_CLASS =
+  'mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100'
+
+/** Числовые поля раздела «Диаризация» — редактируются как текст ради дробей. */
+type NumericKey =
+  | 'diarization_estimate_seconds'
+  | 'diarization_estimate_threshold'
+  | 'diarization_route_max_speakers'
+  | 'diarization_hybrid_window_seconds'
+  | 'diarization_hybrid_overlap_seconds'
+  | 'diarization_hybrid_min_speaker_seconds'
+
+const NUMERIC_KEYS: NumericKey[] = [
+  'diarization_estimate_seconds',
+  'diarization_estimate_threshold',
+  'diarization_route_max_speakers',
+  'diarization_hybrid_window_seconds',
+  'diarization_hybrid_overlap_seconds',
+  'diarization_hybrid_min_speaker_seconds',
+]
+
+/** Текстовые черновики числовых полей (чтобы «0.» не теряло точку). */
+function numericDrafts(settings: WebSettings): Record<NumericKey, string> {
+  return Object.fromEntries(
+    NUMERIC_KEYS.map((key) => [key, String(settings[key])]),
+  ) as Record<NumericKey, string>
+}
+
+/** Разбирает число из черновика; пустое/битое значение — прежнее. */
+function parseNumber(raw: string, fallback: number): number {
+  const trimmed = raw.trim().replace(',', '.')
+  if (!trimmed) return fallback
+  const parsed = Number(trimmed)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
 function SettingsModal({ open, onClose, onSaved }: Props) {
   const [settings, setSettings] = useState<WebSettings | null>(null)
+  const [numericDraft, setNumericDraft] = useState<Record<NumericKey, string> | null>(null)
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -67,7 +124,9 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      setSettings(await api<WebSettings>('/api/settings'))
+      const next = await api<WebSettings>('/api/settings')
+      setSettings(next)
+      setNumericDraft(numericDrafts(next))
       setHfToken('')
       setHfTokenTouched(false)
       setHfCheck(null)
@@ -97,8 +156,13 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
 
   if (!open) return null
 
+  const numbers = numericDraft ?? (settings ? numericDrafts(settings) : null)
+
   const update = (patch: Partial<WebSettings>) =>
     setSettings((current) => (current ? { ...current, ...patch } : current))
+
+  const updateNumber = (key: NumericKey, raw: string) =>
+    setNumericDraft((current) => ({ ...(current ?? numericDrafts(settings!)), [key]: raw }))
 
   const toggleFormat = (format: string) => {
     if (!settings) return
@@ -125,6 +189,7 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
     setError(null)
     setStatus(null)
     try {
+      const numbers = numericDraft ?? numericDrafts(settings)
       const payload = {
         glossary_enabled: settings.glossary_enabled,
         glossary_db: settings.glossary_db,
@@ -148,6 +213,40 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
         llm_base_url: settings.llm_base_url,
         llm_model_name: settings.llm_model_name,
         pyannote_local_model: settings.pyannote_local_model,
+        diarization_engine: settings.diarization_engine,
+        nemo_speech_binary: settings.nemo_speech_binary,
+        nemo_speech_lib_path: settings.nemo_speech_lib_path,
+        nemo_speech_model: settings.nemo_speech_model,
+        nemo_speech_device: settings.nemo_speech_device,
+        diarization_estimate_enabled: settings.diarization_estimate_enabled,
+        diarization_estimate_seconds: parseNumber(
+          numbers.diarization_estimate_seconds,
+          settings.diarization_estimate_seconds,
+        ),
+        diarization_estimate_threshold: parseNumber(
+          numbers.diarization_estimate_threshold,
+          settings.diarization_estimate_threshold,
+        ),
+        diarization_estimate_model: settings.diarization_estimate_model,
+        diarization_route_max_speakers: Math.trunc(
+          parseNumber(
+            numbers.diarization_route_max_speakers,
+            settings.diarization_route_max_speakers,
+          ),
+        ),
+        diarization_hybrid_enabled: settings.diarization_hybrid_enabled,
+        diarization_hybrid_window_seconds: parseNumber(
+          numbers.diarization_hybrid_window_seconds,
+          settings.diarization_hybrid_window_seconds,
+        ),
+        diarization_hybrid_overlap_seconds: parseNumber(
+          numbers.diarization_hybrid_overlap_seconds,
+          settings.diarization_hybrid_overlap_seconds,
+        ),
+        diarization_hybrid_min_speaker_seconds: parseNumber(
+          numbers.diarization_hybrid_min_speaker_seconds,
+          settings.diarization_hybrid_min_speaker_seconds,
+        ),
         gigaam_model: settings.gigaam_model,
         gigaam_model_path: settings.gigaam_model_path,
         gigaam_quantization: settings.gigaam_quantization,
@@ -161,6 +260,7 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
         body: JSON.stringify(payload),
       })
       setSettings(saved)
+      setNumericDraft(numericDrafts(saved))
       setHfToken('')
       setHfTokenTouched(false)
       setHfCheck(null)
@@ -692,6 +792,260 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
                     {hfCheck.message}
                   </p>
                 )}
+              </fieldset>
+
+              <fieldset className="space-y-3 rounded-md border border-slate-200 p-3 dark:border-slate-800">
+                <legend className="px-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+                  Диаризация
+                </legend>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Кто и когда говорил. Можно выбрать движок вручную или довериться
+                  авто-выбору по числу говорящих.
+                </p>
+
+                <label className="block text-sm">
+                  <span className="text-slate-600 dark:text-slate-300">
+                    Движок (DIARIZATION_ENGINE)
+                  </span>
+                  <select
+                    value={settings.diarization_engine}
+                    onChange={(event) => update({ diarization_engine: event.target.value })}
+                    className={INPUT_CLASS}
+                  >
+                    {DIARIZATION_ENGINES.map((engine) => (
+                      <option key={engine} value={engine}>
+                        {engine}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <p className="rounded-md bg-slate-50 px-3 py-1.5 text-xs text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">
+                  {ENGINE_HINTS[settings.diarization_engine] ?? ''}
+                </p>
+
+                <div className="space-y-2 rounded-md border border-slate-200 p-3 dark:border-slate-800">
+                  <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                    Оценщик числа говорящих (маршрутизация auto)
+                  </p>
+                  <label className="flex items-start gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={settings.diarization_estimate_enabled}
+                      onChange={(event) =>
+                        update({ diarization_estimate_enabled: event.target.checked })
+                      }
+                    />
+                    <span>
+                      Включить оценщик
+                      <span className="block text-xs text-slate-400 dark:text-slate-500">
+                        sherpa-onnx: silero VAD + эмбеддинги CAM++. Без него auto
+                        уходит на pyannote.
+                      </span>
+                    </span>
+                  </label>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <label className="block text-sm">
+                      <span className="text-slate-600 dark:text-slate-300">
+                        Секунд речи (DIARIZATION_ESTIMATE_SECONDS)
+                      </span>
+                      <input
+                        inputMode="decimal"
+                        value={numbers?.diarization_estimate_seconds ?? ''}
+                        onChange={(event) =>
+                          updateNumber('diarization_estimate_seconds', event.target.value)
+                        }
+                        placeholder="30"
+                        className={INPUT_CLASS}
+                      />
+                    </label>
+                    <label className="block text-sm">
+                      <span className="text-slate-600 dark:text-slate-300">
+                        Порог (DIARIZATION_ESTIMATE_THRESHOLD)
+                      </span>
+                      <input
+                        inputMode="decimal"
+                        value={numbers?.diarization_estimate_threshold ?? ''}
+                        onChange={(event) =>
+                          updateNumber('diarization_estimate_threshold', event.target.value)
+                        }
+                        placeholder="0.7"
+                        className={INPUT_CLASS}
+                      />
+                    </label>
+                    <label className="block text-sm">
+                      <span className="text-slate-600 dark:text-slate-300">
+                        Cap N (DIARIZATION_ROUTE_MAX_SPEAKERS)
+                      </span>
+                      <input
+                        inputMode="numeric"
+                        value={numbers?.diarization_route_max_speakers ?? ''}
+                        onChange={(event) =>
+                          updateNumber('diarization_route_max_speakers', event.target.value)
+                        }
+                        placeholder="4"
+                        className={INPUT_CLASS}
+                      />
+                    </label>
+                  </div>
+                  <label className="block text-sm">
+                    <span className="text-slate-600 dark:text-slate-300">
+                      Модель эмбеддингов CAM++ (имя/путь, DIARIZATION_ESTIMATE_MODEL)
+                    </span>
+                    <input
+                      value={settings.diarization_estimate_model}
+                      onChange={(event) =>
+                        update({ diarization_estimate_model: event.target.value })
+                      }
+                      placeholder="3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
+                      className={INPUT_CLASS}
+                    />
+                    <span className="mt-0.5 block text-xs text-slate-400 dark:text-slate-500">
+                      Имя модели скачивается из релиза sherpa-onnx в кэш; можно указать
+                      путь к локальному .onnx. Модель есть в каталоге «Модели».
+                    </span>
+                  </label>
+                </div>
+
+                <div className="space-y-2 rounded-md border border-slate-200 p-3 dark:border-slate-800">
+                  <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                    Гибрид (обход лимита 4 говорящих)
+                  </p>
+                  <label className="flex items-start gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={settings.diarization_hybrid_enabled}
+                      onChange={(event) =>
+                        update({ diarization_hybrid_enabled: event.target.checked })
+                      }
+                    />
+                    <span>
+                      Включить гибридную диаризацию
+                      <span className="block text-xs text-slate-400 dark:text-slate-500">
+                        Оконный nemo-speech (≤ 4 в окне) + глобальная склейка
+                        говорящих по эмбеддингам CAM++.
+                      </span>
+                    </span>
+                  </label>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <label className="block text-sm">
+                      <span className="text-slate-600 dark:text-slate-300">
+                        Окно, с (DIARIZATION_HYBRID_WINDOW_SECONDS)
+                      </span>
+                      <input
+                        inputMode="decimal"
+                        value={numbers?.diarization_hybrid_window_seconds ?? ''}
+                        onChange={(event) =>
+                          updateNumber('diarization_hybrid_window_seconds', event.target.value)
+                        }
+                        placeholder="90"
+                        className={INPUT_CLASS}
+                      />
+                    </label>
+                    <label className="block text-sm">
+                      <span className="text-slate-600 dark:text-slate-300">
+                        Перекрытие, с (DIARIZATION_HYBRID_OVERLAP_SECONDS)
+                      </span>
+                      <input
+                        inputMode="decimal"
+                        value={numbers?.diarization_hybrid_overlap_seconds ?? ''}
+                        onChange={(event) =>
+                          updateNumber('diarization_hybrid_overlap_seconds', event.target.value)
+                        }
+                        placeholder="2"
+                        className={INPUT_CLASS}
+                      />
+                    </label>
+                    <label className="block text-sm">
+                      <span className="text-slate-600 dark:text-slate-300">
+                        Мин. речь, с (DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS)
+                      </span>
+                      <input
+                        inputMode="decimal"
+                        value={numbers?.diarization_hybrid_min_speaker_seconds ?? ''}
+                        onChange={(event) =>
+                          updateNumber(
+                            'diarization_hybrid_min_speaker_seconds',
+                            event.target.value,
+                          )
+                        }
+                        placeholder="1.5"
+                        className={INPUT_CLASS}
+                      />
+                    </label>
+                  </div>
+                  <span className="block text-xs text-slate-400 dark:text-slate-500">
+                    Перекрытие должно быть меньше окна. Требуются sherpa-onnx и модель
+                    эмбеддингов (см. выше/каталог моделей).
+                  </span>
+                </div>
+
+                <div className="space-y-3 rounded-md border border-slate-200 p-3 dark:border-slate-800">
+                  <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                    nemo-speech (NeMo-Speech.cpp)
+                  </p>
+                  <label className="block text-sm">
+                    <span className="text-slate-600 dark:text-slate-300">
+                      Бинарник nemo-speech (NEMO_SPEECH_BINARY)
+                    </span>
+                    <input
+                      value={settings.nemo_speech_binary}
+                      onChange={(event) => update({ nemo_speech_binary: event.target.value })}
+                      placeholder="nemo-speech"
+                      className={INPUT_CLASS}
+                    />
+                  </label>
+                  <label className="block text-sm">
+                    <span className="text-slate-600 dark:text-slate-300">
+                      Каталог библиотек lib/ (NEMO_SPEECH_LIB_PATH)
+                    </span>
+                    <input
+                      value={settings.nemo_speech_lib_path}
+                      onChange={(event) => update({ nemo_speech_lib_path: event.target.value })}
+                      placeholder="nemo-speech/lib"
+                      className={INPUT_CLASS}
+                    />
+                    <span className="mt-0.5 block text-xs text-slate-400 dark:text-slate-500">
+                      Необязательно: если библиотеки лежат рядом с бинарником, путь не нужен.
+                    </span>
+                  </label>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="block text-sm">
+                      <span className="text-slate-600 dark:text-slate-300">
+                        Модель Sortformer (NEMO_SPEECH_MODEL)
+                      </span>
+                      <input
+                        value={settings.nemo_speech_model}
+                        onChange={(event) => update({ nemo_speech_model: event.target.value })}
+                        placeholder="nvidia/diar_streaming_sortformer_4spk-v2"
+                        className={INPUT_CLASS}
+                      />
+                      <span className="mt-0.5 block text-xs text-slate-400 dark:text-slate-500">
+                        Имя каталога, HF-репозиторий или путь к .gguf. Модель тянется
+                        командой <code>nemo-speech pull …</code>.
+                      </span>
+                    </label>
+                    <label className="block text-sm">
+                      <span className="text-slate-600 dark:text-slate-300">
+                        Устройство (NEMO_SPEECH_DEVICE)
+                      </span>
+                      <select
+                        value={settings.nemo_speech_device}
+                        onChange={(event) =>
+                          update({ nemo_speech_device: event.target.value })
+                        }
+                        className={INPUT_CLASS}
+                      >
+                        {NEMO_SPEECH_DEVICES.map((device) => (
+                          <option key={device} value={device}>
+                            {device}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                </div>
               </fieldset>
             </>
           )}

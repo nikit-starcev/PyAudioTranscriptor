@@ -11,7 +11,12 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from audio_transcriber.doctor import LINK_LLAMA_CPP, LINK_WHISPER_CPP
+from audio_transcriber.doctor import (
+    LINK_LLAMA_CPP,
+    LINK_NEMO_SPEECH,
+    LINK_SHERPA_ONNX,
+    LINK_WHISPER_CPP,
+)
 from audio_transcriber.domain.enums import AsrBackend
 from audio_transcriber.web import deps as deps_registry
 
@@ -171,6 +176,61 @@ def binary_requirements(settings: object) -> list[dict[str, object]]:
                     "настройках (LLM_BINARY / LLM_LIB_PATH)."
                 ),
                 "links": [LINK_LLAMA_CPP],
+            }
+        )
+    requirements.extend(_diarization_requirements(settings))
+    return requirements
+
+
+def _diarization_requirements(settings: object) -> list[dict[str, object]]:
+    """Внешние компоненты диаризации (#62/#64) для шага «Бинарники/Пакеты».
+
+    sherpa-onnx — пакет из allowlist (#66): показываем кнопку «Установить»,
+    но не блокируем запуск (без него оценка N деградирует, а ``auto``
+    безопасно уходит на pyannote). Бинарник nemo-speech нужен явным движкам
+    ``nemo-speech``/``hybrid``.
+    """
+    engine = (
+        str(getattr(settings, "diarization_engine", "auto")).strip().casefold() or "auto"
+    )
+    estimate_enabled = bool(getattr(settings, "diarization_estimate_enabled", True))
+    hybrid_enabled = bool(getattr(settings, "diarization_hybrid_enabled", True))
+    requirements: list[dict[str, object]] = []
+
+    if estimate_enabled or (hybrid_enabled and engine == "hybrid"):
+        dep = deps_registry.find_dependency("sherpa")
+        if dep is not None:
+            requirements.append(
+                {
+                    "key": "sherpa-onnx",
+                    "check_id": dep.check_id,
+                    "label": dep.label,
+                    "needed": False,
+                    "dep_key": dep.key,
+                    "spec": dep.spec,
+                    "installable": deps_registry.installer_available(),
+                    "instructions": (
+                        f"Пакет ставится кнопкой «Установить» ({dep.spec}). "
+                        "Без него оценка числа говорящих деградирует, "
+                        "а гибридная диаризация недоступна."
+                    ),
+                    "links": [LINK_SHERPA_ONNX],
+                }
+            )
+
+    if engine in {"nemo-speech", "hybrid"}:
+        requirements.append(
+            {
+                "key": "nemo-speech",
+                "label": "Бинарник nemo-speech (NeMo-Speech.cpp)",
+                "needed": True,
+                "instructions": (
+                    "Соберите NeMo-Speech.cpp под свою ОС/GPU, положите бинарник "
+                    "и его библиотеки и укажите пути в настройках "
+                    "(NEMO_SPEECH_BINARY / NEMO_SPEECH_LIB_PATH). Модель "
+                    "Sortformer тянется командой 'nemo-speech pull …'."
+                ),
+                "links": [LINK_NEMO_SPEECH],
             }
         )
     return requirements

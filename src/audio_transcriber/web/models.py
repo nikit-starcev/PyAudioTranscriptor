@@ -32,6 +32,7 @@ KIND_WHISPER = "whisper-cpp"
 KIND_LLM = "llm"
 KIND_PYANNOTE = "pyannote"
 KIND_GIGAAM = "gigaam"
+KIND_SHERPA = "sherpa"
 
 #: Статусы загрузки.
 STATUS_IDLE = "idle"
@@ -174,6 +175,26 @@ MODEL_CATALOG: tuple[ModelEntry, ...] = (
             "используется int8-часть."
         ),
     ),
+    ModelEntry(
+        id="sherpa-campplus-advanced",
+        kind=KIND_SHERPA,
+        title="3D-Speaker CAM++ (sherpa-onnx, эмбеддинги)",
+        repo="csukuangfj/speaker-embedding-models",
+        files=(
+            ModelFile(
+                "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx",
+                28_281_164,
+            ),
+        ),
+        target_dir="sherpa-models",
+        approx_size=28_281_164,
+        setting_key="diarization_estimate_model",
+        note=(
+            "Модель эмбеддингов говорящего для оценщика числа говорящих и "
+            "гибридной диаризации. Требуется пакет sherpa-onnx — без него "
+            "оценка недоступна, а гибрид не выбирается."
+        ),
+    ),
 )
 
 
@@ -202,7 +223,14 @@ def resolve_target(entry: ModelEntry, *, models_root: Path, settings: object) ->
     configured = configured_path(entry, settings)
     if configured:
         path = Path(configured).expanduser()
-        return path if entry.snapshot else path.parent
+        if entry.snapshot:
+            return path
+        # Голое имя файла без каталога — это имя модели по умолчанию
+        # (например, модель эмбеддингов sherpa-onnx задаётся именем), а не
+        # путь: кладём/ищем её в каталоге каталога моделей, а не в CWD.
+        if not path.parent.parts and not path.is_file():
+            return models_root / entry.target_dir
+        return path.parent
     return models_root / entry.target_dir
 
 

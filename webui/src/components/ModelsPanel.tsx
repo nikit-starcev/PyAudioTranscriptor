@@ -21,6 +21,7 @@ const KIND_LABELS: Record<string, string> = {
   llm: 'LLM-постобработка',
   pyannote: 'Диаризация',
   gigaam: 'Распознавание (GigaAM, onnx-asr)',
+  sherpa: 'Диаризация (эмбеддинги, sherpa-onnx)',
 }
 
 function statusBadge(model: ModelInfo) {

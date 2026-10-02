@@ -88,12 +88,38 @@ def test_required_models_depend_on_backend_and_llm() -> None:
 
 
 def test_binary_requirements() -> None:
-    assert web_setup.binary_requirements(WebSettings()) == []
+    # Диаризация включена всегда: sherpa-onnx предлагается, но некритично
+    # (нужен оценщику N и гибриду; без него auto уходит на pyannote).
+    base = web_setup.binary_requirements(WebSettings())
+    assert [item["key"] for item in base] == ["sherpa-onnx"]
+    assert base[0]["needed"] is False
+
     requirements = web_setup.binary_requirements(
         WebSettings(asr_backend="whisper-cpp", llm_enabled=True)
     )
-    assert [item["key"] for item in requirements] == ["whisper-cli", "llama-server"]
-    assert all(item["needed"] for item in requirements)
+    assert [item["key"] for item in requirements] == [
+        "whisper-cli",
+        "llama-server",
+        "sherpa-onnx",
+    ]
+    assert all(item["needed"] for item in requirements if item["key"] != "sherpa-onnx")
+
+
+def test_binary_requirements_include_nemo_for_explicit_engines() -> None:
+    for engine in ("nemo-speech", "hybrid"):
+        by_key = {
+            item["key"]: item
+            for item in web_setup.binary_requirements(WebSettings(diarization_engine=engine))
+        }
+        assert by_key["nemo-speech"]["needed"] is True
+        assert by_key["nemo-speech"]["links"] == [web_setup.LINK_NEMO_SPEECH]
+        assert by_key["sherpa-onnx"]["needed"] is False
+
+    # Явный pyannote без оценщика: внешние компоненты диаризации не нужны.
+    pyannote = web_setup.binary_requirements(
+        WebSettings(diarization_engine="pyannote", diarization_estimate_enabled=False)
+    )
+    assert pyannote == []
 
 
 def test_required_models_include_gigaam_only_for_gigaam_backend() -> None:
@@ -109,10 +135,12 @@ def test_required_models_include_gigaam_only_for_gigaam_backend() -> None:
 
 
 def test_binary_requirements_include_onnx_asr_for_gigaam() -> None:
-    assert web_setup.binary_requirements(WebSettings()) == []
+    assert [
+        item["key"] for item in web_setup.binary_requirements(WebSettings())
+    ] == ["sherpa-onnx"]
     assert [
         item["key"] for item in web_setup.binary_requirements(WebSettings(asr_backend="gigaam"))
-    ] == ["onnx-asr"]
+    ] == ["onnx-asr", "sherpa-onnx"]
 
     gigaam = web_setup.binary_requirements(WebSettings(asr_backend="gigaam"))[0]
     assert gigaam["needed"] is True
@@ -125,7 +153,7 @@ def test_binary_requirements_include_onnx_asr_for_gigaam() -> None:
 
     # Бинарные пункты не сломаны: у них check_id по-прежнему не задан вручную.
     whisper = web_setup.binary_requirements(WebSettings(asr_backend="whisper-cpp"))
-    assert [item["key"] for item in whisper] == ["whisper-cli"]
+    assert [item["key"] for item in whisper] == ["whisper-cli", "sherpa-onnx"]
     assert "check_id" not in whisper[0]
 
 

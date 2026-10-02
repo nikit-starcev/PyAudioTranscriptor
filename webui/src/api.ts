@@ -238,6 +238,24 @@ export type WebSettings = {
   llm_base_url: string
   llm_model_name: string
   pyannote_local_model: string
+  /** Движок диаризации: auto | pyannote | nemo-speech | hybrid (#62). */
+  diarization_engine: string
+  /** NeMo-Speech.cpp: бинарник, каталог библиотек, модель и устройство (#62). */
+  nemo_speech_binary: string
+  nemo_speech_lib_path: string
+  nemo_speech_model: string
+  nemo_speech_device: string
+  /** Оценщик числа говорящих и маршрутизация auto (#64). */
+  diarization_estimate_enabled: boolean
+  diarization_estimate_seconds: number
+  diarization_estimate_threshold: number
+  diarization_estimate_model: string
+  diarization_route_max_speakers: number
+  /** Гибридная диаризация (оконный EEND + глобальная склейка) (#64). */
+  diarization_hybrid_enabled: boolean
+  diarization_hybrid_window_seconds: number
+  diarization_hybrid_overlap_seconds: number
+  diarization_hybrid_min_speaker_seconds: number
   /** GigaAM v3 (onnx-asr): имя модели, локальный каталог снимка и квантизация. */
   gigaam_model: string
   gigaam_model_path: string
@@ -258,8 +276,10 @@ export type WebSettings = {
 export const ASR_BACKENDS = ['faster-whisper', 'whisper-cpp', 'gigaam'] as const
 export const DEVICES = ['auto', 'cpu', 'cuda'] as const
 export const LLM_PROVIDERS = ['llama', 'openai'] as const
+export const DIARIZATION_ENGINES = ['auto', 'pyannote', 'nemo-speech', 'hybrid'] as const
+export const NEMO_SPEECH_DEVICES = ['auto', 'vulkan', 'cpu'] as const
 
-export type ModelKind = 'whisper-cpp' | 'llm' | 'pyannote' | 'gigaam'
+export type ModelKind = 'whisper-cpp' | 'llm' | 'pyannote' | 'gigaam' | 'sherpa'
 export type ModelDownloadStatus = 'idle' | 'downloading' | 'done' | 'error' | 'cancelled'
 
 export type ModelLocalStatus = {

@@ -729,3 +729,70 @@ def test_build_job_config_maps_hybrid(
     assert config.diarization_hybrid_enabled is False
     assert config.diarization_hybrid_window_seconds == pytest.approx(75.0)
     assert config.diarization_hybrid_overlap_seconds == pytest.approx(3.0)
+
+
+# --- Сохранение настроек диаризации через PUT /api/settings -------------------
+
+
+def test_put_settings_persists_diarization(client: TestClient, tmp_path: Path) -> None:
+    """Все поля диаризации (#62/#64) редактируются и сохраняются через API."""
+    binary = tmp_path / "nemo-speech"
+    lib_path = tmp_path / "nemo-speech-lib"
+
+    response = client.put(
+        "/api/settings",
+        json={
+            "diarization_engine": "hybrid",
+            "nemo_speech_binary": str(binary),
+            "nemo_speech_lib_path": str(lib_path),
+            "nemo_speech_model": "nvidia/diar_streaming_sortformer_4spk-v2",
+            "nemo_speech_device": "vulkan",
+            "diarization_estimate_enabled": False,
+            "diarization_estimate_seconds": 45,
+            "diarization_estimate_threshold": 0.55,
+            "diarization_estimate_model": "/models/campplus.onnx",
+            "diarization_route_max_speakers": 8,
+            "diarization_hybrid_enabled": False,
+            "diarization_hybrid_window_seconds": 60,
+            "diarization_hybrid_overlap_seconds": 1.5,
+            "diarization_hybrid_min_speaker_seconds": 2.0,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["diarization_engine"] == "hybrid"
+    assert body["nemo_speech_binary"] == str(binary)
+    assert body["nemo_speech_lib_path"] == str(lib_path)
+    assert body["nemo_speech_model"] == "nvidia/diar_streaming_sortformer_4spk-v2"
+    assert body["nemo_speech_device"] == "vulkan"
+    assert body["diarization_estimate_enabled"] is False
+    assert body["diarization_estimate_seconds"] == pytest.approx(45.0)
+    assert body["diarization_estimate_threshold"] == pytest.approx(0.55)
+    assert body["diarization_estimate_model"] == "/models/campplus.onnx"
+    assert body["diarization_route_max_speakers"] == 8
+    assert body["diarization_hybrid_enabled"] is False
+    assert body["diarization_hybrid_window_seconds"] == pytest.approx(60.0)
+    assert body["diarization_hybrid_overlap_seconds"] == pytest.approx(1.5)
+    assert body["diarization_hybrid_min_speaker_seconds"] == pytest.approx(2.0)
+
+    saved = client.get("/api/settings").json()
+    assert saved["diarization_engine"] == "hybrid"
+    assert saved["nemo_speech_binary"] == str(binary)
+    assert saved["diarization_estimate_seconds"] == pytest.approx(45.0)
+    assert saved["diarization_route_max_speakers"] == 8
+    assert saved["diarization_hybrid_min_speaker_seconds"] == pytest.approx(2.0)
+
+
+def test_put_settings_rejects_bad_hybrid_overlap(client: TestClient) -> None:
+    """Перекрытие больше окна — 400 из валидации (поле не «проглатывается»)."""
+    response = client.put(
+        "/api/settings",
+        json={
+            "diarization_hybrid_window_seconds": 10,
+            "diarization_hybrid_overlap_seconds": 12,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "DIARIZATION_HYBRID_OVERLAP_SECONDS" in response.json()["detail"]

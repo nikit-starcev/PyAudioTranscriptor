@@ -132,12 +132,18 @@ def test_catalog_shape_and_uniqueness() -> None:
         web_models.KIND_LLM,
         web_models.KIND_PYANNOTE,
         web_models.KIND_GIGAAM,
+        web_models.KIND_SHERPA,
     }
     pyannote = web_models.find_model("pyannote-community-1")
     assert pyannote is not None
     assert pyannote.gated is True
     assert pyannote.snapshot is True
     assert pyannote.setting_key == "pyannote_local_model"
+    campplus = web_models.find_model("sherpa-campplus-advanced")
+    assert campplus is not None
+    assert campplus.kind == web_models.KIND_SHERPA
+    assert campplus.snapshot is False
+    assert campplus.setting_key == "diarization_estimate_model"
     for entry in web_models.MODEL_CATALOG:
         assert entry.approx_size > 0
         assert entry.target_dir
@@ -233,6 +239,31 @@ def test_gigaam_snapshot_entry(tmp_path: Path) -> None:
     assert web_models.delete_model_files(entry, target) is True
     assert not target.exists()
     assert web_models.delete_model_files(entry, target) is False
+
+
+def test_sherpa_campplus_entry_and_bare_filename_default(tmp_path: Path) -> None:
+    """CAM++ (#64): голое имя модели по умолчанию → каталог каталога моделей."""
+    entry = web_models.find_model("sherpa-campplus-advanced")
+    assert entry is not None
+    assert entry.kind == web_models.KIND_SHERPA
+    assert entry.target_dir == "sherpa-models"
+    filename = entry.primary_filename
+    assert filename == "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
+
+    # Настройка по умолчанию — голое имя файла: цель — каталог каталога
+    # моделей, а не текущая директория.
+    assert web_models.resolve_target(
+        entry, models_root=tmp_path, settings=WebSettings()
+    ) == (tmp_path / "sherpa-models")
+
+    # Заданный путь к .onnx — берётся его каталог (как у файловых моделей).
+    target = Path("/models/sherpa-models")
+    configured = WebSettings(diarization_estimate_model=str(target / filename))
+    assert (
+        web_models.resolve_target(entry, models_root=tmp_path, settings=configured)
+        == target
+    )
+    assert web_models.primary_path(entry, target).name == filename
 
 
 def test_get_models_endpoint_shape(client: TestClient) -> None:

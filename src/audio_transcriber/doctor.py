@@ -60,6 +60,8 @@ LINK_LLAMA_CPP = "https://github.com/ggml-org/llama.cpp"
 LINK_GGML_MODELS = "https://huggingface.co/ggerganov/whisper.cpp"
 LINK_PYANNOTE_MODEL = "https://huggingface.co/pyannote/speaker-diarization-community-1"
 LINK_HF_TOKENS = "https://huggingface.co/settings/tokens"
+LINK_NEMO_SPEECH = "https://github.com/nvidia/nemo-speech.cpp"
+LINK_SHERPA_ONNX = "https://github.com/k2-fsa/sherpa-onnx"
 
 
 @dataclass(frozen=True, slots=True)
