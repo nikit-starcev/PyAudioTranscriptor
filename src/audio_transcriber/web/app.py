@@ -85,6 +85,7 @@ from audio_transcriber.web.actions import (
     ActionProgress,
     sanitize_action_id,
 )
+from audio_transcriber.web.asr_device import describe_asr_device
 from audio_transcriber.web.config import (
     build_job_config,
     env_defaults,
@@ -143,6 +144,7 @@ from audio_transcriber.web.settings import (
 )
 from audio_transcriber.web.setup import build_setup_steps
 from audio_transcriber.web.speakers import (
+    apply_entry_speaker_assign,
     apply_names,
     apply_speaker_changes,
     apply_window_reassign,
@@ -325,6 +327,21 @@ class TranscriptEditsRequest(BaseModel):
 
     edits: list[TranscriptEdit] = Field(default_factory=list)
     resets: list[int] = Field(default_factory=list)
+
+
+class AssignSpeakerRequest(BaseModel):
+    """Тело ``POST /api/jobs/{id}/transcript/assign-speaker`` (#59).
+
+    ``indexes`` — позиции реплик в текущем результате, которым принудительно
+    назначается говорящий. Цель ровно одна: существующий ``target_speaker_id``
+    или ``new_name`` (новый, либо существующий с таким именем). ``co_speaker``
+    добавляет цель участником наложения, не заменяя основного говорящего.
+    """
+
+    indexes: list[int] = Field(default_factory=list)
+    target_speaker_id: str | None = None
+    new_name: str | None = None
+    co_speaker: bool = False
 
 
 class ApplyGlossaryRequest(BaseModel):
@@ -693,6 +710,20 @@ def register_api(
     @router.get("/config")
     def get_config() -> dict[str, object]:
         return public_config(input_dir=paths.input_dir, output_dir=paths.results_dir).as_dict()
+
+    @router.get("/asr/device")
+    def asr_device() -> dict[str, object]:
+        """Устройство распознавания речи для индикатора в UI (#72).
+
+        Для whisper.cpp определяется по Vulkan-бэкенду и перечисленным GPU;
+        для GigaAM/faster-whisper — по настройке ``DEVICE``. Ответ содержит
+        готовую подпись (``label``) и пометку, что денойз и диаризация всегда
+        выполняются на CPU.
+        """
+        env = dict(env_defaults())
+        overrides = settings_store.load().env_overrides()
+        env.update({key: value for key, value in overrides.items() if value})
+        return describe_asr_device(env).as_dict()
 
     @router.get("/settings")
     def get_settings() -> dict[str, object]:
@@ -1291,6 +1322,77 @@ def register_api(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         _write_result(paths, job, updated)
         return JSONResponse(updated)
+
+    @router.post("/jobs/{job_id}/transcript/assign-speaker")
+    def assign_entry_speaker(job_id: str, payload: AssignSpeakerRequest) -> Response:
+        """Принудительно назначает говорящего выбранным репликам (#59).
+
+        Индексы — позиции реплик в текущем результате. Цель ровно одна:
+        существующий ``target_speaker_id`` или ``new_name`` (новый либо
+        существующий с таким именем). ``co_speaker=True`` добавляет цель
+        участником наложения, не заменяя основного говорящего. Ручные правки
+        текста (#26), таймкоды и вычисленные флаги реплик сохраняются;
+        доступна одношаговая отмена через ``POST /jobs/{id}/speakers/undo``.
+        """
+        job = _require_job(store, job_id)
+        raw = _require_result(paths, job)
+        entries = raw.get("entries")
+        if not isinstance(entries, list):
+            raise HTTPException(status_code=400, detail="В результате нет реплик")
+        count = len(entries)
+        indexes: list[int] = []
+        for index in payload.indexes:
+            if index < 0 or index >= count:
+                raise HTTPException(
+                    status_code=400, detail=f"Реплика #{index} не найдена"
+                )
+            if index not in indexes:
+                indexes.append(index)
+        if not indexes:
+            raise HTTPException(status_code=400, detail="Не выбрано ни одной реплики")
+        target_id = (payload.target_speaker_id or "").strip()
+        new_name = (payload.new_name or "").strip()
+        if bool(target_id) == bool(new_name):
+            raise HTTPException(
+                status_code=400,
+                detail="Укажите ровно одно: говорящего или имя нового",
+            )
+        source = Path(job.source_path)
+        result = result_from_payload(raw, source_path=source)
+        created: dict[str, str] | None = None
+        if target_id:
+            target = find_speaker(result, target_id)
+            if target is None:
+                raise HTTPException(status_code=404, detail="Говорящий не найден")
+        else:
+            existing = find_speaker_by_name(result, new_name)
+            if existing is not None:
+                target = existing
+            else:
+                target = make_speaker(result, new_name)
+                created = {"id": target.id, "display_name": target.display_name}
+        try:
+            new_result, changes = apply_entry_speaker_assign(
+                raw, indexes=indexes, target=target, co_speaker=payload.co_speaker
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not changes:
+            raise HTTPException(
+                status_code=400,
+                detail="Выбранные реплики уже принадлежат этому говорящему",
+            )
+        _write_result(paths, job, new_result)
+        speaker_undo[job_id] = raw
+        return JSONResponse(
+            {
+                "result": new_result,
+                "changes": [change.as_dict() for change in changes],
+                "target_speaker_id": target.id,
+                "created_speaker": created,
+                "indexes": indexes,
+            }
+        )
 
     @router.post("/jobs/{job_id}/apply-glossary")
     def apply_glossary(

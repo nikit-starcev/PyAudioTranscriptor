@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
-import { formatClock, type HealthStatus, type JobEvent } from '../api'
+import { formatClock, type AsrDeviceInfo, type HealthStatus, type JobEvent } from '../api'
 
 const HEALTH_LABELS: Record<HealthStatus, string> = {
   ok: 'В норме',
@@ -36,6 +36,8 @@ type Props = {
   progress: JobEvent | null
   /** Идёт ли обработка прямо сейчас (для локального «тиканья»). */
   running: boolean
+  /** Устройство ASR для индикатора на стадии распознавания (#72). */
+  asrDevice?: AsrDeviceInfo | null
 }
 
 /**
@@ -45,7 +47,7 @@ type Props = {
  * Между событиями SSE счётчики «тикают» локально: ETA уменьшается, а возраст
  * обновления растёт — так «зависшая» задача заметна без новых событий.
  */
-export default function ProgressSummary({ progress, running }: Props) {
+export default function ProgressSummary({ progress, running, asrDevice }: Props) {
   const [now, setNow] = useState(() => Date.now())
   const anchor = useRef<{ at: number; eta: number | null; last: number | null }>({
     at: Date.now(),
@@ -97,6 +99,22 @@ export default function ProgressSummary({ progress, running }: Props) {
       {progress.duration != null && (
         <span className="tabular-nums text-slate-600 dark:text-slate-300">
           длительность записи: {formatClock(progress.duration)}
+        </span>
+      )}
+      {asrDevice && progress.stage === 'asr' && (
+        <span
+          className={`rounded-full px-2 py-0.5 text-xs ${
+            asrDevice.device === 'gpu'
+              ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
+              : asrDevice.device === 'unknown'
+                ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
+                : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+          }`}
+          title={`${asrDevice.label} · ${asrDevice.note}${
+            asrDevice.details.length ? ` · ${asrDevice.details.join('; ')}` : ''
+          }`}
+        >
+          Устройство ASR: {asrDevice.label}
         </span>
       )}
       {running && eta != null && (

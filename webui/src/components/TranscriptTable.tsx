@@ -14,7 +14,18 @@ type Props = {
   onSaveText?: (entry: Entry, text: string) => Promise<void>
   /** Сбросить реплику к исходному тексту (#26). */
   onResetText?: (entry: Entry) => Promise<void>
+  /** Принудительно назначить говорящего выделенным репликам (#59). */
+  onAssignSpeaker?: (entries: Entry[], target: AssignTarget) => Promise<void>
+  /** Отменить последнее назначение говорящего (#59). */
+  onUndoAssign?: () => Promise<void>
+  /** Доступна ли одношаговая отмена назначения. */
+  undoAvailable?: boolean
 }
+
+type AssignTarget = { speakerId?: string; newName?: string }
+
+/** Значение селекта «создать нового говорящего». */
+const NEW_SPEAKER = '__new__'
 
 type Fragment = { key: string; start: number; end: number }
 
@@ -78,6 +89,9 @@ function TranscriptTable({
   sourceName,
   onSaveText,
   onResetText,
+  onAssignSpeaker,
+  onUndoAssign,
+  undoAvailable,
 }: Props) {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const [playingKey, setPlayingKey] = useState<string | null>(null)
@@ -99,6 +113,12 @@ function TranscriptTable({
   // добавления термина.
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null)
   const [quickTerm, setQuickTerm] = useState<string | null>(null)
+
+  // Принудительное назначение говорящего выделенным репликам (#59).
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(() => new Set())
+  const [assignTargetId, setAssignTargetId] = useState('')
+  const [newSpeakerName, setNewSpeakerName] = useState('')
+  const [assignBusy, setAssignBusy] = useState(false)
 
   // Актуальные значения для цикла requestAnimationFrame (без пересоздания).
   const entriesRef = useRef(entries)
@@ -137,6 +157,12 @@ function TranscriptTable({
     setEditError(null)
     setContextMenu(null)
   }, [jobId])
+
+  // Выделение реплик сбрасываем при смене задачи или списка реплик (после
+  // правки/назначения результат приходит заново — выделять больше нечего).
+  useEffect(() => {
+    setSelectedKeys(new Set())
+  }, [jobId, entries])
 
   const cancelLoop = useCallback(() => {
     if (rafRef.current != null) {
@@ -280,6 +306,68 @@ function TranscriptTable({
     setContextMenu({ x: event.clientX, y: event.clientY, term: selected })
   }, [])
 
+  const selectedEntries = onAssignSpeaker
+    ? entries.filter((entry, index) => selectedKeys.has(entryKey(entry, index)))
+    : []
+  const allSelected = entries.length > 0 && selectedEntries.length === entries.length
+
+  const toggleRow = useCallback((key: string) => {
+    setSelectedKeys((current) => {
+      const next = new Set(current)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }, [])
+
+  const toggleAll = useCallback(() => {
+    setSelectedKeys((current) => {
+      const keys = entries.map((entry, index) => entryKey(entry, index))
+      const everySelected = keys.length > 0 && keys.every((key) => current.has(key))
+      return everySelected ? new Set() : new Set(keys)
+    })
+  }, [entries])
+
+  const undoAssign = useCallback(async () => {
+    if (!onUndoAssign) return
+    setEditError(null)
+    setAssignBusy(true)
+    try {
+      await onUndoAssign()
+    } catch (cause) {
+      setEditError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setAssignBusy(false)
+    }
+  }, [onUndoAssign])
+
+  const submitAssign = useCallback(async () => {
+    if (!onAssignSpeaker || selectedKeys.size === 0) return
+    const chosen = entries.filter((entry, index) => selectedKeys.has(entryKey(entry, index)))
+    if (chosen.length === 0) return
+    const target: AssignTarget =
+      assignTargetId === NEW_SPEAKER
+        ? { newName: newSpeakerName.trim() }
+        : { speakerId: assignTargetId }
+    setAssignBusy(true)
+    setEditError(null)
+    try {
+      await onAssignSpeaker(chosen, target)
+      setSelectedKeys(new Set())
+      setNewSpeakerName('')
+      setAssignTargetId('')
+    } catch (cause) {
+      setEditError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setAssignBusy(false)
+    }
+  }, [onAssignSpeaker, entries, selectedKeys, assignTargetId, newSpeakerName])
+
+  const assignReady =
+    assignTargetId === NEW_SPEAKER
+      ? newSpeakerName.trim().length > 0
+      : assignTargetId.length > 0
+
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
@@ -299,7 +387,72 @@ function TranscriptTable({
         ) : (
           <span>Двойной клик по тексту — правка; ПКМ по выделению — в глоссарий</span>
         )}
+        {onAssignSpeaker && (
+          <label className="flex items-center gap-1.5">
+            <input
+              type="checkbox"
+              checked={allSelected}
+              onChange={toggleAll}
+              aria-label="Выделить все реплики"
+            />
+            Выделить все для назначения говорящего
+          </label>
+        )}
+        {onUndoAssign && undoAvailable && (
+          <button
+            type="button"
+            onClick={() => void undoAssign()}
+            disabled={assignBusy}
+            title="Вернуть говорящих к состоянию до последнего назначения"
+            className="rounded border border-slate-300 px-2 py-0.5 text-xs hover:bg-slate-100 disabled:opacity-40 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+          >
+            Отменить назначение
+          </button>
+        )}
       </div>
+
+      {onAssignSpeaker && selectedEntries.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200">
+          <span className="font-medium">Выбрано реплик: {selectedEntries.length}</span>
+          <select
+            value={assignTargetId}
+            onChange={(event) => setAssignTargetId(event.target.value)}
+            aria-label="Говорящий для назначения"
+            className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+          >
+            <option value="">— говорящий —</option>
+            {speakers.map((speaker) => (
+              <option key={speaker.id} value={speaker.id}>
+                {speaker.display_name}
+              </option>
+            ))}
+            <option value={NEW_SPEAKER}>＋ новый говорящий…</option>
+          </select>
+          {assignTargetId === NEW_SPEAKER && (
+            <input
+              value={newSpeakerName}
+              onChange={(event) => setNewSpeakerName(event.target.value)}
+              placeholder="Имя нового говорящего"
+              className="rounded-md border border-slate-300 px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+            />
+          )}
+          <button
+            type="button"
+            onClick={() => void submitAssign()}
+            disabled={!assignReady || assignBusy}
+            className="rounded-md bg-blue-600 px-2.5 py-1 text-xs text-white hover:bg-blue-500 disabled:opacity-40"
+          >
+            {assignBusy ? 'Применяю…' : 'Назначить'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setSelectedKeys(new Set())}
+            className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-white/60 dark:border-slate-600 dark:hover:bg-slate-800"
+          >
+            Снять выделение
+          </button>
+        </div>
+      )}
 
       {editError && (
         <p className="rounded-md bg-red-50 px-3 py-1.5 text-xs text-red-700 dark:bg-red-950/50 dark:text-red-300">
@@ -313,6 +466,9 @@ function TranscriptTable({
         <table className="w-full border-collapse text-sm">
           <thead className="sticky top-0 z-10 bg-slate-100 text-left text-xs uppercase text-slate-500 dark:bg-slate-800 dark:text-slate-400">
             <tr>
+              {onAssignSpeaker && (
+                <th className="w-8 px-2 py-2 font-medium" aria-label="Выделить реплику" />
+              )}
               <th className="w-10 px-2 py-2 font-medium" aria-label="Прослушать" />
               <th className="px-3 py-2 font-medium">Время</th>
               <th className="px-3 py-2 font-medium">Говорящий</th>
@@ -325,6 +481,7 @@ function TranscriptTable({
               const key = entryKey(entry, index)
               const playing = playingKey === key
               const editing = editingKey === key && onSaveText != null
+              const selected = selectedKeys.has(key)
               const span = Math.max(MIN_FRAGMENT, entry.end - entry.start)
               const percent = playing
                 ? Math.min(100, Math.max(0, (position / span) * 100))
@@ -336,9 +493,21 @@ function TranscriptTable({
                   className={
                     playing
                       ? 'border-t border-slate-100 bg-blue-50 dark:border-slate-800 dark:bg-blue-950/40'
-                      : 'border-t border-slate-100 dark:border-slate-800'
+                      : selected
+                        ? 'border-t border-slate-100 bg-amber-50 dark:border-slate-800 dark:bg-amber-950/30'
+                        : 'border-t border-slate-100 dark:border-slate-800'
                   }
                 >
+                  {onAssignSpeaker && (
+                    <td className="px-2 py-1.5">
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        onChange={() => toggleRow(key)}
+                        aria-label={`Выделить реплику ${index + 1}`}
+                      />
+                    </td>
+                  )}
                   <td className="px-2 py-1.5">
                     <button
                       type="button"

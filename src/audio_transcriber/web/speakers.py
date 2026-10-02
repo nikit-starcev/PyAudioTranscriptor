@@ -211,6 +211,101 @@ def apply_window_reassign(
     return _reserialize(payload, updated, samples), changes
 
 
+def apply_entry_speaker_assign(
+    payload: Mapping[str, object],
+    *,
+    indexes: Sequence[int],
+    target: Speaker,
+    co_speaker: bool = False,
+) -> tuple[dict[str, object], list[EntrySpeakerChange]]:
+    """Принудительно назначает говорящего выбранным репликам (#59).
+
+    В отличие от :func:`apply_window_reassign` (перенос окна варианта) реплики
+    задаются явными индексами из таблицы стенограммы. Основной говорящий
+    заменяется целевым, а целевой убирается из ``extra_speaker_ids`` — так он не
+    дублируется. ``co_speaker=True`` добавляет целевого участником наложения, не
+    трогая основного (учёт перекрытий без «разрезания» текста).
+
+    Правится только состав говорящих: текст, таймкоды, пометки ручной правки
+    (#26) и вычисленные флаги реплик остаются как есть. Новый говорящий
+    добавляется в ``speakers``, если его там ещё нет; возвращается новый JSON
+    результата и список фактически изменённых реплик.
+    """
+    entries = payload.get("entries")
+    if not isinstance(entries, list):
+        raise ValueError("В результате нет реплик")
+    selected = set(indexes)
+    speaker_items = _payload_speakers(payload)
+    if not any(item.get("id") == target.id for item in speaker_items):
+        speaker_items.append(
+            {"id": target.id, "display_name": target.display_name, "has_sample": False}
+        )
+
+    changes: list[EntrySpeakerChange] = []
+    updated_entries: list[object] = []
+    for index, raw in enumerate(entries):
+        if not isinstance(raw, Mapping):
+            updated_entries.append(raw)
+            continue
+        item = dict(raw)
+        if index in selected:
+            before_primary = _str_or_none(item.get("speaker_id"))
+            before_extras = _str_list(item.get("extra_speaker_ids"))
+            if co_speaker:
+                if before_primary != target.id and target.id not in before_extras:
+                    after_extras = [*before_extras, target.id]
+                else:
+                    after_extras = list(before_extras)
+                item["extra_speaker_ids"] = after_extras
+            else:
+                item["speaker_id"] = target.id
+                item["extra_speaker_ids"] = [
+                    extra for extra in before_extras if extra != target.id
+                ]
+            after_primary = _str_or_none(item.get("speaker_id"))
+            after_extras = _str_list(item.get("extra_speaker_ids"))
+            if (before_primary, tuple(before_extras)) != (after_primary, tuple(after_extras)):
+                changes.append(
+                    EntrySpeakerChange(
+                        index=index,
+                        before_speaker_id=before_primary,
+                        after_speaker_id=after_primary,
+                        before_extra_ids=tuple(before_extras),
+                        after_extra_ids=tuple(after_extras),
+                    )
+                )
+        updated_entries.append(item)
+
+    updated = dict(payload)
+    updated["entries"] = updated_entries
+    updated["speakers"] = speaker_items
+    return updated, changes
+
+
+def _payload_speakers(payload: Mapping[str, object]) -> list[dict[str, object]]:
+    """Копия списка говорящих результата (с сохранением ``has_sample``)."""
+    raw = payload.get("speakers")
+    items: list[dict[str, object]] = []
+    if isinstance(raw, list):
+        for entry in raw:
+            if isinstance(entry, Mapping):
+                items.append(dict(entry))
+    return items
+
+
+def _str_or_none(value: object) -> str | None:
+    """Непустая строка иначе ``None``."""
+    return value if isinstance(value, str) and value else None
+
+
+def _str_list(value: object) -> list[str]:
+    """Список непустых строк из значения (иначе пустой список)."""
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str) and item]
+
+
+
 def build_speaker_segments(payload: Mapping[str, object]) -> list[SpeakerSegment]:
     """Собирает сегменты говорящих из реплик результата (для enrollment)."""
     segments: list[SpeakerSegment] = []

@@ -184,6 +184,35 @@ export type ReassignResponse = {
   speaker_id: string
 }
 
+/** Цель принудительного назначения говорящего (#59): существующий или новый. */
+export type AssignSpeakerTarget = { speakerId?: string; newName?: string }
+
+/** Ответ ``POST /api/jobs/{id}/transcript/assign-speaker`` (#59). */
+export type AssignSpeakerResponse = {
+  result: TranscriptResult
+  changes: SpeakerChange[]
+  target_speaker_id: string
+  created_speaker: { id: string; display_name: string } | null
+  indexes: number[]
+}
+
+/** Класс устройства распознавания речи (#72). */
+export type AsrDeviceClass = 'gpu' | 'cpu' | 'unknown'
+
+/** Устройство ASR для индикатора в UI (#72). */
+export type AsrDeviceInfo = {
+  backend: string
+  device: AsrDeviceClass
+  /** Готовая подпись: «whisper.cpp · GPU Vulkan0 (AMD Radeon RX 590)». */
+  label: string
+  accelerator: string | null
+  name: string | null
+  /** Пометка, что денойз и диаризация всегда идут на CPU. */
+  note: string
+  /** Сырые строки проб (для подсказки). */
+  details: string[]
+}
+
 export type BestCandidate = { name: string; score: number }
 
 export type ApplyNamesResponse = {

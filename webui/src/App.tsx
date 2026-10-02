@@ -10,6 +10,8 @@ import {
   formatSize,
   isTerminal,
   type ApplyNamesResponse,
+  type AsrDeviceInfo,
+  type AssignSpeakerResponse,
   type ConfigInfo,
   type DoctorReport,
   type Entry,
@@ -108,6 +110,8 @@ function formatSpeakerSetting(job: Job): string {
 function App() {
   const [version, setVersion] = useState<string>('')
   const [config, setConfig] = useState<ConfigInfo | null>(null)
+  // Устройство распознавания речи для индикатора (#72).
+  const [asrDevice, setAsrDevice] = useState<AsrDeviceInfo | null>(null)
   const [doctor, setDoctor] = useState<DoctorReport | null>(null)
   const [doctorLoading, setDoctorLoading] = useState(false)
   const [doctorError, setDoctorError] = useState<string | null>(null)
@@ -236,6 +240,15 @@ function App() {
     }
   }, [])
 
+  // Индикатор устройства ASR (#72): обновляем при старте и после смены настроек.
+  const refreshAsrDevice = useCallback(async () => {
+    try {
+      setAsrDevice(await api<AsrDeviceInfo>('/api/asr/device'))
+    } catch {
+      setAsrDevice(null)
+    }
+  }, [])
+
   const recheckDoctor = useCallback(async () => {
     setDoctorLoading(true)
     try {
@@ -334,7 +347,8 @@ function App() {
     void refreshFiles()
     void refreshJobs()
     void refreshDoctor()
-  }, [refreshFiles, refreshJobs, refreshDoctor])
+    void refreshAsrDevice()
+  }, [refreshFiles, refreshJobs, refreshDoctor, refreshAsrDevice])
 
   // Фоновый поллинг-фолбэк списка задач: SSE подключён только к активной
   // задаче, и если её поток молчит или оборвался без конечного события, статусы
@@ -804,6 +818,37 @@ function App() {
     [],
   )
 
+  //: Принудительное назначение говорящего выбранным репликам (#59): результат
+  //: перезаписывается на сервере, доступна одношаговая отмена (общая с #40/#41).
+  const assignSpeaker = useCallback(
+    async (
+      jobId: string,
+      entries: Entry[],
+      target: { speakerId?: string; newName?: string },
+    ) => {
+      const indexes = entries
+        .map((entry) => (result ? result.entries.indexOf(entry) : -1))
+        .filter((index) => index >= 0)
+      if (indexes.length === 0) {
+        throw new Error('Не удалось определить выбранные реплики')
+      }
+      const body: Record<string, unknown> = { indexes }
+      if (target.newName) body.new_name = target.newName
+      else body.target_speaker_id = target.speakerId
+      const response = await api<AssignSpeakerResponse>(
+        `/api/jobs/${jobId}/transcript/assign-speaker`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        },
+      )
+      setResult(response.result)
+      setSpeakerUndoAvailable(true)
+    },
+    [result],
+  )
+
   const applyNames = useCallback(
     async (jobId: string): Promise<ApplyNamesResponse> => {
       const response = await runActionTask(
@@ -975,6 +1020,20 @@ function App() {
             </button>
             <ThemeToggle />
           </div>
+          {asrDevice && (
+            <span
+              title={`${asrDevice.label}${asrDevice.details.length ? ` · ${asrDevice.details.join('; ')}` : ''} · ${asrDevice.note}`}
+              className={`rounded-full px-2.5 py-0.5 text-xs ${
+                asrDevice.device === 'gpu'
+                  ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
+                  : asrDevice.device === 'unknown'
+                    ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300'
+                    : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+              }`}
+            >
+              ASR: {asrDevice.label}
+            </span>
+          )}
           {version && (
             <span className="text-xs text-slate-400 dark:text-slate-500">v{version}</span>
           )}
@@ -1396,7 +1455,11 @@ function App() {
                 : 'Ожидание...'}
               {progress?.message ? ` — ${progress.message}` : ''}
             </p>
-            <ProgressSummary progress={progress} running={progressRunning} />
+            <ProgressSummary
+              progress={progress}
+              running={progressRunning}
+              asrDevice={asrDevice}
+            />
             <ol className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
               {STAGES.map((stage, index) => {
                 const state =
@@ -1501,6 +1564,11 @@ function App() {
                 if (index < 0) return Promise.resolve()
                 return patchTranscript(activeJobId, { resets: [index] })
               }}
+              onAssignSpeaker={(entries: Entry[], target) =>
+                assignSpeaker(activeJobId, entries, target)
+              }
+              onUndoAssign={() => undoSpeakers(activeJobId)}
+              undoAvailable={speakerUndoAvailable}
             />
 
             <EditorPanel jobId={activeJobId} onResult={setResult} />
@@ -1601,6 +1669,7 @@ function App() {
               : current,
           )
           void refreshDoctor()
+          void refreshAsrDevice()
         }}
       />
       <GlossaryModal open={glossaryOpen} onClose={() => setGlossaryOpen(false)} />

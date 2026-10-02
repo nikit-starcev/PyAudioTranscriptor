@@ -339,6 +339,189 @@ def test_export_contains_edited_text(client: TestClient) -> None:
     assert "привет" not in body
 
 
+def test_assign_speaker_to_selected_entries(
+    client: TestClient, web_paths: WebPaths
+) -> None:
+    """Принудительное назначение существующего говорящего выбранным репликам (#59)."""
+    job_id, _ = _prepared_job(client)
+
+    response = client.post(
+        f"/api/jobs/{job_id}/transcript/assign-speaker",
+        json={"indexes": [0, 2], "target_speaker_id": "SPEAKER_01"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["target_speaker_id"] == "SPEAKER_01"
+    assert body["created_speaker"] is None
+    assert body["indexes"] == [0, 2]
+    assert [change["index"] for change in body["changes"]] == [0, 2]
+    assert [entry["speaker_id"] for entry in body["result"]["entries"]] == [
+        "SPEAKER_01",
+        "SPEAKER_01",
+        "SPEAKER_01",
+    ]
+    # Список говорящих не меняется и не prune-ится.
+    assert [s["id"] for s in body["result"]["speakers"]] == ["SPEAKER_00", "SPEAKER_01"]
+
+    on_disk = json.loads((web_paths.results_dir / f"{job_id}.json").read_text("utf-8"))
+    assert on_disk["entries"][0]["speaker_id"] == "SPEAKER_01"
+    assert on_disk["entries"][2]["speaker_id"] == "SPEAKER_01"
+
+
+def test_assign_speaker_creates_new_speaker(client: TestClient) -> None:
+    job_id, _ = _prepared_job(client)
+
+    response = client.post(
+        f"/api/jobs/{job_id}/transcript/assign-speaker",
+        json={"indexes": [0], "new_name": "Анна"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["target_speaker_id"] == "SPEAKER_02"
+    assert body["created_speaker"] == {"id": "SPEAKER_02", "display_name": "Анна"}
+    entry = body["result"]["entries"][0]
+    assert entry["speaker_id"] == "SPEAKER_02"
+    names = {s["id"]: s["display_name"] for s in body["result"]["speakers"]}
+    assert names["SPEAKER_02"] == "Анна"
+    assert body["result"]["speakers"][-1]["has_sample"] is False
+
+
+def test_assign_speaker_reuses_existing_by_name(client: TestClient) -> None:
+    job_id, _ = _prepared_job(client)
+
+    response = client.post(
+        f"/api/jobs/{job_id}/transcript/assign-speaker",
+        json={"indexes": [0], "new_name": "Пётр"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["target_speaker_id"] == "SPEAKER_01"
+    assert body["created_speaker"] is None
+    assert body["result"]["entries"][0]["speaker_id"] == "SPEAKER_01"
+
+
+def test_assign_speaker_removes_target_from_extras(client: TestClient) -> None:
+    """Целевой говорящий, бывший доп. участником, не дублируется (#59)."""
+    job_id, _ = _prepared_job(client)
+    # Реплика 1: основной SPEAKER_01 (Пётр), доп. SPEAKER_00 (Иван).
+    assert client.get(f"/api/jobs/{job_id}/result").json()["entries"][1][
+        "extra_speaker_ids"
+    ] == ["SPEAKER_00"]
+
+    response = client.post(
+        f"/api/jobs/{job_id}/transcript/assign-speaker",
+        json={"indexes": [1], "target_speaker_id": "SPEAKER_00"},
+    )
+
+    assert response.status_code == 200
+    entry = response.json()["result"]["entries"][1]
+    assert entry["speaker_id"] == "SPEAKER_00"
+    assert entry["extra_speaker_ids"] == []
+    change = response.json()["changes"][0]
+    assert change["before_speaker_id"] == "SPEAKER_01"
+    assert change["before_extra_ids"] == ["SPEAKER_00"]
+    assert change["after_extra_ids"] == []
+
+
+def test_assign_speaker_co_speaker_keeps_primary(client: TestClient) -> None:
+    """``co_speaker=True`` добавляет цель участником наложения (#59)."""
+    job_id, _ = _prepared_job(client)
+
+    response = client.post(
+        f"/api/jobs/{job_id}/transcript/assign-speaker",
+        json={"indexes": [0], "target_speaker_id": "SPEAKER_01", "co_speaker": True},
+    )
+
+    assert response.status_code == 200
+    entry = response.json()["result"]["entries"][0]
+    assert entry["speaker_id"] == "SPEAKER_00"
+    assert entry["extra_speaker_ids"] == ["SPEAKER_01"]
+
+
+def test_assign_speaker_preserves_manual_edit(client: TestClient) -> None:
+    """Назначение говорящего не теряет ручную правку текста (#26)."""
+    job_id, _ = _prepared_job(client)
+    client.patch(
+        f"/api/jobs/{job_id}/transcript",
+        json={"edits": [{"index": 0, "text": "исправлено вручную"}]},
+    )
+
+    response = client.post(
+        f"/api/jobs/{job_id}/transcript/assign-speaker",
+        json={"indexes": [0], "target_speaker_id": "SPEAKER_01"},
+    )
+
+    assert response.status_code == 200
+    entry = response.json()["result"]["entries"][0]
+    assert entry["speaker_id"] == "SPEAKER_01"
+    assert entry["text"] == "исправлено вручную"
+    assert entry["edited"] is True
+    assert entry["original_text"] == "привет"
+    assert entry["low_confidence"] is True
+
+
+def test_assign_speaker_undo_restores_previous_result(client: TestClient) -> None:
+    job_id, original = _prepared_job(client)
+    client.post(
+        f"/api/jobs/{job_id}/transcript/assign-speaker",
+        json={"indexes": [0, 2], "target_speaker_id": "SPEAKER_01"},
+    )
+
+    undone = client.post(f"/api/jobs/{job_id}/speakers/undo")
+
+    assert undone.status_code == 200
+    body = undone.json()
+    assert body["entries"] == original["entries"]
+    assert body["speakers"] == original["speakers"]
+    assert client.post(f"/api/jobs/{job_id}/speakers/undo").status_code == 404
+
+
+def test_assign_speaker_validation_errors(client: TestClient) -> None:
+    job_id, _ = _prepared_job(client)
+    url = f"/api/jobs/{job_id}/transcript/assign-speaker"
+
+    no_indexes = client.post(url, json={"target_speaker_id": "SPEAKER_01"})
+    assert no_indexes.status_code == 400
+
+    bad_index = client.post(
+        url, json={"indexes": [99], "target_speaker_id": "SPEAKER_01"}
+    )
+    assert bad_index.status_code == 400
+
+    neither = client.post(url, json={"indexes": [0]})
+    assert neither.status_code == 400
+
+    both = client.post(
+        url,
+        json={"indexes": [0], "target_speaker_id": "SPEAKER_01", "new_name": "X"},
+    )
+    assert both.status_code == 400
+
+    unknown_target = client.post(
+        url, json={"indexes": [0], "target_speaker_id": "SPEAKER_99"}
+    )
+    assert unknown_target.status_code == 404
+
+    # Реплика уже принадлежит этому говорящему — менять нечего.
+    entry = client.get(f"/api/jobs/{job_id}/result").json()["entries"][0]
+    same = client.post(
+        url,
+        json={"indexes": [0], "target_speaker_id": entry["speaker_id"]},
+    )
+    assert same.status_code == 400
+
+
+def test_assign_speaker_missing_result_returns_404(client: TestClient) -> None:
+    response = client.post(
+        "/api/jobs/nonexistent/transcript/assign-speaker",
+        json={"indexes": [0], "new_name": "X"},
+    )
+    assert response.status_code == 404
+
+
 @pytest.mark.parametrize("fmt", ["txt", "json", "srt", "docx"])
 def test_export_all_formats_contain_edited_text(client: TestClient, fmt: str) -> None:
     job_id, _ = _prepared_job(client)
