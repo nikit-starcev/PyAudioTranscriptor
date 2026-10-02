@@ -46,6 +46,7 @@ from audio_transcriber.correction.editorial import (
     build_suggestions,
 )
 from audio_transcriber.correction.morph_corrector import MorphTextCorrector
+from audio_transcriber.diarization import nemo_speech_assets
 from audio_transcriber.diarization.reference import (
     ReferencePrepareOptions,
     ReferenceQuality,
@@ -71,6 +72,7 @@ from audio_transcriber.llm.client import probe_openai_server
 from audio_transcriber.protocol import ProtocolArtifacts, generate_protocol
 from audio_transcriber.storage.glossary_builder import build_active_glossary
 from audio_transcriber.utils.audio import load_waveform, write_wav
+from audio_transcriber.utils.env import binary_available
 from audio_transcriber.utils.playback import amplitude_envelope, read_duration
 from audio_transcriber.utils.text import sanitize_filename
 from audio_transcriber.web import deps as deps_registry
@@ -116,6 +118,7 @@ from audio_transcriber.web.models import (
     model_payload,
     resolve_target,
 )
+from audio_transcriber.web.nemo_speech import NemoSpeechModelDownloader, PullRunner
 from audio_transcriber.web.paths import STATIC_DIR, WebPaths
 from audio_transcriber.web.processed import clear_processed, is_processed
 from audio_transcriber.web.results import (
@@ -435,6 +438,8 @@ def create_app(
     voices_dir: Path | None = None,
     downloader: Downloader | None = None,
     dep_install_runner: InstallRunner | None = None,
+    nemo_pull_runner: PullRunner | None = None,
+    nemo_poll_interval: float | None = 0.5,
     heartbeat: float = 15.0,
 ) -> FastAPI:
     """Собирает приложение FastAPI с изолированным окружением данных.
@@ -445,6 +450,9 @@ def create_app(
     голосов (в тестах) вместо ``VOICES_DIR``; в остальных случаях он берётся
     из сохранённых настроек. ``dep_install_runner`` — заглушка запуска
     установщика пакетов (#66): в тестах реальные ``uv``/``pip`` не вызываются.
+    ``nemo_pull_runner`` — аналогичная заглушка ``nemo-speech pull``; при
+    ``nemo_poll_interval=None`` отключается и поток-наблюдатель за размером
+    файла модели (детерминированные тесты).
     """
     resolved_paths = paths or WebPaths.default()
     resolved_paths.ensure()
@@ -470,6 +478,15 @@ def create_app(
         bus=deps_bus,
         runner=dep_install_runner,
         on_success=doctor_cache.invalidate,
+    )
+    # Скачивание модели Sortformer для nemo-speech (кнопка в «Диаризации»):
+    # отдельная шина, один фоновый поток, SSE ``/api/diarization/nemo-speech/model/events``.
+    nemo_bus = DownloadBus(heartbeat=heartbeat)
+    nemo_downloader = NemoSpeechModelDownloader(
+        bus=nemo_bus,
+        runner=nemo_pull_runner,
+        on_success=doctor_cache.invalidate,
+        poll_interval=nemo_poll_interval,
     )
 
     def resolve_model_target(entry: ModelEntry) -> Path:
@@ -549,6 +566,8 @@ def create_app(
     app.state.doctor_cache = doctor_cache
     app.state.dependency_installer = dependency_installer
     app.state.deps_bus = deps_bus
+    app.state.nemo_downloader = nemo_downloader
+    app.state.nemo_bus = nemo_bus
     router = APIRouter(prefix="/api")
     register_api(
         router,
@@ -569,6 +588,8 @@ def create_app(
         doctor_cache=doctor_cache,
         dependency_installer=dependency_installer,
         deps_bus=deps_bus,
+        nemo_downloader=nemo_downloader,
+        nemo_bus=nemo_bus,
     )
     app.include_router(router)
 
@@ -611,6 +632,8 @@ def register_api(
     doctor_cache: DoctorReportCache,
     dependency_installer: DependencyInstaller,
     deps_bus: DownloadBus,
+    nemo_downloader: NemoSpeechModelDownloader,
+    nemo_bus: DownloadBus,
 ) -> None:
     """Регистрирует все маршруты API v1 на переданном роутере."""
 
@@ -778,6 +801,84 @@ def register_api(
             "message": message,
             "models": models,
         }
+
+    @router.get("/diarization/nemo-speech/detect")
+    def detect_nemo_speech() -> dict[str, object]:
+        """Ищет бинарник nemo-speech и каталог ``lib/`` рядом с ним.
+
+        Помимо путей возвращает версию и GPU-устройства найденного бинарника
+        (проба ``--version``/``doctor``). Пустой список кандидатов — мягкая
+        деградация: пользователю нужно указать путь вручную.
+        """
+        settings = settings_store.load()
+        candidates = nemo_speech_assets.detect_candidates(settings.nemo_speech_binary)
+        return {
+            "candidates": [candidate.as_dict() for candidate in candidates],
+            "current": {
+                "binary": settings.nemo_speech_binary,
+                "lib_path": settings.nemo_speech_lib_path,
+                "model": settings.nemo_speech_model,
+            },
+            "recommended": candidates[0].binary if candidates else None,
+            "found": bool(candidates),
+        }
+
+    @router.get("/diarization/nemo-speech/model")
+    def nemo_speech_model_status() -> dict[str, object]:
+        """Локальный статус модели Sortformer: наличие, путь, размер, загрузка."""
+        settings = settings_store.load()
+        payload = nemo_speech_assets.model_status(settings.nemo_speech_model).as_dict()
+        payload["download"] = nemo_downloader.state().as_dict()
+        payload["binary"] = {
+            "configured": settings.nemo_speech_binary,
+            "available": binary_available(settings.nemo_speech_binary),
+        }
+        return payload
+
+    @router.post("/diarization/nemo-speech/model/download", status_code=202)
+    def download_nemo_speech_model() -> dict[str, object]:
+        """Запускает ``nemo-speech pull`` в фоне (прогресс — SSE ``.../model/events``)."""
+        settings = settings_store.load()
+        if not binary_available(settings.nemo_speech_binary):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Сначала укажите или найдите бинарник nemo-speech "
+                    "(поле «Бинарник nemo-speech»)."
+                ),
+            )
+        if nemo_downloader.is_running():
+            raise HTTPException(status_code=409, detail="Загрузка модели уже выполняется")
+        started = nemo_downloader.start(
+            binary=settings.nemo_speech_binary,
+            model=settings.nemo_speech_model,
+            lib_path=settings.nemo_speech_lib_path or None,
+        )
+        if not started:
+            raise HTTPException(status_code=409, detail="Загрузка модели уже выполняется")
+        return {"status": "downloading", "model": settings.nemo_speech_model}
+
+    @router.get("/diarization/nemo-speech/model/events")
+    async def nemo_speech_model_events(
+        last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
+    ) -> StreamingResponse:
+        """SSE-поток загрузки модели Sortformer (история + живой поток)."""
+        after: int | None = None
+        if last_event_id:
+            try:
+                after = int(last_event_id)
+            except ValueError:
+                after = None
+
+        async def stream() -> AsyncIterator[str]:
+            for event in nemo_bus.history(after=after):
+                yield _sse(event)
+            async for update in nemo_bus.subscribe():
+                yield ": ping\n\n" if update is None else _sse(update)
+
+        return StreamingResponse(
+            stream(), media_type="text/event-stream", headers=dict(SSE_HEADERS)
+        )
 
     @router.get("/setup")
     def get_setup() -> dict[str, object]:

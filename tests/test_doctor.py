@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 
 from audio_transcriber import doctor
 from audio_transcriber.cli.app import app
+from audio_transcriber.diarization import nemo_speech_assets
 
 runner = CliRunner()
 
@@ -422,9 +423,20 @@ def _patch_nemo(
     *,
     binary: bool,
     doctor_result: tuple[list[str], bool] | None,
+    model_cached: bool = False,
 ) -> None:
     monkeypatch.setattr(doctor, "_binary_available", lambda _binary: binary)
     monkeypatch.setattr(doctor, "_nemo_speech_doctor", lambda _binary, _lib: doctor_result)
+    status = nemo_speech_assets.NemoSpeechModelStatus(
+        model="nvidia/diar_streaming_sortformer_4spk-v2",
+        repo="nvidia/diar_streaming_sortformer_4spk-v2",
+        present=model_cached,
+        path="/cache/sortformer.q8_0.gguf" if model_cached else None,
+        size=147_075_776 if model_cached else 0,
+        files=("sortformer.q8_0.gguf",) if model_cached else (),
+        source="cache",
+    )
+    monkeypatch.setattr(doctor, "_nemo_speech_model_status", lambda _model: status)
 
 
 def test_nemo_speech_binary_and_gpu_reported(
@@ -475,6 +487,43 @@ def test_nemo_speech_missing_binary_not_critical_in_auto(
     binary_check = _find(checks, "bin:nemo-speech")
     assert binary_check.ok
     assert "pyannote" in binary_check.detail
+
+
+def test_nemo_speech_model_cached_reflected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+    _patch_nemo(
+        monkeypatch, binary=True, doctor_result=(["GPU"], True), model_cached=True
+    )
+
+    env = _base_env(tmp_path, DIARIZATION_ENABLED="true", DIARIZATION_ENGINE="nemo-speech")
+    checks = doctor.run_doctor(None, env)
+
+    model = _find(checks, "model:nemo-speech")
+    assert model.ok
+    assert not model.critical
+    assert "в кэше" in model.detail
+
+
+def test_nemo_speech_model_absent_is_soft(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+    _patch_nemo(
+        monkeypatch, binary=True, doctor_result=(["GPU"], True), model_cached=False
+    )
+
+    env = _base_env(tmp_path, DIARIZATION_ENABLED="true", DIARIZATION_ENGINE="nemo-speech")
+    checks = doctor.run_doctor(None, env)
+
+    model = _find(checks, "model:nemo-speech")
+    assert not model.ok
+    assert not model.critical
+    assert "нет в кэше" in model.detail
+    assert "Скачать модель" in model.hint
 
 
 def test_nemo_speech_vulkan_without_gpu_warns(

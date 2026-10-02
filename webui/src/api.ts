@@ -279,6 +279,55 @@ export const LLM_PROVIDERS = ['llama', 'openai'] as const
 export const DIARIZATION_ENGINES = ['auto', 'pyannote', 'nemo-speech', 'hybrid'] as const
 export const NEMO_SPEECH_DEVICES = ['auto', 'vulkan', 'cpu'] as const
 
+/** Найденный автодетектом бинарник nemo-speech (путь + каталог lib/ + проба). */
+export type NemoSpeechCandidate = {
+  binary: string
+  lib_path: string | null
+  source: string
+  version: string | null
+  devices: string[]
+  has_vulkan: boolean
+}
+
+export type NemoSpeechDetectResponse = {
+  candidates: NemoSpeechCandidate[]
+  current: { binary: string; lib_path: string; model: string }
+  recommended: string | null
+  found: boolean
+}
+
+export type NemoSpeechDownloadStatus = 'idle' | 'downloading' | 'done' | 'error'
+
+/** Состояние фоновой загрузки модели Sortformer. */
+export type NemoSpeechDownloadState = {
+  status: NemoSpeechDownloadStatus
+  message: string
+  fraction: number | null
+  bytes_done: number
+  total: number
+  path: string | null
+  error: string | null
+}
+
+/** Статус локальной модели Sortformer (кэш `~/.cache/nemo-speech`). */
+export type NemoSpeechModelStatus = {
+  model: string
+  repo: string
+  present: boolean
+  path: string | null
+  size: number
+  files: string[]
+  source: string
+  download: NemoSpeechDownloadState
+  binary: { configured: string; available: boolean }
+}
+
+/** Событие SSE загрузки модели nemo-speech (``.../model/events``). */
+export type NemoSpeechModelEvent = NemoSpeechDownloadState & {
+  /** Монотонный номер события (SSE `id`) — защита от повторов истории. */
+  seq?: number
+}
+
 export type ModelKind = 'whisper-cpp' | 'llm' | 'pyannote' | 'gigaam' | 'sherpa'
 export type ModelDownloadStatus = 'idle' | 'downloading' | 'done' | 'error' | 'cancelled'
 

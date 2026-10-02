@@ -7,12 +7,17 @@ import {
   DIARIZATION_ENGINES,
   errorMessage,
   EXPORT_FORMATS,
+  formatBytes,
   HF_TOKEN_URL,
   LLM_PROVIDERS,
   NEMO_SPEECH_DEVICES,
   PYANNOTE_MODEL_URL,
   type HfCheckResult,
   type LlmCheckResult,
+  type NemoSpeechCandidate,
+  type NemoSpeechDetectResponse,
+  type NemoSpeechModelEvent,
+  type NemoSpeechModelStatus,
   type WebSettings,
 } from '../api'
 
@@ -120,6 +125,19 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
   const [llmApiKeyTouched, setLlmApiKeyTouched] = useState(false)
   const [llmCheck, setLlmCheck] = useState<LlmCheckResult | null>(null)
   const [llmChecking, setLlmChecking] = useState(false)
+  const [nemoDetect, setNemoDetect] = useState<NemoSpeechDetectResponse | null>(null)
+  const [nemoDetecting, setNemoDetecting] = useState(false)
+  const [nemoModel, setNemoModel] = useState<NemoSpeechModelStatus | null>(null)
+  const [nemoDownload, setNemoDownload] = useState<NemoSpeechModelEvent | null>(null)
+  const [nemoBusy, setNemoBusy] = useState(false)
+
+  const refreshNemoModel = useCallback(async () => {
+    try {
+      setNemoModel(await api<NemoSpeechModelStatus>('/api/diarization/nemo-speech/model'))
+    } catch {
+      // Статус модели не критичен для остальных настроек — молча пропускаем.
+    }
+  }, [])
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -144,6 +162,28 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
   useEffect(() => {
     if (open) void refresh()
   }, [open, refresh])
+
+  // Статус nemo-speech обновляем при открытии и подписываемся на SSE загрузки.
+  // Соединение создаётся/закрывается вместе с модалкой; при завершении
+  // (done/error) перечитываем статус модели.
+  useEffect(() => {
+    if (!open) return
+    setNemoDetect(null)
+    setNemoDownload(null)
+    void refreshNemoModel()
+    const source = new EventSource('/api/diarization/nemo-speech/model/events')
+    source.onmessage = (message) => {
+      const event = JSON.parse(message.data) as NemoSpeechModelEvent
+      setNemoDownload(event)
+      if (event.status === 'done' || event.status === 'error') {
+        void refreshNemoModel()
+      }
+    }
+    source.onerror = () => {
+      // Соединение переподключится само; ошибку не показываем.
+    }
+    return () => source.close()
+  }, [open, refreshNemoModel])
 
   useEffect(() => {
     if (!open) return
@@ -269,6 +309,8 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
       setLlmCheck(null)
       setStatus('Настройки сохранены')
       onSaved?.(saved)
+      // Путь к бинарнику мог измениться — обновляем доступность nemo-speech.
+      void refreshNemoModel()
     } catch (cause) {
       setError(errorMessage(cause))
     } finally {
@@ -317,6 +359,43 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
     }
   }
 
+  const findNemoSpeech = async () => {
+    setNemoDetecting(true)
+    setError(null)
+    try {
+      const result = await api<NemoSpeechDetectResponse>(
+        '/api/diarization/nemo-speech/detect',
+      )
+      setNemoDetect(result)
+      const best = result.candidates[0]
+      if (best) applyNemoCandidate(best)
+    } catch (cause) {
+      setError(errorMessage(cause))
+    } finally {
+      setNemoDetecting(false)
+    }
+  }
+
+  const applyNemoCandidate = (candidate: NemoSpeechCandidate) => {
+    update({
+      nemo_speech_binary: candidate.binary,
+      ...(candidate.lib_path ? { nemo_speech_lib_path: candidate.lib_path } : {}),
+    })
+  }
+
+  const downloadNemoModel = async () => {
+    setNemoBusy(true)
+    setError(null)
+    try {
+      await api('/api/diarization/nemo-speech/model/download', { method: 'POST' })
+      await refreshNemoModel()
+    } catch (cause) {
+      setError(errorMessage(cause))
+    } finally {
+      setNemoBusy(false)
+    }
+  }
+
   const hfResultStyle = (status: HfCheckResult['status']): string => {
     if (status === 'ok') {
       return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300'
@@ -326,6 +405,9 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
     }
     return 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
   }
+
+  const nemoAvailable = nemoModel?.binary.available ?? false
+  const nemoDownloadState = nemoDownload ?? nemoModel?.download ?? null
 
   return (
     <div
@@ -989,13 +1071,76 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
                     <span className="text-slate-600 dark:text-slate-300">
                       Бинарник nemo-speech (NEMO_SPEECH_BINARY)
                     </span>
-                    <input
-                      value={settings.nemo_speech_binary}
-                      onChange={(event) => update({ nemo_speech_binary: event.target.value })}
-                      placeholder="nemo-speech"
-                      className={INPUT_CLASS}
-                    />
+                    <div className="mt-1 flex gap-2">
+                      <input
+                        value={settings.nemo_speech_binary}
+                        onChange={(event) => update({ nemo_speech_binary: event.target.value })}
+                        placeholder="nemo-speech"
+                        className={`${INPUT_CLASS} mt-0`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void findNemoSpeech()}
+                        disabled={nemoDetecting}
+                        className="shrink-0 rounded-md border border-slate-300 px-3 py-1 text-xs hover:bg-slate-100 disabled:opacity-40 dark:border-slate-600 dark:hover:bg-slate-800"
+                      >
+                        {nemoDetecting ? 'Поиск…' : 'Найти'}
+                      </button>
+                    </div>
+                    <span className="mt-0.5 block text-xs text-slate-400 dark:text-slate-500">
+                      Автопоиск в PATH, ~/.local/bin, /usr/local/bin и рядом с проектом.
+                    </span>
                   </label>
+                  {nemoDetect && (
+                    <div className="space-y-1 rounded-md bg-slate-50 p-2 text-xs dark:bg-slate-800/60">
+                      {nemoDetect.found ? (
+                        <>
+                          <p className="text-slate-500 dark:text-slate-400">
+                            Найдено вариантов: {nemoDetect.candidates.length}. Выберите путь:
+                          </p>
+                          <ul className="space-y-1">
+                            {nemoDetect.candidates.map((candidate) => (
+                              <li
+                                key={candidate.binary}
+                                className="flex items-start justify-between gap-2"
+                              >
+                                <span className="min-w-0 break-all">
+                                  <code>{candidate.binary}</code>
+                                  {candidate.version && (
+                                    <span className="text-slate-400"> · v{candidate.version}</span>
+                                  )}
+                                  {candidate.lib_path && (
+                                    <span className="block text-slate-400">
+                                      lib: {candidate.lib_path}
+                                    </span>
+                                  )}
+                                  {candidate.devices.length > 0 && (
+                                    <span className="block text-slate-400">
+                                      {candidate.devices[0]}
+                                    </span>
+                                  )}
+                                  <span className="block text-slate-400">
+                                    источник: {candidate.source}
+                                  </span>
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => applyNemoCandidate(candidate)}
+                                  className="shrink-0 rounded-md border border-slate-300 px-2 py-0.5 hover:bg-slate-100 dark:border-slate-600 dark:hover:bg-slate-800"
+                                >
+                                  Выбрать
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        </>
+                      ) : (
+                        <p className="text-amber-700 dark:text-amber-400">
+                          Бинарник не найден. Укажите путь вручную или соберите NeMo-Speech.cpp.
+                        </p>
+                      )}
+                    </div>
+                  )}
                   <label className="block text-sm">
                     <span className="text-slate-600 dark:text-slate-300">
                       Каталог библиотек lib/ (NEMO_SPEECH_LIB_PATH)
@@ -1044,6 +1189,80 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
                         ))}
                       </select>
                     </label>
+                  </div>
+                  <div className="space-y-2 rounded-md border border-slate-200 p-2 dark:border-slate-800">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void downloadNemoModel()}
+                        disabled={
+                          nemoBusy || nemoDownloadState?.status === 'downloading' || !nemoAvailable
+                        }
+                        className="rounded-md border border-slate-300 px-3 py-1 text-xs hover:bg-slate-100 disabled:opacity-40 dark:border-slate-600 dark:hover:bg-slate-800"
+                      >
+                        {nemoDownloadState?.status === 'downloading'
+                          ? 'Скачивание…'
+                          : 'Скачать модель Sortformer'}
+                      </button>
+                      {nemoModel && (
+                        <span className="text-xs text-slate-500 dark:text-slate-400">
+                          {nemoModel.present
+                            ? `В кэше${nemoModel.size ? `: ${formatBytes(nemoModel.size)}` : ''}`
+                            : 'Модель не найдена в кэше'}
+                        </span>
+                      )}
+                    </div>
+                    {!nemoAvailable && (
+                      <p className="text-xs text-amber-700 dark:text-amber-400">
+                        Сначала укажите или найдите nemo-speech (кнопка «Найти» выше) и сохраните
+                        настройки — затем можно скачать модель.
+                      </p>
+                    )}
+                    {nemoDownloadState && nemoDownloadState.status !== 'idle' && (
+                      <div>
+                        {nemoDownloadState.status === 'downloading' && (
+                          <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                            {nemoDownloadState.fraction != null ? (
+                              <div
+                                className="h-full rounded-full bg-blue-500 transition-all"
+                                style={{
+                                  width: `${Math.round(nemoDownloadState.fraction * 100)}%`,
+                                }}
+                              />
+                            ) : (
+                              <div className="h-full w-1/3 animate-pulse rounded-full bg-blue-400" />
+                            )}
+                          </div>
+                        )}
+                        <p
+                          role="status"
+                          className={`mt-0.5 text-xs ${
+                            nemoDownloadState.status === 'error'
+                              ? 'text-red-600 dark:text-red-400'
+                              : nemoDownloadState.status === 'done'
+                                ? 'text-emerald-700 dark:text-emerald-300'
+                                : 'text-slate-500 dark:text-slate-400'
+                          }`}
+                        >
+                          {nemoDownloadState.error ?? nemoDownloadState.message}
+                          {nemoDownloadState.status === 'downloading' &&
+                            nemoDownloadState.bytes_done > 0 && (
+                              <span>
+                                {' '}
+                                · {formatBytes(nemoDownloadState.bytes_done)}
+                                {nemoDownloadState.total > 0
+                                  ? ` / ${formatBytes(nemoDownloadState.total)}`
+                                  : ''}
+                              </span>
+                            )}
+                        </p>
+                        {nemoDownloadState.status === 'done' && nemoDownloadState.path && (
+                          <p className="mt-0.5 break-all text-[11px] text-slate-400 dark:text-slate-500">
+                            {nemoDownloadState.path}
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               </fieldset>

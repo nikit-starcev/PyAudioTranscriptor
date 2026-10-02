@@ -31,6 +31,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_NEMO_SPEECH_MODEL,
     NEMO_SPEECH_FORBIDDEN_LIBS,
 )
+from audio_transcriber.diarization import nemo_speech_assets
 from audio_transcriber.domain.enums import AsrBackend
 from audio_transcriber.utils.config_env import load_config_env
 from audio_transcriber.utils.env import effective_library_path
@@ -415,6 +416,11 @@ def _nemo_speech_doctor(
     return gpu_devices, has_vulkan
 
 
+def _nemo_speech_model_status(model: str) -> nemo_speech_assets.NemoSpeechModelStatus:
+    """Локальное состояние модели Sortformer (кэш nemo-speech или явный .gguf)."""
+    return nemo_speech_assets.model_status(model)
+
+
 def _check_nemo_speech(env: Mapping[str, str]) -> list[DoctorCheck]:
     """Проверяет бинарник и устройства NeMo-Speech.cpp (#62).
 
@@ -486,13 +492,25 @@ def _check_nemo_speech(env: Mapping[str, str]) -> list[DoctorCheck]:
             )
         )
     else:
+        cached = _nemo_speech_model_status(model)
+        detail = (
+            f"{model} (в кэше: {cached.path})"
+            if cached.present and cached.path
+            else f"{model} — нет в кэше, будет скачана при первом запуске"
+        )
         checks.append(
             DoctorCheck(
                 key="model:nemo-speech",
                 label="Модель nemo-speech",
-                ok=True,
+                ok=cached.present,
                 critical=False,
-                detail=f"{model} (будет загружена при первом запуске)",
+                detail=detail,
+                hint=(
+                    ""
+                    if cached.present
+                    else "Модель можно скачать в веб-интерфейсе: "
+                    "Настройки → Диаризация → «Скачать модель Sortformer»."
+                ),
             )
         )
 
