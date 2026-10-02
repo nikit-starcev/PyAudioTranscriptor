@@ -917,14 +917,24 @@ def test_event_bus_replays_history_to_late_subscriber() -> None:
 
 
 def test_cli_web_help_lists_command() -> None:
+    import re
+
     from typer.testing import CliRunner
 
     from audio_transcriber.cli.app import app as cli_app
 
-    result = CliRunner().invoke(cli_app, ["web", "--help"])
+    # Детерминированный вывод: в CI терминал узкий, и rich-панель help
+    # переносит длинные строки (``--port`` может не попасть в stdout как есть).
+    # Задаём широкий COLUMNS и без цвета, чтобы проверять «сырой» текст опций.
+    result = CliRunner().invoke(
+        cli_app,
+        ["web", "--help"],
+        env={"COLUMNS": "200", "LINES": "50", "NO_COLOR": "1", "TERM": "dumb"},
+    )
 
     assert result.exit_code == 0
-    assert "--port" in result.stdout
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+    assert "--port" in plain
 
 
 def test_spa_index_served(client: TestClient) -> None:
