@@ -34,8 +34,12 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from audio_transcriber.web.storage.jobs_db import STATUS_DONE, STATUS_RUNNING, Job, JobsDB
+
+if TYPE_CHECKING:
+    from audio_transcriber.config.settings import AppConfig
 
 #: Стадии конвейера в порядке выполнения (совпадает с ``progress.py``).
 STAGES: tuple[str, ...] = (
@@ -48,6 +52,39 @@ STAGES: tuple[str, ...] = (
     "llm",
     "export",
 )
+
+#: Флаг :class:`AppConfig`, включающий стадию; ``None`` — стадия безусловная.
+#: Порядок и состав повторяют условия :func:`audio_transcriber.pipeline.run_pipeline`.
+_STAGE_FLAGS: dict[str, str | None] = {
+    "denoise": "denoise",
+    "asr": None,
+    "diarization": "diarization_enabled",
+    "merge": None,
+    "clean": "clean_artifacts",
+    "correction": "enable_correction",
+    "llm": "llm_enabled",
+    "export": None,
+}
+
+
+def planned_stages(config: AppConfig) -> list[str]:
+    """Планируемые стадии конвейера в порядке выполнения для конфигурации задачи.
+
+    Состав повторяет условия :func:`audio_transcriber.pipeline.run_pipeline`:
+    ``denoise`` включается флагом ``denoise``, ``diarization`` —
+    ``diarization_enabled``, ``clean`` — ``clean_artifacts``, ``correction`` —
+    ``enable_correction``, ``llm`` — ``llm_enabled``; ``asr``/``merge``/``export``
+    выполняются всегда. Порядок задаёт :data:`STAGES`.
+
+    Веб-интерфейс показывает этот план сразу и целиком (а не только пройденные
+    стадии), поэтому список отдаётся сервером вместе со статусом задачи.
+    """
+    stages: list[str] = []
+    for stage in STAGES:
+        flag = _STAGE_FLAGS.get(stage)
+        if flag is None or bool(getattr(config, flag, False)):
+            stages.append(stage)
+    return stages
 
 #: Минимальный вес стадии — защита от деления на ноль и нулевых весов.
 #: Свежая стадия с нулевым временем тоже получает его, чтобы не пропасть из

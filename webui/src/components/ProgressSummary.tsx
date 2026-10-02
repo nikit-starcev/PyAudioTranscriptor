@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { formatClock, type AsrDeviceInfo, type HealthStatus, type JobEvent } from '../api'
+import { STAGE_KEYS, stageLabel } from './StageTimes'
 
 const HEALTH_LABELS: Record<HealthStatus, string> = {
   ok: 'В норме',
@@ -99,6 +100,11 @@ export default function ProgressSummary({ progress, running, asrDevice }: Props)
       {progress.duration != null && (
         <span className="tabular-nums text-slate-600 dark:text-slate-300">
           длительность записи: {formatClock(progress.duration)}
+        </span>
+      )}
+      {running && progress.stage && STAGE_KEYS.includes(progress.stage) && (
+        <span className="text-slate-600 dark:text-slate-300">
+          идёт: <span className="font-medium">{stageLabel(progress.stage)}</span>
         </span>
       )}
       {asrDevice && progress.stage === 'asr' && (

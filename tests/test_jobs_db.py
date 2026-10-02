@@ -275,6 +275,25 @@ def test_stage_times_accepts_plain_dicts_and_clears(tmp_path: Path) -> None:
     assert cleared.stage_times == []
 
 
+def test_planned_stages_roundtrip_and_clear(tmp_path: Path) -> None:
+    """План стадий сохраняется списком строк и очищается пустым списком."""
+    db = _make_db(tmp_path)
+    db.create("job-1", tmp_path / "a.mp3")
+
+    updated = db.update("job-1", planned_stages=["denoise", "asr", "merge", "export"])
+
+    assert updated is not None
+    assert updated.planned_stages == ["denoise", "asr", "merge", "export"]
+    fetched = db.get("job-1")
+    assert fetched is not None
+    assert fetched.as_dict()["planned_stages"] == ["denoise", "asr", "merge", "export"]
+
+    db.update("job-1", planned_stages=[])
+    cleared = db.get("job-1")
+    assert cleared is not None
+    assert cleared.planned_stages == []
+
+
 def test_total_seconds_for_finished_and_queued_jobs(tmp_path: Path) -> None:
     db = _make_db(tmp_path)
     queued = db.create("queued", tmp_path / "a.mp3")

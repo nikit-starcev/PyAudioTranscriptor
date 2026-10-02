@@ -102,7 +102,12 @@ from audio_transcriber.web.doctor_api import (
     build_doctor_env,
     check_hf_access,
 )
-from audio_transcriber.web.estimates import StageEstimator, probe_duration
+from audio_transcriber.web.estimates import (
+    STAGES,
+    StageEstimator,
+    planned_stages,
+    probe_duration,
+)
 from audio_transcriber.web.events import JobEventBus
 from audio_transcriber.web.glossary_api import register_glossary_routes
 from audio_transcriber.web.models import (
@@ -157,6 +162,7 @@ from audio_transcriber.web.speakers import (
 from audio_transcriber.web.storage.jobs_db import (
     STATUS_CANCELLED,
     STATUS_DONE,
+    STATUS_ERROR,
     STATUS_QUEUED,
     STATUS_RUNNING,
     Job,
@@ -684,6 +690,17 @@ def register_api(
     def clear_speaker_undo(job_id: str) -> None:
         speaker_undo.pop(job_id, None)
 
+    def failed_stage_of(job: Job) -> str | None:
+        """Стадия, на которой произошёл сбой (``None`` вне статуса ``error``).
+
+        ``stage`` при ошибке не сбрасывается и указывает, где именно упал
+        прогон. Служебные значения (``queued``/``done``/``error``) стадией не
+        считаются — UI по этому полю помечает нужную стадию значком ошибки.
+        """
+        if job.status == STATUS_ERROR and job.stage in STAGES:
+            return job.stage
+        return None
+
     def job_payload(job: Job) -> dict[str, object]:
         """Представление задачи с признаком «обрабатывается этим воркером».
 
@@ -696,8 +713,25 @@ def register_api(
         payload = job.as_dict()
         active = runner.is_active(job.id)
         payload["active"] = active
+        payload["failed_stage"] = failed_stage_of(job)
         payload.update(estimator.snapshot(job, active=active))
         return payload
+
+    def plan_for(job_id: str, source: Path) -> list[str]:
+        """План стадий по текущей конфигурации задачи (пусто при ошибке сборки).
+
+        Служит для задач, которые ещё не запускались: воркер зафиксирует
+        фактический план при старте прогона. Ошибку сборки конфигурации гасим —
+        она не должна мешать созданию/постановке задачи; UI тогда покажет
+        запасной полный список.
+        """
+        try:
+            return planned_stages(config_builder(job_id, source))
+        except Exception:
+            logger.warning(
+                "Не удалось собрать план стадий задачи %s", job_id, exc_info=True
+            )
+            return []
 
     register_glossary_routes(router, db_path=_glossary_db_path)
 
@@ -1171,6 +1205,9 @@ def register_api(
             min_speakers=payload.min_speakers,
             max_speakers=payload.max_speakers,
         )
+        plan = plan_for(job.id, source)
+        if plan:
+            job = store.update(job.id, planned_stages=plan) or job
         return job_payload(job)
 
     @router.patch("/jobs/{job_id}")
@@ -1227,6 +1264,9 @@ def register_api(
             finished_at=None,
             stage_started_at=None,
             stage_times=[],
+            # Актуальный план по текущим настройкам: воркер подтвердит его при
+            # старте прогона (настройки могли измениться с прошлого запуска).
+            planned_stages=plan_for(job_id, source),
         )
         if not runner.submit(job_id, source):
             raise HTTPException(status_code=409, detail="Задача уже в очереди")
@@ -2042,6 +2082,8 @@ def register_api(
                 "status": job.status,
                 "duration": job.duration,
                 "stage_times": [timing.as_dict() for timing in job.stage_times],
+                "planned_stages": list(job.planned_stages),
+                "failed_stage": failed_stage_of(job),
             }
             event.update(estimator.snapshot(job, active=False))
 
@@ -2064,6 +2106,8 @@ def register_api(
                 "stage_elapsed": job.stage_elapsed if active else None,
                 "duration": job.duration,
                 "stage_times": [timing.as_dict() for timing in job.stage_times],
+                "planned_stages": list(job.planned_stages),
+                "failed_stage": failed_stage_of(job),
             }
             initial.update(estimator.snapshot(job, active=active))
             yield _sse(initial)

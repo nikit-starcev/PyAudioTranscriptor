@@ -26,7 +26,7 @@ from audio_transcriber.progress import ProgressEvent
 from audio_transcriber.utils.exceptions import ProcessingCancelled
 from audio_transcriber.utils.notifications import notify
 from audio_transcriber.utils.subprocess_registry import terminate_all_processes
-from audio_transcriber.web.estimates import StageEstimator, probe_duration
+from audio_transcriber.web.estimates import StageEstimator, planned_stages, probe_duration
 from audio_transcriber.web.events import JobEventBus
 from audio_transcriber.web.paths import WebPaths
 from audio_transcriber.web.processed import mark_processed
@@ -361,6 +361,10 @@ class JobRunner:
         )
 
         config: AppConfig | None = None
+        # Планируемые стадии конфигурации задачи (заполняется после сборки
+        # конфигурации). Пусто, если конфигурация не собралась — тогда UI берёт
+        # запасной полный список стадий.
+        plan: list[str] = []
         try:
             config = self._config_builder(job_id, request.source_path)
             # Число говорящих задаётся на уровне задачи и переопределяет дефолт
@@ -370,7 +374,11 @@ class JobRunner:
                 config.num_speakers = job.num_speakers
                 config.min_speakers = job.min_speakers
                 config.max_speakers = job.max_speakers
-            progress_callback = self._progress_callback(job_id, timer)
+            # План стадий зависит только от конфигурации задачи: фиксируем его
+            # в записи, чтобы UI показал сразу все стадии (в т.ч. ожидающие).
+            plan = planned_stages(config)
+            self._store.update(job_id, planned_stages=plan)
+            progress_callback = self._progress_callback(job_id, timer, plan)
             if self._pipeline_accepts_cancel:
                 result = self._pipeline_fn(
                     config, on_progress=progress_callback, cancel_event=cancel_event
@@ -381,7 +389,7 @@ class JobRunner:
             # Штатное прерывание по запросу пользователя — не ошибка.
             logger.info("Задача %s отменена: %s", job_id, exc)
             self._finish_cancelled(
-                job_id, timer, notify_enabled=_notifications_enabled(config)
+                job_id, timer, plan=plan, notify_enabled=_notifications_enabled(config)
             )
             return
         except Exception as exc:
@@ -391,7 +399,10 @@ class JobRunner:
             if cancel_event is not None and cancel_event.is_set():
                 logger.info("Задача %s отменена во время стадии", job_id)
                 self._finish_cancelled(
-                    job_id, timer, notify_enabled=_notifications_enabled(config)
+                    job_id,
+                    timer,
+                    plan=plan,
+                    notify_enabled=_notifications_enabled(config),
                 )
                 return
             logger.exception("Задача %s завершилась ошибкой", job_id)
@@ -409,6 +420,10 @@ class JobRunner:
                 "message": str(exc),
                 "status": STATUS_ERROR,
                 "stage_times": timer.snapshot(),
+                "planned_stages": plan,
+                # Стадия сбоя: ``job.stage`` не сбрасывается при ошибке, поэтому
+                # UI может пометить именно её значком ошибки.
+                "failed_stage": failed.stage if failed is not None else None,
             }
             self._merge_estimate(failed_payload, failed, active=False)
             self._bus.publish(job_id, failed_payload)
@@ -427,10 +442,15 @@ class JobRunner:
         # Стадия ``export`` закрывается здесь: ``done`` от конвейера воркер
         # намеренно игнорирует, чтобы не засчитывать запись результата.
         timer.close()
-        self._finish_success(job_id, config, result, timer)
+        self._finish_success(job_id, config, result, timer, plan)
 
     def _finish_cancelled(
-        self, job_id: str, timer: StageTimer, *, notify_enabled: bool
+        self,
+        job_id: str,
+        timer: StageTimer,
+        *,
+        plan: list[str],
+        notify_enabled: bool,
     ) -> None:
         """Переводит задачу в терминальный статус ``cancelled`` и шлёт событие.
 
@@ -455,6 +475,7 @@ class JobRunner:
             "message": CANCELLED_MESSAGE,
             "status": STATUS_CANCELLED,
             "stage_times": timer.snapshot(),
+            "planned_stages": plan,
         }
         self._merge_estimate(payload, cancelled, active=False)
         self._bus.publish(job_id, payload)
@@ -491,7 +512,7 @@ class JobRunner:
         ).start()
 
     def _progress_callback(
-        self, job_id: str, timer: StageTimer
+        self, job_id: str, timer: StageTimer, plan: list[str]
     ) -> Callable[[ProgressEvent], None]:
         current_stage: str | None = None
 
@@ -522,6 +543,7 @@ class JobRunner:
                 "elapsed": round(timer.elapsed(), 3),
                 "stage_elapsed": round(timer.current_elapsed(), 3),
                 "stage_times": timer.snapshot(),
+                "planned_stages": plan,
             }
             self._merge_estimate(payload, updated, active=True)
             self._bus.publish(job_id, payload)
@@ -548,6 +570,7 @@ class JobRunner:
         config: AppConfig,
         result: TranscriptionResult,
         timer: StageTimer,
+        plan: list[str],
     ) -> None:
         samples = self._collect_samples(config, result)
         payload = serialize_result(result, samples=samples)
@@ -577,6 +600,8 @@ class JobRunner:
                 "message": "Не удалось сохранить результат",
                 "status": STATUS_ERROR,
                 "stage_times": timer.snapshot(),
+                "planned_stages": plan,
+                "failed_stage": failed.stage if failed is not None else None,
             }
             self._merge_estimate(failed_payload, failed, active=False)
             self._bus.publish(job_id, failed_payload)
@@ -611,6 +636,7 @@ class JobRunner:
             "message": "Готово",
             "status": STATUS_DONE,
             "stage_times": timer.snapshot(),
+            "planned_stages": plan,
         }
         self._merge_estimate(done_payload, finished, active=False)
         self._bus.publish(job_id, done_payload)

@@ -39,7 +39,7 @@ import ReadinessBanner from './components/ReadinessBanner'
 import SettingsModal from './components/SettingsModal'
 import SetupWizard from './components/SetupWizard'
 import SpeakersPanel from './components/SpeakersPanel'
-import StageTimes from './components/StageTimes'
+import StageTimes, { STAGE_KEYS } from './components/StageTimes'
 import ThemeToggle from './components/ThemeToggle'
 import TranscriptTable from './components/TranscriptTable'
 import VoicesModal from './components/VoicesModal'
@@ -494,6 +494,8 @@ function App() {
               status: current.status,
               active: current.active,
               stage_times: current.stage_times,
+              planned_stages: current.planned_stages,
+              failed_stage: current.failed_stage,
               progress_percent: current.progress_percent,
               eta_seconds: current.eta_seconds,
               eta_by_stage: current.eta_by_stage,
@@ -619,6 +621,9 @@ function App() {
           status: details.status,
           active: details.active,
           duration: details.duration,
+          stage_times: details.stage_times,
+          planned_stages: details.planned_stages,
+          failed_stage: details.failed_stage,
         })
         setStageTimes(details.stage_times ?? [])
         setFinalTotalSeconds(details.total_seconds)
@@ -945,11 +950,6 @@ function App() {
     }
   }, [runActionTask])
 
-  const stageIndex = useMemo(() => {
-    if (!progress) return -1
-    return STAGES.findIndex((stage) => stage.key === progress.stage)
-  }, [progress])
-
   const filteredEntries = useMemo(() => {
     if (!result) return []
     const needle = query.trim().toLowerCase()
@@ -958,6 +958,32 @@ function App() {
   }, [result, query])
 
   const activeJob = jobs.find((job) => job.id === activeJobId) ?? null
+  // Планируемые стадии: приоритет — сервер (SSE → детали → список задач), иначе
+  // запасной полный набор (старый бэкенд ещё не отдаёт план стадий).
+  const plannedStages = useMemo(() => {
+    const server = progress?.planned_stages?.length
+      ? progress.planned_stages
+      : activeJob?.planned_stages?.length
+        ? activeJob.planned_stages
+        : null
+    return server ?? STAGES.map((stage) => stage.key)
+  }, [progress, activeJob])
+  // Стадия сбоя: явное поле с сервера, иначе — ``stage`` ошибочной задачи
+  // (воркер не сбрасывает её при ошибке). Служебные значения отсеиваются.
+  const failedStage = useMemo(() => {
+    const status = progress?.status ?? activeJob?.status
+    if (status !== 'error') return null
+    const candidates = [
+      progress?.failed_stage,
+      activeJob?.failed_stage,
+      activeJob?.stage,
+      progress?.stage,
+    ]
+    for (const candidate of candidates) {
+      if (candidate && STAGE_KEYS.includes(candidate)) return candidate
+    }
+    return null
+  }, [progress, activeJob])
   // Идёт ли прогон прямо сейчас: running и задачу ведёт воркер (``active``).
   const progressRunning =
     progress != null && !isTerminal(progress.status) && progress.active !== false
@@ -1460,43 +1486,16 @@ function App() {
               running={progressRunning}
               asrDevice={asrDevice}
             />
-            <ol className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
-              {STAGES.map((stage, index) => {
-                const state =
-                  stageIndex > index
-                    ? 'done'
-                    : stageIndex === index
-                      ? 'current'
-                      : 'pending'
-                return (
-                  <li key={stage.key} className="flex items-center gap-2">
-                    <span
-                      className={
-                        state === 'done'
-                          ? 'text-emerald-600 dark:text-emerald-400'
-                          : state === 'current'
-                            ? 'text-blue-600 dark:text-blue-400'
-                            : 'text-slate-300 dark:text-slate-600'
-                      }
-                    >
-                      {state === 'done' ? '✓' : state === 'current' ? '●' : '·'}
-                    </span>
-                    <span
-                      className={state === 'pending' ? 'text-slate-400 dark:text-slate-500' : ''}
-                    >
-                      {stage.label}
-                    </span>
-                  </li>
-                )
-              })}
-            </ol>
             <StageTimes
               times={stageTimes}
+              plannedStages={plannedStages}
               running={progressRunning}
+              status={progress?.status ?? activeJob?.status ?? 'queued'}
               totalStartedAt={totalStartedAt}
               finalTotalSeconds={finalTotalSeconds}
               currentStage={liveStage}
               currentStartedAt={liveStageStartedAt}
+              failedStage={failedStage}
             />
           </section>
         )}

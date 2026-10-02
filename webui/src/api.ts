@@ -57,6 +57,10 @@ export type Job = {
   max_speakers: number | null
   stage_started_at: string | null
   stage_times: StageTime[]
+  /** Планируемые стадии конвейера в порядке выполнения (по конфигурации задачи). */
+  planned_stages: string[]
+  /** Стадия, на которой произошёл сбой (только при статусе ``error``). */
+  failed_stage: string | null
   /** Время последнего изменения задачи (ISO) — для оценки «здоровья». */
   updated_at: string | null
   /** Задача мягко удалена: скрыта из обычного списка, артефакты сохранены (#30). */
@@ -232,6 +236,10 @@ export type JobEvent = {
   elapsed?: number | null
   stage_elapsed?: number | null
   stage_times?: StageTime[]
+  /** Планируемые стадии конвейера в порядке выполнения. */
+  planned_stages?: string[]
+  /** Стадия, на которой произошёл сбой (при статусе ``error``). */
+  failed_stage?: string | null
   /** Длительность исходной записи в секундах (#43). */
   duration?: number | null
   /** Сводный процент прогона, ETA и «здоровье» (см. #15/#24). */

@@ -374,6 +374,60 @@ def test_run_job_error_records_stage_times(web_paths: WebPaths, config_builder) 
     assert details["total_seconds"] is not None
 
 
+def test_job_exposes_planned_stages_from_config(
+    web_paths: WebPaths, config_builder, fake_pipeline
+) -> None:
+    """План стадий берётся из конфигурации задачи и доступен до прогона."""
+    app = create_app(
+        paths=web_paths,
+        pipeline_fn=fake_pipeline,
+        config_builder=config_builder,
+        heartbeat=0.05,
+    )
+    expected = ["asr", "merge", "clean", "export"]
+
+    with TestClient(app) as client:
+        uploaded = _upload(client)
+        created = client.post("/api/jobs", json={"path": uploaded["name"]})
+        assert created.status_code == 201
+        job_id = created.json()["id"]
+        # План уже при создании (задача ещё queued) — по текущей конфигурации.
+        assert created.json()["planned_stages"] == expected
+
+        _, details = _run_job(client, uploaded["name"])
+        listing = client.get("/api/jobs").json()
+
+    assert details["planned_stages"] == expected
+    assert details["failed_stage"] is None
+    by_id = {job["id"]: job for job in listing}
+    assert by_id[job_id]["planned_stages"] == expected
+
+
+def test_job_error_exposes_failed_stage(
+    web_paths: WebPaths, config_builder
+) -> None:
+    """При сбое API отдаёт стадию сбоя отдельным полем (``failed_stage``)."""
+
+    def pipeline(config: AppConfig, *, on_progress=None) -> TranscriptionResult:
+        if on_progress is not None:
+            on_progress(ProgressEvent("asr", "Распознавание речи"))
+        raise RuntimeError("сбой распознавания")
+
+    app = create_app(
+        paths=web_paths,
+        pipeline_fn=pipeline,
+        config_builder=config_builder,
+        heartbeat=0.05,
+    )
+    with TestClient(app) as client:
+        uploaded = _upload(client)
+        _, details = _run_job(client, uploaded["name"])
+
+    assert details["status"] == "error"
+    assert details["stage"] == "asr"
+    assert details["failed_stage"] == "asr"
+
+
 def test_jobs_listing(client: TestClient) -> None:
     uploaded = _upload(client)
     client.post("/api/jobs", json={"path": uploaded["name"]})

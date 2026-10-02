@@ -17,11 +17,18 @@ export function stageLabel(stage: string): string {
   return STAGE_LABELS[stage] ?? stage
 }
 
+/** Ключи известных стадий в порядке выполнения (запасной список). */
+export const STAGE_KEYS: string[] = Object.keys(STAGE_LABELS)
+
 type Props = {
   // Завершённые стадии (с сервера), в порядке выполнения.
   times: StageTime[]
+  // Планируемые стадии в порядке выполнения (с сервера; пусто — запасной список).
+  plannedStages: string[]
   // Идёт ли обработка прямо сейчас.
   running: boolean
+  // Статус задачи (``running``/``done``/``error``/``cancelled``/``queued``).
+  status: string
   // Момент старта задачи (мс epoch) — для живого счётчика общего времени.
   totalStartedAt: number | null
   // Итоговое время обработки (когда задача завершена).
@@ -29,19 +36,27 @@ type Props = {
   // Текущая стадия и момент её старта (мс epoch) — для живого счётчика.
   currentStage: string | null
   currentStartedAt: number | null
+  // Стадия, на которой произошёл сбой (при статусе ``error``).
+  failedStage: string | null
 }
 
 /**
- * Блок «Стадии и время»: длительности этапов, пометка «из кэша» и итоговое
- * время обработки. Во время прогона ведёт локальный секундомер по таймеру.
+ * Блок «Стадии и время»: единственное место, где показан перечень стадий.
+ *
+ * Выводит сразу **весь** план (в порядке выполнения): пройденные — с галочкой и
+ * временем, активная — выделена с живым секундомером, ожидающие — приглушены,
+ * упавшая — со значком ошибки. План приходит с сервера (``planned_stages``).
  */
 export default function StageTimes({
   times,
+  plannedStages,
   running,
+  status,
   totalStartedAt,
   finalTotalSeconds,
   currentStage,
   currentStartedAt,
+  failedStage,
 }: Props) {
   const [now, setNow] = useState(() => Date.now())
 
@@ -58,12 +73,14 @@ export default function StageTimes({
       ? Math.max((now - totalStartedAt) / 1000, 0)
       : finalTotalSeconds
 
-  // Текущая стадия показывается отдельной строкой; из списка завершённых её
-  // исключаем на случай совпадения ключа. Служебные стадии (``queued``) не
-  // показываем — для них есть статус в блоке прогресса.
-  const showCurrent = currentStage != null && currentStage in STAGE_LABELS
-  const completed = currentStage ? times.filter((item) => item.stage !== currentStage) : times
-  const hasData = completed.length > 0 || showCurrent || totalSeconds != null
+  const byStage = new Map(times.map((item) => [item.stage, item]))
+  // Упавшую стадию всегда показываем, даже если её нет в плане (защита от
+  // рассинхрона: например, конфигурация изменилась после старта).
+  const stages =
+    failedStage && !plannedStages.includes(failedStage)
+      ? [...plannedStages, failedStage]
+      : plannedStages
+  const hasData = stages.length > 0 || totalSeconds != null
 
   return (
     <div className="mt-4 rounded-md border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-800/40">
@@ -83,26 +100,84 @@ export default function StageTimes({
         <p className="py-1 text-xs text-slate-400 dark:text-slate-500">Нет данных о времени</p>
       ) : (
         <ul className="space-y-1 text-sm">
-          {completed.map((item) => (
-            <li key={item.stage} className="flex items-center gap-2">
-              <span className="text-emerald-600 dark:text-emerald-400">✓</span>
-              <span className="flex-1 truncate">{stageLabel(item.stage)}</span>
-              {item.cached && <CachedBadge />}
-              <span className="tabular-nums text-slate-600 dark:text-slate-300">
-                {formatStageTime(item.seconds)}
-              </span>
-            </li>
-          ))}
-          {showCurrent && currentStage && (
-            <li className="flex items-center gap-2">
-              <span className="animate-pulse text-blue-600 dark:text-blue-400">●</span>
-              <span className="flex-1 truncate">{stageLabel(currentStage)}</span>
-              <span className="tabular-nums text-blue-600 dark:text-blue-400">
-                {running && liveSeconds != null ? `${formatStageTime(liveSeconds)}…` : '—'}
-              </span>
-            </li>
-          )}
+          {stages.map((stage) => {
+            const timing = byStage.get(stage)
+            const isFailed = failedStage === stage
+            const isActive = running && currentStage === stage
+            const isDone = !isFailed && !isActive && timing != null
+            const title = isFailed
+              ? `Сбой на стадии «${stageLabel(stage)}»`
+              : stageLabel(stage)
+            return (
+              <li
+                key={stage}
+                className={`flex items-center gap-2 rounded px-1 ${
+                  isActive
+                    ? 'bg-blue-50 dark:bg-blue-950/40'
+                    : isFailed
+                      ? 'bg-red-50 dark:bg-red-950/40'
+                      : ''
+                }`}
+              >
+                <span
+                  className={
+                    isFailed
+                      ? 'text-red-600 dark:text-red-400'
+                      : isDone
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : isActive
+                          ? 'animate-pulse text-blue-600 dark:text-blue-400'
+                          : 'text-slate-300 dark:text-slate-600'
+                  }
+                  title={title}
+                >
+                  {isFailed ? '⛔' : isDone ? '✓' : isActive ? '●' : '·'}
+                </span>
+                <span
+                  className={`flex-1 truncate ${
+                    isFailed
+                      ? 'font-medium text-red-700 dark:text-red-300'
+                      : isActive
+                        ? 'font-medium text-blue-700 dark:text-blue-300'
+                        : isDone
+                          ? ''
+                          : 'text-slate-400 dark:text-slate-500'
+                  }`}
+                >
+                  {stageLabel(stage)}
+                </span>
+                {timing?.cached && <CachedBadge />}
+                <span
+                  className={`tabular-nums ${
+                    isFailed
+                      ? 'text-red-600 dark:text-red-400'
+                      : isActive
+                        ? 'text-blue-600 dark:text-blue-400'
+                        : isDone
+                          ? 'text-slate-600 dark:text-slate-300'
+                          : 'text-slate-400 dark:text-slate-500'
+                  }`}
+                >
+                  {isFailed
+                    ? 'сбой'
+                    : isActive
+                      ? running && liveSeconds != null
+                        ? `${formatStageTime(liveSeconds)}…`
+                        : '—'
+                      : timing
+                        ? formatStageTime(timing.seconds)
+                        : '—'}
+                </span>
+              </li>
+            )
+          })}
         </ul>
+      )}
+
+      {status === 'error' && failedStage == null && (
+        <p className="mt-2 text-xs text-red-600 dark:text-red-400">
+          Задача завершилась ошибкой
+        </p>
       )}
     </div>
   )

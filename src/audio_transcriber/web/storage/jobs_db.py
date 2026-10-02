@@ -43,6 +43,7 @@ _UPDATABLE_FIELDS = frozenset(
         "max_speakers",
         "stage_started_at",
         "stage_times",
+        "planned_stages",
     }
 )
 
@@ -65,6 +66,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     max_speakers INTEGER,
     stage_started_at TEXT,
     stage_times TEXT,
+    planned_stages TEXT,
     updated_at TEXT,
     deleted_at TEXT
 )
@@ -126,6 +128,34 @@ def _parse_stage_times(raw: object) -> list[StageTiming]:
     return timings
 
 
+def _serialize_str_list(value: object) -> str | None:
+    """Приводит список строк к JSON-строке (для ``planned_stages``).
+
+    ``None``/мусор очищают колонку; строки сохраняются как есть.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, (list, tuple)):
+        return None
+    items = [item for item in value if isinstance(item, str)]
+    return json.dumps(items, ensure_ascii=False)
+
+
+def _parse_str_list(raw: object) -> list[str]:
+    """Читает список строк из колонки (терпимо к мусору)."""
+    if not isinstance(raw, str) or not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, str)]
+
+
 @dataclass(slots=True)
 class Job:
     """Запись задачи (строка таблицы ``jobs``)."""
@@ -152,6 +182,9 @@ class Job:
     stage_started_at: str | None = None
     #: Длительности завершённых стадий в порядке выполнения.
     stage_times: list[StageTiming] = field(default_factory=list)
+    #: Планируемые стадии конвейера в порядке выполнения (по конфигурации задачи).
+    #: Пусто у задач до первого прогона или созданных до появления поля.
+    planned_stages: list[str] = field(default_factory=list)
     #: Момент последнего изменения записи (ISO) — для оценки «здоровья» задачи.
     updated_at: str | None = None
     #: Момент мягкого удаления (ISO); ``None`` — задача не удалена (#30).
@@ -216,6 +249,7 @@ class Job:
             "max_speakers": self.max_speakers,
             "stage_started_at": self.stage_started_at,
             "stage_times": [timing.as_dict() for timing in self.stage_times],
+            "planned_stages": list(self.planned_stages),
             "updated_at": self.updated_at,
             "deleted": self.deleted,
             "deleted_at": self.deleted_at,
@@ -268,6 +302,8 @@ class JobsDB:
             connection.execute("ALTER TABLE jobs ADD COLUMN stage_started_at TEXT")
         if "stage_times" not in columns:
             connection.execute("ALTER TABLE jobs ADD COLUMN stage_times TEXT")
+        if "planned_stages" not in columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN planned_stages TEXT")
         if "updated_at" not in columns:
             connection.execute("ALTER TABLE jobs ADD COLUMN updated_at TEXT")
         if "deleted_at" not in columns:
@@ -330,7 +366,13 @@ class JobsDB:
     def update(self, job_id: str, **fields: object) -> Job | None:
         """Обновляет перечисленные поля задачи; неизвестные поля игнорируются."""
         allowed = {
-            key: _serialize_stage_times(value) if key == "stage_times" else value
+            key: (
+                _serialize_stage_times(value)
+                if key == "stage_times"
+                else _serialize_str_list(value)
+                if key == "planned_stages"
+                else value
+            )
             for key, value in fields.items()
             if key in _UPDATABLE_FIELDS
         }
@@ -395,6 +437,7 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         max_speakers=row["max_speakers"],
         stage_started_at=row["stage_started_at"],
         stage_times=_parse_stage_times(row["stage_times"]),
+        planned_stages=_parse_str_list(row["planned_stages"]),
         updated_at=row["updated_at"],
         deleted_at=row["deleted_at"],
     )

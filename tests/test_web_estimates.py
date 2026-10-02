@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +20,7 @@ from audio_transcriber.web.estimates import (
     classify_health,
     eta_by_stage,
     eta_seconds,
+    planned_stages,
     probe_duration,
     progress_percent,
 )
@@ -57,6 +59,53 @@ def _job(
 
 def _profile(weights: dict[str, float], samples: int = 1) -> StageProfile:
     return StageProfile(weights=weights, samples=samples, jobs=1)
+
+
+# --- план стадий по конфигурации задачи ----------------------------------
+
+
+def _config(**flags: bool) -> SimpleNamespace:
+    """Конфигурация с флагами стадий (значения по умолчанию — выключено)."""
+    defaults = {
+        "denoise": False,
+        "diarization_enabled": False,
+        "clean_artifacts": False,
+        "enable_correction": False,
+        "llm_enabled": False,
+    }
+    defaults.update(flags)
+    return SimpleNamespace(**defaults)
+
+
+def test_planned_stages_all_flags_in_pipeline_order() -> None:
+    """Все флаги включены — полный список ровно в порядке выполнения."""
+    config = _config(
+        denoise=True,
+        diarization_enabled=True,
+        clean_artifacts=True,
+        enable_correction=True,
+        llm_enabled=True,
+    )
+
+    assert planned_stages(config) == list(STAGES)
+
+
+def test_planned_stages_only_unconditional_when_flags_off() -> None:
+    """``asr``/``merge``/``export`` выполняются всегда, остальные — по флагам."""
+    assert planned_stages(_config()) == ["asr", "merge", "export"]
+
+
+def test_planned_stages_respects_partial_flags_and_order() -> None:
+    config = _config(denoise=True, diarization_enabled=True, clean_artifacts=True)
+
+    assert planned_stages(config) == [
+        "denoise",
+        "asr",
+        "diarization",
+        "merge",
+        "clean",
+        "export",
+    ]
 
 
 # --- #15: статистика по прошлым прогонам ---------------------------------
