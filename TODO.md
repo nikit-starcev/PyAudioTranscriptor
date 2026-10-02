@@ -260,6 +260,15 @@
 
 ## Желательно
 
+- **Диаризация через NeMo-Speech.cpp (Vulkan, ggml): Sortformer / Nemotron-3.** (#62)
+  Первый реальный Vulkan-путь для AMD без ROCm/CUDA: рантайм NeMo-Speech.cpp крутит Streaming
+  Sortformer v2/v2.1 и Nemotron-3-Diarization (8 говорящих) как GGUF; интеграция — `nemo-speech
+  diarize --format rttm` + склейка с whisper.cpp. Закрывает #47. Риски: Vulkan на gfx803 не
+  подтверждён (CPU-фолбэк), RU не заявлен, эмбеддингов для enrollment нет.
+- **Диаризация через sherpa-onnx (ONNX/CPU) + эмбеддинги/enrollment.** (#63)
+  Лёгкий ONNX-движок (pyannote-seg-3.0 + 3D-Speaker/WeSpeaker) без PyTorch, сохраняет enrollment;
+  перекрытия не лучше, GPU-ONNX на AMD нет. Альтернативный движок диаризации в настройках.
+
 - **Принудительное назначение говорящего прямо в расшифровке.** (#59)
   Из таблицы стенограммы назначать/менять говорящего у реплики/группы (существующего или нового),
   с учётом пересечений, без потери ручных правок; с отменой. Связано с #40/#41/#52.
