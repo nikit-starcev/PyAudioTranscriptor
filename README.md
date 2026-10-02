@@ -97,7 +97,10 @@
     дедупликацией — это устраняет потерю текста и «шаблонные» галлюцинации.
 - **Определение говорящих** (диаризация) через
   [pyannote.audio](https://github.com/pyannote/pyannote-audio); можно
-  использовать локальную копию модели и работать полностью офлайн.
+  использовать локальную копию модели и работать полностью офлайн. Как
+  альтернатива — быстрый движок **NeMo-Speech.cpp** (`nemo-speech`) на GPU
+  через Vulkan, без токена Hugging Face (см.
+  [«Движок диаризации NeMo-Speech.cpp»](#движок-диаризации-nemo-speechcpp-nemo-speech)).
 - **Перекрытия речи**: если говорили несколько человек одновременно, в реплике
   указываются **все** говорящие («Имя1 + Имя2»).
 - **Уверенность говорящего** (`?`): реплика помечается, когда привязка к
@@ -430,6 +433,11 @@ uv run audio-transcriber transcribe --help
 | `--whisper-cpp-binary` | — | Путь/имя бинарника `whisper-cli` | `whisper-cli` |
 | `--whisper-cpp-lib-path` | — | Каталог с библиотеками whisper.cpp (`LD_LIBRARY_PATH`) | — |
 | `--whisper-cpp-threads` | — | Число потоков whisper.cpp | значение бинарника |
+| `--diarization-engine` | — | Движок диаризации: `auto` / `pyannote` / `nemo-speech` | `auto` |
+| `--nemo-speech-binary` | — | Путь/имя бинарника `nemo-speech` (NeMo-Speech.cpp) | `nemo-speech` |
+| `--nemo-speech-lib-path` | — | Каталог `lib/` бандла nemo-speech (`LD_LIBRARY_PATH`) | — |
+| `--nemo-speech-model` | — | Модель диаризации: имя, HF-репозиторий или путь к `.gguf` | `nvidia/diar_streaming_sortformer_4spk-v2` |
+| `--nemo-speech-device` | — | Устройство nemo-speech: `auto` / `vulkan` / `cpu` | `auto` |
 | `--enrollment-min-similarity` | — | Порог косинусного сходства для присвоения имени по образцу голоса (`[-1; 1]`) | `0.6` |
 | `--enable-correction` | — | Автоисправление опечаток ASR; только неизвестные словоформы | выключено |
 | `--llm` | — | Включить LLM-постобработку (имена + термины) | выключено |
@@ -822,19 +830,71 @@ speaker-признаки. Параметры — в `config.env` (см. `config.
 модели (`--pyannote-local-model /путь/к/модели` или `PYANNOTE_LOCAL_MODEL` в
 `config.env`) — тогда модель грузится с диска, а токен и интернет не нужны.
 
+### Движок диаризации NeMo-Speech.cpp (nemo-speech)
+
+Кроме pyannote.audio диаризацию может выполнять [NeMo-Speech.cpp](https://github.com/nvidia/nemo-speech.cpp)
+(`nemo-speech`) — нативный C++-движок с моделью **Sortformer streaming**
+(4 спикера, CC-BY-4.0). Он не требует PyTorch и токена Hugging Face, а на
+GPU считается через **Vulkan** (быстро и на AMD без ROCm).
+
+Выбор движка задаётся `DIARIZATION_ENGINE` / `--diarization-engine`:
+
+- `auto` (по умолчанию) — `nemo-speech`, если его бинарник доступен (найден по
+  пути или в `PATH`), иначе `pyannote`;
+- `pyannote` — всегда pyannote.audio (существующее поведение);
+- `nemo-speech` — всегда NeMo-Speech.cpp.
+
+Параметры движка:
+
+```bash
+export DIARIZATION_ENGINE=nemo-speech
+export NEMO_SPEECH_BINARY=/opt/nemo-speech/bin/nemo-speech
+export NEMO_SPEECH_LIB_PATH=/opt/nemo-speech/lib
+export NEMO_SPEECH_MODEL=nvidia/diar_streaming_sortformer_4spk-v2
+export NEMO_SPEECH_DEVICE=vulkan
+# или через CLI:
+# --diarization-engine nemo-speech --nemo-speech-binary ... --nemo-speech-device vulkan
+```
+
+Модель скачивается при первом запуске (её можно загрузить заранее командой
+`nemo-speech pull sortformer`) либо указывается путь к `.gguf` в
+`NEMO_SPEECH_MODEL`. Проверка окружения: `nemo-speech doctor` (виден ли GPU),
+а также команда `audio-transcriber doctor` — она запускает `nemo-speech doctor`
+и предупреждает, если Vulkan-сборка не нашла GPU.
+
+**Важно: `libstdc++.so.6` и `libgcc_s.so.1` в каталоге `lib/`.** Если в
+`NEMO_SPEECH_LIB_PATH` лежат эти библиотеки (например, из бандла), они
+затеняют системные и ломают загрузку Vulkan-ICD на Radeon. Движок **не**
+добавляет такой каталог в `LD_LIBRARY_PATH` и предупреждает в логе; у самого
+бинарника есть `RUNPATH $ORIGIN/../lib`, поэтому запуск всё равно работает.
+Лучше убрать эти два файла из `lib/` (например, перенести в `lib.bundlebak/`).
+
+**Ограничения.** Sortformer — EEND-модель с фиксированной головой на **4
+спикера**: `--num-speakers`/`--max-speakers` больше 4 не поддерживаются
+(движок предупреждает и продолжает с потолком 4). Per-speaker эмбеддингов у
+EEND-модели нет, поэтому **enrollment по образцам голоса недоступен** — при
+заданных `--speaker-reference`/`VOICES_DIR` движок выдаёт предупреждение и не
+присваивает имена по образцам (используйте `--speaker-name ИНДЕКС=Имя` или
+движок `pyannote`). Если `nemo-speech` по какой-то причине не запустился,
+диаризация мягко деградирует: предупреждение в лог, реплики остаются без
+разметки говорящих, конвейер не падает.
+
 ### Выбор устройства (CPU/GPU)
 
 Утилита работает по гибридной схеме: распознавание — либо через
 `faster-whisper`/PyTorch (CUDA/CPU), либо через `whisper.cpp`/Vulkan (для
 AMD-карт без ROCm, а также любых GPU с драйвером Vulkan). Диаризация
-выполняется на CPU или CUDA, LLM — на Vulkan/CPU через `llama.cpp`.
+выполняется на CPU или CUDA (pyannote) либо на Vulkan/CPU (nemo-speech),
+LLM — на Vulkan/CPU через `llama.cpp`.
 
 - **`--asr-backend faster-whisper`** (по умолчанию): PyTorch ускоряет
   вычисления через CUDA, при её отсутствии автоматически используется CPU.
   Устройство задаётся флагом `--device auto|cuda|cpu`.
 - **`--asr-backend whisper-cpp`**: распознавание идёт в нативном `whisper-cli`
   через Vulkan, при этом `--device` управляет только диаризацией (в этой схеме
-  pyannote всегда считается на CPU — у него нет Vulkan-бэкенда).
+  pyannote всегда считается на CPU — у него нет Vulkan-бэкенда). Движок
+  nemo-speech в этой схеме также может использовать Vulkan по
+  `--nemo-speech-device`.
 
 ```bash
 uv run audio-transcriber transcribe records/call.mp3 --device cuda
@@ -964,14 +1024,16 @@ uv run audio-transcriber doctor
 
 Проверяются: версия Python, ключевые зависимости (`av`, `faster-whisper`,
 `pyannote.audio`, `torch`, `textual`, `pymorphy3`, `deepfilternet`), бинарники
-(`whisper-cli`, `llama-server`) и их библиотеки, модели (ggml/GGUF/локальная
-pyannote по путям из `config.env`), наличие GPU-Vulkan (через `vulkaninfo` —
-не все сборки `whisper-cli` умеют `--list-devices`), `config.env`, токен
+(`whisper-cli`, `llama-server`, `nemo-speech`) и их библиотеки, модели
+(ggml/GGUF/локальная pyannote по путям из `config.env`), наличие GPU-Vulkan
+(через `vulkaninfo` — не все сборки `whisper-cli` умеют `--list-devices`;
+для `nemo-speech` — через `nemo-speech doctor`), `config.env`, токен
 Hugging Face (значение **не** выводится), доступность на запись каталогов
-результатов и кэша. Код возврата — `0`, если всё критичное в порядке, иначе `1`
-(необязательные компоненты дают лишь ✗ без влияния на код возврата). Для
-отсутствующих компонентов отчёт показывает, что именно нужно, куда положить
-файлы и ссылку на страницу загрузки.
+результатов и кэша. Когда диаризация идёт через `nemo-speech`, проверки
+pyannote/torch и токена Hugging Face не считаются критичными. Код возврата —
+`0`, если всё критичное в порядке, иначе `1` (необязательные компоненты дают
+лишь ✗ без влияния на код возврата). Для отсутствующих компонентов отчёт
+показывает, что именно нужно, куда положить файлы и ссылку на страницу загрузки.
 
 ## Конфигурация `config.env`
 
@@ -996,6 +1058,11 @@ Hugging Face (значение **не** выводится), доступнос�
 | `NUM_SPEAKERS`, `SPEAKER_NAMES` | Число говорящих и имена `ИНДЕКС=Имя` |
 | `SPEAKER_REFERENCES` | Образцы голоса `Имя=путь.wav` через запятую (можно несколько на имя) |
 | `ENROLLMENT_MIN_SIMILARITY` | Порог косинусного сходства для имён по голосу (`[-1; 1]`, по умолчанию `0.6`) |
+| `DIARIZATION_ENGINE` | Движок диаризации: `auto` (по умолчанию), `pyannote` или `nemo-speech` |
+| `NEMO_SPEECH_BINARY` | Путь/имя бинарника `nemo-speech` (по умолчанию `nemo-speech`) |
+| `NEMO_SPEECH_LIB_PATH` | Каталог `lib/` бандла nemo-speech (не подмешивается при наличии libstdc++/libgcc_s) |
+| `NEMO_SPEECH_MODEL` | Модель nemo-speech: имя, HF-репозиторий или путь к `.gguf` |
+| `NEMO_SPEECH_DEVICE` | Устройство nemo-speech: `auto` / `vulkan` / `cpu` |
 | `VOICES_DIR` | Каталог-библиотека образцов голоса (`<Имя>.wav`); пусто — `./voices` при наличии |
 | `EXPORT_SPEAKER_SAMPLES` | Сохранять по образцу голоса на говорящего рядом с результатами (`true`/`false`) |
 | `REFERENCE_PREPARE` | Готовить эталоны голоса: VAD-обрезка тишины + RMS-нормализация (`true`/`false`, по умолчанию `true`, #29) |
@@ -1191,7 +1258,9 @@ src/audio_transcriber/
 │
 ├── diarization/    # Определение говорящих
 │   ├── base.py     #   протокол SpeakerDiarizer
+│   ├── factory.py  #   выбор движка: auto/pyannote/nemo-speech
 │   ├── pyannote_engine.py # pyannote.audio (в т.ч. локальная модель офлайн)
+│   ├── nemo_speech_engine.py # NeMo-Speech.cpp: subprocess+nemo-speech, парсинг RTTM
 │   ├── energy.py   #   энергетические помощники (тихие точки, границы речи)
 │   ├── samples.py  #   извлечение образцов голоса говорящих из результата
 │   └── voices.py   #   библиотека образцов голоса (каталог VOICES_DIR)
@@ -1299,6 +1368,8 @@ tests/
 ├── test_logging.py
 ├── test_pipeline.py
 ├── test_pyannote_engine.py
+├── test_nemo_speech_engine.py  # nemo-speech: RTTM, деградация, libstdc++
+├── test_diarization_factory.py # выбор движка диаризации (auto/nemo/pyannote)
 ├── test_cache_store.py     # хранилище кэша: ключи, запись/чтение, повреждения
 ├── test_cache_pipeline.py  # кэш в конвейере: попадания, инвалидация, возобновление
 ├── test_whisper_engine.py     # faster-whisper

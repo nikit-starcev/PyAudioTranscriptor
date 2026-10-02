@@ -969,3 +969,49 @@ def test_run_pipeline_cancel_during_asr_keeps_completed_cache(
     assert resumed.calls == 0
     assert result.entries
 
+
+
+# --- EEND-движок (nemo-speech): enrollment недоступен (#62) -----------------
+
+
+class NoEmbeddingDiarizer(FakeDiarizer):
+    """Заглушка EEND-движка: эмбеддингов говорящих нет → enrollment невозможен."""
+
+    supports_enrollment = False
+
+
+def test_run_pipeline_skips_enrollment_for_eend_engine(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    reference = _reference_file(tmp_path)
+    calls: list[dict[str, object]] = []
+
+    def fake_assign(**kwargs: object) -> dict[str, str]:
+        calls.append(kwargs)
+        return {}
+
+    monkeypatch.setattr("audio_transcriber.pipeline.assign_speaker_names", fake_assign)
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+        speaker_names={"SPEAKER_00": "Пётр"},
+        speaker_references={"Иван": (reference,)},
+        voices_dir=tmp_path / "no_voices",
+        diarization_engine="nemo-speech",
+    )
+
+    with caplog.at_level("WARNING"):
+        result = run_pipeline(
+            config,
+            device=Device.CPU,
+            recognizer=FakeRecognizer(),
+            diarizer=NoEmbeddingDiarizer(),
+            merger=OverlapSegmentMerger(),
+        )
+
+    # Enrollment не вызывался, но конвейер не упал и применил --speaker-name.
+    assert calls == []
+    assert result.entries[0].speaker is not None
+    assert result.entries[0].speaker.display_name == "Пётр"
+    assert any("Enrollment" in record.message for record in caplog.records)

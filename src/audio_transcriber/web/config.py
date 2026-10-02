@@ -15,12 +15,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from audio_transcriber.config.defaults import (
+    DEFAULT_DIARIZATION_ENGINE,
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_ENROLLMENT_MAX_SAMPLE_SECONDS,
     DEFAULT_ENROLLMENT_MIN_SAMPLE_SECONDS,
     DEFAULT_GIGAAM_MODEL,
     DEFAULT_GLOSSARY_DB,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
+    DEFAULT_NEMO_SPEECH_BINARY,
+    DEFAULT_NEMO_SPEECH_DEVICE,
+    DEFAULT_NEMO_SPEECH_MODEL,
     DEFAULT_REFERENCE_PREPARE,
     DEFAULT_REFERENCE_TARGET_DBFS,
 )
@@ -218,6 +222,15 @@ def build_job_config(
         export_speaker_samples=True,
         hf_token=defaults.get("HF_TOKEN") or None,
         pyannote_local_model=Path(pyannote_raw) if pyannote_raw else None,
+        diarization_engine=defaults.get("DIARIZATION_ENGINE", "").strip().casefold()
+        or DEFAULT_DIARIZATION_ENGINE,
+        nemo_speech_binary=defaults.get("NEMO_SPEECH_BINARY", "").strip()
+        or DEFAULT_NEMO_SPEECH_BINARY,
+        nemo_speech_lib_path=defaults.get("NEMO_SPEECH_LIB_PATH") or None,
+        nemo_speech_model=defaults.get("NEMO_SPEECH_MODEL", "").strip()
+        or DEFAULT_NEMO_SPEECH_MODEL,
+        nemo_speech_device=defaults.get("NEMO_SPEECH_DEVICE", "").strip().casefold()
+        or DEFAULT_NEMO_SPEECH_DEVICE,
         initial_prompt=defaults.get("INITIAL_PROMPT") or None,
         hotwords=defaults.get("HOTWORDS") or None,
         clean_artifacts=_as_bool(defaults.get("CLEAN_ARTIFACTS"), default=True),

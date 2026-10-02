@@ -21,6 +21,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_CONTEXT_SIZE as DEFAULT_LLM_CONTEXT_SIZE,
 )
 from audio_transcriber.config.defaults import (
+    DEFAULT_DIARIZATION_ENGINE,
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_ENROLLMENT_MAX_SAMPLE_SECONDS,
     DEFAULT_ENROLLMENT_MIN_SAMPLE_SECONDS,
@@ -34,10 +35,16 @@ from audio_transcriber.config.defaults import (
     DEFAULT_LLM_PROVIDER,
     DEFAULT_LLM_REQUEST_TIMEOUT,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
+    DEFAULT_NEMO_SPEECH_BINARY,
+    DEFAULT_NEMO_SPEECH_DEVICE,
+    DEFAULT_NEMO_SPEECH_MODEL,
     DEFAULT_REFERENCE_PREPARE,
     DEFAULT_REFERENCE_TARGET_DBFS,
     DEFAULT_VOICES_DIR,
+    NEMO_SPEECH_MAX_SPEAKERS,
+    VALID_DIARIZATION_ENGINES,
     VALID_LLM_PROVIDERS,
+    VALID_NEMO_SPEECH_DEVICES,
 )
 from audio_transcriber.correction.defaults import (
     DEFAULT_CORRECTION_MAX_CANDIDATES,
@@ -99,6 +106,17 @@ class AppConfig:
     # Размечать говорящих (диаризация). При False конвейер идёт без спикеров:
     # локальная модель и токен Hugging Face не нужны.
     diarization_enabled: bool = True
+    # Движок диаризации: ``auto`` (pyannote, если nemo-speech не настроен),
+    # ``pyannote`` или ``nemo-speech`` (NeMo-Speech.cpp, EEND Sortformer).
+    diarization_engine: str = DEFAULT_DIARIZATION_ENGINE
+    # --- NeMo-Speech.cpp (#62) ---
+    # Путь/имя бинарника ``nemo-speech``, каталог его разделяемых библиотек
+    # (``lib/``), модель (имя из каталога, HF-репозиторий или путь к ``.gguf``)
+    # и устройство (``auto``/``vulkan``/``cpu``).
+    nemo_speech_binary: str = DEFAULT_NEMO_SPEECH_BINARY
+    nemo_speech_lib_path: str | None = None
+    nemo_speech_model: str = DEFAULT_NEMO_SPEECH_MODEL
+    nemo_speech_device: str = DEFAULT_NEMO_SPEECH_DEVICE
     speaker_names: dict[str, str] = field(default_factory=dict)
     # Образцы голоса участников для enrollment-диаризации: имя -> клип(ы).
     # Если заданы и сопоставление уверенное, имя говорящего берётся по голосу
@@ -263,6 +281,7 @@ class AppConfig:
 
         self._validate_speaker_range()
         self._validate_diarization_hyperparameters()
+        self._validate_diarization_engine()
 
         if not isinstance(self.diarization_enabled, bool):
             raise ConfigurationError("DIARIZATION_ENABLED должно быть true или false")
@@ -462,6 +481,56 @@ class AppConfig:
                 raise ConfigurationError("DIARIZATION_CLUSTERING_FB должно быть числом")
             if fb <= 0.0:
                 raise ConfigurationError("DIARIZATION_CLUSTERING_FB должно быть положительным числом")
+
+    def _validate_diarization_engine(self) -> None:
+        """Проверяет движок диаризации и параметры NeMo-Speech.cpp (#62).
+
+        Движок обязан быть известным (``auto``/``pyannote``/``nemo-speech``),
+        устройство — ``auto``/``vulkan``/``cpu``. Лимит Sortformer в 4 спикера
+        не является ошибкой конфигурации: превышение лишь предупреждает, что
+        верхние границы числа говорящих не будут соблюдены движком.
+        """
+        engine = (self.diarization_engine or "").strip().casefold()
+        if engine not in VALID_DIARIZATION_ENGINES:
+            raise ConfigurationError(
+                f"Неизвестный движок диаризации: {self.diarization_engine!r} "
+                f"(допустимо: {', '.join(VALID_DIARIZATION_ENGINES)})"
+            )
+        self.diarization_engine = engine
+
+        device = (self.nemo_speech_device or "").strip().casefold()
+        if device not in VALID_NEMO_SPEECH_DEVICES:
+            raise ConfigurationError(
+                f"Неизвестное устройство NeMo-Speech.cpp: {self.nemo_speech_device!r} "
+                f"(допустимо: {', '.join(VALID_NEMO_SPEECH_DEVICES)})"
+            )
+        self.nemo_speech_device = device
+
+        if not isinstance(self.nemo_speech_binary, str) or not self.nemo_speech_binary.strip():
+            raise ConfigurationError("NEMO_SPEECH_BINARY должно быть непустой строкой")
+        self.nemo_speech_binary = self.nemo_speech_binary.strip()
+
+        if not isinstance(self.nemo_speech_model, str) or not self.nemo_speech_model.strip():
+            raise ConfigurationError("NEMO_SPEECH_MODEL должно быть непустой строкой")
+        self.nemo_speech_model = self.nemo_speech_model.strip()
+
+        if self.nemo_speech_lib_path is not None:
+            # Пустая строка — «не задано»: нормализуем в None.
+            self.nemo_speech_lib_path = self.nemo_speech_lib_path.strip() or None
+
+        requested = [
+            value
+            for value in (self.num_speakers, self.max_speakers)
+            if value is not None and value > NEMO_SPEECH_MAX_SPEAKERS
+        ]
+        if requested and self.diarization_engine in ("auto", "nemo-speech"):
+            logger.warning(
+                "Движок диаризации nemo-speech (Sortformer) поддерживает не более "
+                "%d спикеров, но запрошено %d — число говорящих будет ограничено "
+                "возможностями модели",
+                NEMO_SPEECH_MAX_SPEAKERS,
+                max(requested),
+            )
 
     def _validate_llm_provider(self) -> None:
         """Проверяет провайдера LLM и параметры внешнего API.

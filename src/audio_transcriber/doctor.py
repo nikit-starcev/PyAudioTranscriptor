@@ -24,8 +24,16 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from audio_transcriber.config.defaults import (
+    DEFAULT_DIARIZATION_ENGINE,
+    DEFAULT_NEMO_SPEECH_BINARY,
+    DEFAULT_NEMO_SPEECH_DEVICE,
+    DEFAULT_NEMO_SPEECH_MODEL,
+    NEMO_SPEECH_FORBIDDEN_LIBS,
+)
 from audio_transcriber.domain.enums import AsrBackend
 from audio_transcriber.utils.config_env import load_config_env
+from audio_transcriber.utils.env import effective_library_path
 
 __all__ = [
     "DoctorCheck",
@@ -263,17 +271,26 @@ def _check_python() -> DoctorCheck:
     )
 
 
+def _diarization_engine(env: Mapping[str, str]) -> str:
+    """Эффективный движок диаризации из настроек (без проверки бинарника)."""
+    raw = env.get("DIARIZATION_ENGINE", DEFAULT_DIARIZATION_ENGINE).strip().casefold()
+    return raw or DEFAULT_DIARIZATION_ENGINE
+
+
 def _dependencies(env: Mapping[str, str]) -> list[tuple[str, str, bool]]:
     """Список (имя модуля, подпись, критичность) для проверки зависимостей."""
     backend = env.get("ASR_BACKEND", DEFAULT_ASR_BACKEND.value).strip()
     diarization = _truthy(env.get("DIARIZATION_ENABLED"), default=True)
     correction = _truthy(env.get("ENABLE_CORRECTION"), default=False)
+    # При явном движке nemo-speech pyannote/torch не нужны (нет fallback);
+    # в режиме auto pyannote остаётся резервом, поэтому критичен.
+    pyannote_needed = diarization and _diarization_engine(env) != "nemo-speech"
     return [
         ("av", "av (декодирование аудио)", True),
         ("faster_whisper", "faster-whisper", backend == AsrBackend.FASTER_WHISPER.value),
         ("onnx_asr", "onnx-asr (GigaAM)", backend == AsrBackend.GIGAAM.value),
-        ("pyannote.audio", "pyannote.audio (диаризация)", diarization),
-        ("torch", "torch", diarization),
+        ("pyannote.audio", "pyannote.audio (диаризация)", pyannote_needed),
+        ("torch", "torch", pyannote_needed),
         ("textual", "textual (TUI)", False),
         ("pymorphy3", "pymorphy3 (автоисправление)", correction),
         ("df", "deepfilternet (денойз)", False),
@@ -364,6 +381,176 @@ def _check_binaries(env: Mapping[str, str]) -> list[DoctorCheck]:
     return checks
 
 
+def _nemo_speech_doctor(
+    binary: str, library_path: str | None
+) -> tuple[list[str], bool] | None:
+    """Запускает ``nemo-speech doctor`` и разбирает устройства.
+
+    Возвращает ``(gpu-устройства, есть ли Vulkan-бэкенд)`` либо ``None``, если
+    запустить не удалось. Проверка дешёвая: модель не загружается.
+    """
+    proc = _run_command([binary, "doctor"], library_path)
+    if proc is None or proc.returncode != 0:
+        return None
+    output = (proc.stdout or "") + (proc.stderr or "")
+    gpu_devices = [
+        line.strip()
+        for line in output.splitlines()
+        if line.strip().startswith("[") and "gpu" in line.casefold()
+    ]
+    has_vulkan = "backend_vulkan" in output.casefold()
+    return gpu_devices, has_vulkan
+
+
+def _check_nemo_speech(env: Mapping[str, str]) -> list[DoctorCheck]:
+    """Проверяет бинарник и устройства NeMo-Speech.cpp (#62).
+
+    Проверка выполняется, когда диаризация включена и движок не ``pyannote``.
+    При ``auto`` отсутствие бинарника не критично (используется pyannote);
+    при явном ``nemo-speech`` — критично.
+    """
+    if not _truthy(env.get("DIARIZATION_ENABLED"), default=True):
+        return []
+    engine = _diarization_engine(env)
+    if engine == "pyannote":
+        return []
+
+    explicit = engine == "nemo-speech"
+    binary = (
+        env.get("NEMO_SPEECH_BINARY", DEFAULT_NEMO_SPEECH_BINARY).strip()
+        or DEFAULT_NEMO_SPEECH_BINARY
+    )
+    available = _binary_available(binary)
+    if not available and not explicit:
+        # auto: nemo-speech не найден — будет выбран pyannote, не ошибка.
+        return [
+            DoctorCheck(
+                key="bin:nemo-speech",
+                label="Бинарник nemo-speech",
+                ok=True,
+                critical=False,
+                detail=f"не найден ({binary}) — авто-выбор использует pyannote",
+            )
+        ]
+
+    checks = [
+        DoctorCheck(
+            key="bin:nemo-speech",
+            label="Бинарник nemo-speech",
+            ok=available,
+            critical=explicit,
+            detail=binary or "не задан",
+            hint=(
+                ""
+                if available or not explicit
+                else "Задайте NEMO_SPEECH_BINARY/--nemo-speech-binary."
+            ),
+        )
+    ]
+    if not available:
+        return checks
+
+    # Модель: путь к .gguf проверяем как файл, имя/HF-репозиторий грузится по
+    # требованию — мягкая проверка.
+    model = (
+        env.get("NEMO_SPEECH_MODEL", DEFAULT_NEMO_SPEECH_MODEL).strip()
+        or DEFAULT_NEMO_SPEECH_MODEL
+    )
+    if Path(model).suffix.casefold() == ".gguf":
+        model_ok = _is_file(Path(model).expanduser())
+        checks.append(
+            DoctorCheck(
+                key="model:nemo-speech",
+                label="Модель nemo-speech",
+                ok=model_ok,
+                critical=explicit,
+                detail=model,
+                hint=(
+                    ""
+                    if model_ok
+                    else "Укажите путь к существующему .gguf либо HF-репозиторий."
+                ),
+            )
+        )
+    else:
+        checks.append(
+            DoctorCheck(
+                key="model:nemo-speech",
+                label="Модель nemo-speech",
+                ok=True,
+                critical=False,
+                detail=f"{model} (будет загружена при первом запуске)",
+            )
+        )
+
+    raw_lib = env.get("NEMO_SPEECH_LIB_PATH", "").strip() or None
+    safe_lib = (
+        effective_library_path(raw_lib, forbidden_libs=NEMO_SPEECH_FORBIDDEN_LIBS)
+        if raw_lib
+        else None
+    )
+    requested_device = (
+        env.get("NEMO_SPEECH_DEVICE", DEFAULT_NEMO_SPEECH_DEVICE).strip().casefold()
+        or DEFAULT_NEMO_SPEECH_DEVICE
+    )
+    result = _nemo_speech_doctor(binary, safe_lib)
+    if result is None:
+        checks.append(
+            DoctorCheck(
+                key="bin:nemo-speech-doctor",
+                label="nemo-speech: устройства",
+                ok=False,
+                critical=explicit,
+                detail="не удалось запустить 'nemo-speech doctor'",
+                hint=(
+                    "Проверьте, что бинарник исполняем, а библиотеки доступны "
+                    "(RUNPATH бинарника или NEMO_SPEECH_LIB_PATH)."
+                ),
+            )
+        )
+        return checks
+
+    gpu_devices, has_vulkan = result
+    if gpu_devices:
+        checks.append(
+            DoctorCheck(
+                key="bin:nemo-speech-doctor",
+                label="nemo-speech: устройства",
+                ok=True,
+                critical=False,
+                detail="GPU: " + "; ".join(gpu_devices[:2]),
+            )
+        )
+    elif has_vulkan or requested_device == "vulkan":
+        checks.append(
+            DoctorCheck(
+                key="bin:nemo-speech-doctor",
+                label="nemo-speech: устройства",
+                ok=False,
+                critical=False,
+                detail=(
+                    "Vulkan-сборка, но GPU не обнаружен — будет использован CPU"
+                ),
+                hint=(
+                    "Проверьте драйвер Vulkan (RADV) и отсутствие "
+                    "libstdc++.so.6/libgcc_s.so.1 в каталоге библиотек "
+                    "nemo-speech."
+                ),
+            )
+        )
+    else:
+        checks.append(
+            DoctorCheck(
+                key="bin:nemo-speech-doctor",
+                label="nemo-speech: устройства",
+                ok=True,
+                critical=False,
+                detail="CPU (GPU/Vulkan не обнаружен)",
+            )
+        )
+    return checks
+
+
 def _check_models(env: Mapping[str, str]) -> list[DoctorCheck]:
     checks: list[DoctorCheck] = []
     backend = env.get("ASR_BACKEND", DEFAULT_ASR_BACKEND.value).strip()
@@ -421,7 +608,7 @@ def _check_models(env: Mapping[str, str]) -> list[DoctorCheck]:
             )
         )
 
-    if diarization:
+    if diarization and _diarization_engine(env) != "nemo-speech":
         raw = env.get("PYANNOTE_LOCAL_MODEL", "").strip()
         if raw:
             path = Path(raw)
@@ -552,7 +739,8 @@ def _check_hf_token(env: Mapping[str, str]) -> DoctorCheck:
     token = (env.get("HF_TOKEN") or env.get("HUGGING_FACE_HUB_TOKEN") or "").strip()
     diarization = _truthy(env.get("DIARIZATION_ENABLED"), default=True)
     local_model = env.get("PYANNOTE_LOCAL_MODEL", "").strip()
-    needed = diarization and not local_model
+    engine = _diarization_engine(env)
+    needed = diarization and not local_model and engine != "nemo-speech"
     if not needed:
         return DoctorCheck(
             key="hf_token",
@@ -606,6 +794,7 @@ def run_doctor(
     checks: list[DoctorCheck] = [_check_python()]
     checks.extend(_check_dependencies(env))
     checks.extend(_check_binaries(env))
+    checks.extend(_check_nemo_speech(env))
     checks.extend(_check_models(env))
     checks.append(_check_vulkan(env))
     checks.append(_check_config_env(config_env_path))

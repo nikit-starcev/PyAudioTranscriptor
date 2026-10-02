@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from audio_transcriber.config.defaults import DEFAULT_GIGAAM_MODEL
+from audio_transcriber.config.defaults import DEFAULT_GIGAAM_MODEL, DEFAULT_NEMO_SPEECH_MODEL
 from audio_transcriber.domain.enums import AsrBackend
 from audio_transcriber.storage.glossary_builder import build_glossary
 from audio_transcriber.storage.glossary_db import GlossaryDB
@@ -460,3 +460,101 @@ def test_build_job_config_maps_gigaam(
     assert config.gigaam_model_path == model_dir
     assert config.gigaam_quantization == "int8"
     assert config.gigaam_vad is False
+
+
+# --- Движок диаризации / NeMo-Speech.cpp (#62) ------------------------------
+
+
+def test_diarization_engine_settings_roundtrip() -> None:
+    base = default_settings({})
+    assert base.diarization_engine == "auto"
+    assert base.nemo_speech_binary == "nemo-speech"
+    assert base.nemo_speech_lib_path == ""
+    assert base.nemo_speech_model == DEFAULT_NEMO_SPEECH_MODEL
+    assert base.nemo_speech_device == "auto"
+
+    merged = settings_from_mapping(
+        {
+            "diarization_engine": "nemo-speech",
+            "nemo_speech_binary": "/opt/nemo/bin/nemo-speech",
+            "nemo_speech_lib_path": "/opt/nemo/lib",
+            "nemo_speech_model": "sortformer",
+            "nemo_speech_device": "vulkan",
+        },
+        base=base,
+    )
+
+    assert merged.diarization_engine == "nemo-speech"
+    assert merged.nemo_speech_device == "vulkan"
+
+    env = merged.env_overrides()
+    assert env["DIARIZATION_ENGINE"] == "nemo-speech"
+    assert env["NEMO_SPEECH_BINARY"] == "/opt/nemo/bin/nemo-speech"
+    assert env["NEMO_SPEECH_LIB_PATH"] == "/opt/nemo/lib"
+    assert env["NEMO_SPEECH_MODEL"] == "sortformer"
+    assert env["NEMO_SPEECH_DEVICE"] == "vulkan"
+
+
+def test_diarization_engine_settings_from_env() -> None:
+    settings = default_settings(
+        {
+            "DIARIZATION_ENGINE": "nemo-speech",
+            "NEMO_SPEECH_BINARY": "/opt/nemo/bin/nemo-speech",
+            "NEMO_SPEECH_LIB_PATH": "/opt/nemo/lib",
+            "NEMO_SPEECH_MODEL": "sortformer",
+            "NEMO_SPEECH_DEVICE": "VULKAN",
+        }
+    )
+
+    assert settings.diarization_engine == "nemo-speech"
+    assert settings.nemo_speech_binary == "/opt/nemo/bin/nemo-speech"
+    assert settings.nemo_speech_lib_path == "/opt/nemo/lib"
+    assert settings.nemo_speech_model == "sortformer"
+    assert settings.nemo_speech_device == "vulkan"
+
+
+def test_validate_settings_rejects_unknown_diarization_engine() -> None:
+    from audio_transcriber.web.settings import SettingsError, validate_settings
+
+    settings = default_settings({})
+    settings.diarization_engine = "unknown"
+
+    with pytest.raises(SettingsError):
+        validate_settings(settings)
+
+
+def test_validate_settings_rejects_unknown_nemo_device() -> None:
+    from audio_transcriber.web.settings import SettingsError, validate_settings
+
+    settings = default_settings({})
+    settings.nemo_speech_device = "cuda"
+
+    with pytest.raises(SettingsError):
+        validate_settings(settings)
+
+
+def test_build_job_config_maps_diarization_engine(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("audio_transcriber.web.config.env_defaults", lambda: {})
+
+    lib_dir = tmp_path / "lib"
+    lib_dir.mkdir()
+    config = build_job_config(
+        audio_file,
+        output_dir=tmp_path / "out",
+        data_dir=tmp_path / "data",
+        overrides={
+            "DIARIZATION_ENGINE": "nemo-speech",
+            "NEMO_SPEECH_BINARY": "/opt/nemo/bin/nemo-speech",
+            "NEMO_SPEECH_LIB_PATH": str(lib_dir),
+            "NEMO_SPEECH_MODEL": "sortformer",
+            "NEMO_SPEECH_DEVICE": "vulkan",
+        },
+    )
+
+    assert config.diarization_engine == "nemo-speech"
+    assert config.nemo_speech_binary == "/opt/nemo/bin/nemo-speech"
+    assert config.nemo_speech_lib_path == str(lib_dir)
+    assert config.nemo_speech_model == "sortformer"
+    assert config.nemo_speech_device == "vulkan"

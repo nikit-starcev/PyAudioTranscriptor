@@ -381,3 +381,111 @@ def test_doctor_cli_does_not_print_token(
     result = runner.invoke(app, ["doctor"])
 
     assert secret not in result.stdout
+
+
+# --- Движок диаризации NeMo-Speech.cpp (#62) ---------------------------------
+
+
+def _patch_nemo(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    binary: bool,
+    doctor_result: tuple[list[str], bool] | None,
+) -> None:
+    monkeypatch.setattr(doctor, "_binary_available", lambda _binary: binary)
+    monkeypatch.setattr(doctor, "_nemo_speech_doctor", lambda _binary, _lib: doctor_result)
+
+
+def test_nemo_speech_binary_and_gpu_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+    _patch_nemo(
+        monkeypatch,
+        binary=True,
+        doctor_result=(["AMD Radeon RX 590 Series"], True),
+    )
+
+    env = _base_env(tmp_path, DIARIZATION_ENABLED="true", DIARIZATION_ENGINE="nemo-speech")
+    checks = doctor.run_doctor(None, env)
+
+    assert _find(checks, "bin:nemo-speech").ok
+    devices = _find(checks, "bin:nemo-speech-doctor")
+    assert devices.ok
+    assert "AMD Radeon" in devices.detail
+
+
+def test_nemo_speech_missing_binary_is_critical_when_selected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+    _patch_nemo(monkeypatch, binary=False, doctor_result=None)
+
+    env = _base_env(tmp_path, DIARIZATION_ENABLED="true", DIARIZATION_ENGINE="nemo-speech")
+    checks = doctor.run_doctor(None, env)
+
+    binary_check = _find(checks, "bin:nemo-speech")
+    assert not binary_check.ok
+    assert binary_check.critical
+
+
+def test_nemo_speech_missing_binary_not_critical_in_auto(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+    _patch_nemo(monkeypatch, binary=False, doctor_result=None)
+
+    env = _base_env(tmp_path, DIARIZATION_ENABLED="true", DIARIZATION_ENGINE="auto")
+    checks = doctor.run_doctor(None, env)
+
+    binary_check = _find(checks, "bin:nemo-speech")
+    assert binary_check.ok
+    assert "pyannote" in binary_check.detail
+
+
+def test_nemo_speech_vulkan_without_gpu_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+    _patch_nemo(monkeypatch, binary=True, doctor_result=([], True))
+
+    env = _base_env(
+        tmp_path,
+        DIARIZATION_ENABLED="true",
+        DIARIZATION_ENGINE="nemo-speech",
+        NEMO_SPEECH_DEVICE="vulkan",
+    )
+    checks = doctor.run_doctor(None, env)
+
+    devices = _find(checks, "bin:nemo-speech-doctor")
+    assert not devices.ok
+    assert not devices.critical
+    assert "CPU" in devices.detail
+
+
+def test_nemo_speech_skips_pyannote_dependency_and_token(
+    tmp_path: Path,
+) -> None:
+    env = _base_env(
+        tmp_path, DIARIZATION_ENABLED="true", DIARIZATION_ENGINE="nemo-speech"
+    )
+
+    deps = {label: critical for _module, label, critical in doctor._dependencies(env)}
+    assert deps["pyannote.audio (диаризация)"] is False
+    assert deps["torch"] is False
+    assert doctor._check_hf_token(env).ok
+
+
+def test_nemo_speech_absent_when_diarization_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+
+    checks = doctor.run_doctor(None, _base_env(tmp_path))
+
+    assert all(check.key != "bin:nemo-speech" for check in checks)

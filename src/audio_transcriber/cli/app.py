@@ -14,6 +14,7 @@ from audio_transcriber.cleaning.repetition_filter import (
     DEFAULT_REPEAT_SIMILARITY,
 )
 from audio_transcriber.config.defaults import (
+    DEFAULT_DIARIZATION_ENGINE,
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_ENROLLMENT_MIN_SIMILARITY,
     DEFAULT_GIGAAM_MODEL,
@@ -26,6 +27,11 @@ from audio_transcriber.config.defaults import (
     DEFAULT_LLM_PROVIDER,
     DEFAULT_LLM_REQUEST_TIMEOUT,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
+    DEFAULT_NEMO_SPEECH_BINARY,
+    DEFAULT_NEMO_SPEECH_DEVICE,
+    DEFAULT_NEMO_SPEECH_MODEL,
+    VALID_DIARIZATION_ENGINES,
+    VALID_NEMO_SPEECH_DEVICES,
 )
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.correction.defaults import (
@@ -250,6 +256,56 @@ def transcribe(
         help=(
             "Путь к локальной копии модели диаризации (директория с config.yaml). "
             "Позволяет работать полностью офлайн, без токена и сети."
+        ),
+    ),
+    diarization_engine: str = typer.Option(
+        DEFAULT_DIARIZATION_ENGINE,
+        "--diarization-engine",
+        envvar="DIARIZATION_ENGINE",
+        case_sensitive=False,
+        help=(
+            "Движок диаризации: auto (pyannote, если nemo-speech не настроен), "
+            "pyannote или nemo-speech (NeMo-Speech.cpp, GPU через Vulkan). "
+            f"По умолчанию {DEFAULT_DIARIZATION_ENGINE}. "
+            f"Допустимо: {', '.join(VALID_DIARIZATION_ENGINES)}."
+        ),
+    ),
+    nemo_speech_binary: str = typer.Option(
+        DEFAULT_NEMO_SPEECH_BINARY,
+        "--nemo-speech-binary",
+        envvar="NEMO_SPEECH_BINARY",
+        help=(
+            "Путь или имя бинарника nemo-speech (NeMo-Speech.cpp). "
+            f"По умолчанию {DEFAULT_NEMO_SPEECH_BINARY} (ищется в PATH)."
+        ),
+    ),
+    nemo_speech_lib_path: str | None = typer.Option(
+        None,
+        "--nemo-speech-lib-path",
+        envvar="NEMO_SPEECH_LIB_PATH",
+        help=(
+            "Каталог lib/ бандла nemo-speech (подмешивается в LD_LIBRARY_PATH, "
+            "если не содержит libstdc++.so.6/libgcc_s.so.1)."
+        ),
+    ),
+    nemo_speech_model: str = typer.Option(
+        DEFAULT_NEMO_SPEECH_MODEL,
+        "--nemo-speech-model",
+        envvar="NEMO_SPEECH_MODEL",
+        help=(
+            "Модель диаризации: имя из каталога nemo-speech, HF-репозиторий или "
+            f"путь к .gguf. По умолчанию {DEFAULT_NEMO_SPEECH_MODEL} "
+            "(Sortformer, 4 спикера)."
+        ),
+    ),
+    nemo_speech_device: str = typer.Option(
+        DEFAULT_NEMO_SPEECH_DEVICE,
+        "--nemo-speech-device",
+        envvar="NEMO_SPEECH_DEVICE",
+        case_sensitive=False,
+        help=(
+            "Устройство nemo-speech: auto (по умолчанию), vulkan (GPU AMD/Intel) "
+            f"или cpu. Допустимо: {', '.join(VALID_NEMO_SPEECH_DEVICES)}."
         ),
     ),
     initial_prompt: str | None = typer.Option(
@@ -741,6 +797,11 @@ def transcribe(
             export_speaker_samples=speaker_samples,
             hf_token=hf_token,
             pyannote_local_model=pyannote_local_model,
+            diarization_engine=diarization_engine,
+            nemo_speech_binary=nemo_speech_binary,
+            nemo_speech_lib_path=nemo_speech_lib_path,
+            nemo_speech_model=nemo_speech_model,
+            nemo_speech_device=nemo_speech_device,
             initial_prompt=initial_prompt,
             hotwords=hotwords,
             clean_artifacts=clean_artifacts,
@@ -836,6 +897,19 @@ def transcribe(
         )
         logger.info("Диаризация: %s", "включена" if config.diarization_enabled else "выключена")
         if config.diarization_enabled:
+            logger.info("Движок диаризации: %s", config.diarization_engine)
+            if config.diarization_engine in ("auto", "nemo-speech"):
+                logger.info(
+                    "NeMo-Speech.cpp: бинарник %s, модель %s, устройство %s%s",
+                    config.nemo_speech_binary,
+                    config.nemo_speech_model,
+                    config.nemo_speech_device,
+                    (
+                        f", библиотеки {config.nemo_speech_lib_path}"
+                        if config.nemo_speech_lib_path
+                        else ""
+                    ),
+                )
             logger.info("Количество говорящих: %s", config.num_speakers or "автоопределение")
             if config.min_speakers is not None or config.max_speakers is not None:
                 logger.info(

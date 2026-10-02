@@ -764,3 +764,66 @@ def test_hybrid_same_engine_warns(
         AppConfig(input_file=audio_file, hybrid_asr=True)
 
     assert any("совпадают" in record.message for record in caplog.records)
+
+
+# --- Движок диаризации и NeMo-Speech.cpp (#62) ------------------------------
+
+
+def test_diarization_engine_defaults_to_auto(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file)
+
+    assert config.diarization_engine == "auto"
+    assert config.nemo_speech_binary == "nemo-speech"
+    assert config.nemo_speech_lib_path is None
+    assert config.nemo_speech_model == "nvidia/diar_streaming_sortformer_4spk-v2"
+    assert config.nemo_speech_device == "auto"
+
+
+def test_diarization_engine_normalizes_case(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file, diarization_engine="NEMO-SPEECH")
+
+    assert config.diarization_engine == "nemo-speech"
+
+
+def test_unknown_diarization_engine_raises(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, diarization_engine="whisper")
+
+
+def test_unknown_nemo_speech_device_raises(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, nemo_speech_device="cuda")
+
+
+def test_nemo_speech_binary_must_be_nonempty(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, nemo_speech_binary="  ")
+
+
+def test_nemo_speech_model_must_be_nonempty(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, nemo_speech_model="   ")
+
+
+def test_nemo_speech_lib_path_blank_normalized_to_none(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file, nemo_speech_lib_path="  ")
+
+    assert config.nemo_speech_lib_path is None
+
+
+def test_nemo_speech_speaker_limit_warns(
+    audio_file: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level("WARNING"):
+        AppConfig(input_file=audio_file, diarization_engine="nemo-speech", num_speakers=6)
+
+    assert any("не более 4" in record.message for record in caplog.records)
+
+
+def test_nemo_speech_speaker_limit_not_warned_for_pyannote(
+    audio_file: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level("WARNING"):
+        AppConfig(input_file=audio_file, diarization_engine="pyannote", num_speakers=6)
+
+    assert not any("не более 4" in record.message for record in caplog.records)

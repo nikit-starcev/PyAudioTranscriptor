@@ -17,7 +17,16 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from audio_transcriber.config import defaults as config_defaults
-from audio_transcriber.config.defaults import DEFAULT_VOICES_DIR, VALID_LLM_PROVIDERS
+from audio_transcriber.config.defaults import (
+    DEFAULT_DIARIZATION_ENGINE,
+    DEFAULT_NEMO_SPEECH_BINARY,
+    DEFAULT_NEMO_SPEECH_DEVICE,
+    DEFAULT_NEMO_SPEECH_MODEL,
+    DEFAULT_VOICES_DIR,
+    VALID_DIARIZATION_ENGINES,
+    VALID_LLM_PROVIDERS,
+    VALID_NEMO_SPEECH_DEVICES,
+)
 from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
 from audio_transcriber.web.config import _as_bool, _env_export_formats, env_defaults
 
@@ -73,6 +82,14 @@ class WebSettings:
     #: API-ключ внешней LLM — секрет: хранится в ``secrets.json``, не в
     #: ``settings.json``. В этом срезе намеренно отсутствует.
     pyannote_local_model: str = ""
+    #: Движок диаризации и параметры NeMo-Speech.cpp (#62):
+    #: ``auto``/``pyannote``/``nemo-speech``, бинарник, каталог библиотек,
+    #: модель и устройство (``auto``/``vulkan``/``cpu``).
+    diarization_engine: str = DEFAULT_DIARIZATION_ENGINE
+    nemo_speech_binary: str = DEFAULT_NEMO_SPEECH_BINARY
+    nemo_speech_lib_path: str = ""
+    nemo_speech_model: str = DEFAULT_NEMO_SPEECH_MODEL
+    nemo_speech_device: str = DEFAULT_NEMO_SPEECH_DEVICE
     #: GigaAM v3 (RU) через onnx-asr (бэкенд ``gigaam``): имя модели, локальный
     #: каталог снимка, квантизация (``int8``/пусто) и встроенный VAD. Пустое имя
     #: означает значение по умолчанию из ``config.defaults``.
@@ -110,6 +127,11 @@ class WebSettings:
             "LLM_BASE_URL": self.llm_base_url,
             "LLM_MODEL_NAME": self.llm_model_name,
             "PYANNOTE_LOCAL_MODEL": self.pyannote_local_model,
+            "DIARIZATION_ENGINE": self.diarization_engine,
+            "NEMO_SPEECH_BINARY": self.nemo_speech_binary,
+            "NEMO_SPEECH_LIB_PATH": self.nemo_speech_lib_path,
+            "NEMO_SPEECH_MODEL": self.nemo_speech_model,
+            "NEMO_SPEECH_DEVICE": self.nemo_speech_device,
             "GIGAAM_MODEL": self.gigaam_model,
             "GIGAAM_MODEL_PATH": self.gigaam_model_path,
             "GIGAAM_QUANTIZATION": self.gigaam_quantization,
@@ -153,6 +175,15 @@ def default_settings(defaults: Mapping[str, str] | None = None) -> WebSettings:
         llm_base_url=source.get("LLM_BASE_URL", "").strip(),
         llm_model_name=source.get("LLM_MODEL_NAME", "").strip(),
         pyannote_local_model=source.get("PYANNOTE_LOCAL_MODEL", "").strip(),
+        diarization_engine=source.get("DIARIZATION_ENGINE", "").strip().casefold()
+        or DEFAULT_DIARIZATION_ENGINE,
+        nemo_speech_binary=source.get("NEMO_SPEECH_BINARY", "").strip()
+        or DEFAULT_NEMO_SPEECH_BINARY,
+        nemo_speech_lib_path=source.get("NEMO_SPEECH_LIB_PATH", "").strip(),
+        nemo_speech_model=source.get("NEMO_SPEECH_MODEL", "").strip()
+        or DEFAULT_NEMO_SPEECH_MODEL,
+        nemo_speech_device=source.get("NEMO_SPEECH_DEVICE", "").strip().casefold()
+        or DEFAULT_NEMO_SPEECH_DEVICE,
         gigaam_model=source.get("GIGAAM_MODEL", "").strip()
         or config_defaults.DEFAULT_GIGAAM_MODEL,
         gigaam_model_path=source.get("GIGAAM_MODEL_PATH", "").strip(),
@@ -205,6 +236,11 @@ def settings_from_mapping(
         llm_base_url=pick_str("llm_base_url", current.llm_base_url),
         llm_model_name=pick_str("llm_model_name", current.llm_model_name),
         pyannote_local_model=pick_str("pyannote_local_model", current.pyannote_local_model),
+        diarization_engine=pick_nonempty("diarization_engine", current.diarization_engine).casefold(),
+        nemo_speech_binary=pick_nonempty("nemo_speech_binary", current.nemo_speech_binary),
+        nemo_speech_lib_path=pick_str("nemo_speech_lib_path", current.nemo_speech_lib_path),
+        nemo_speech_model=pick_nonempty("nemo_speech_model", current.nemo_speech_model),
+        nemo_speech_device=pick_nonempty("nemo_speech_device", current.nemo_speech_device).casefold(),
         gigaam_model=pick_str("gigaam_model", current.gigaam_model),
         gigaam_model_path=pick_str("gigaam_model_path", current.gigaam_model_path),
         gigaam_quantization=pick_str("gigaam_quantization", current.gigaam_quantization),
@@ -245,6 +281,22 @@ def validate_settings(settings: WebSettings) -> None:
             f"(допустимо: {', '.join(VALID_LLM_PROVIDERS)})"
         )
 
+    settings.diarization_engine = settings.diarization_engine.strip().casefold()
+    if settings.diarization_engine not in VALID_DIARIZATION_ENGINES:
+        raise SettingsError(
+            f"Неизвестный движок диаризации: {settings.diarization_engine!r} "
+            f"(допустимо: {', '.join(VALID_DIARIZATION_ENGINES)})"
+        )
+    settings.nemo_speech_device = settings.nemo_speech_device.strip().casefold()
+    if settings.nemo_speech_device not in VALID_NEMO_SPEECH_DEVICES:
+        raise SettingsError(
+            f"Неизвестное устройство NeMo-Speech.cpp: {settings.nemo_speech_device!r} "
+            f"(допустимо: {', '.join(VALID_NEMO_SPEECH_DEVICES)})"
+        )
+    settings.nemo_speech_binary = settings.nemo_speech_binary.strip() or DEFAULT_NEMO_SPEECH_BINARY
+    settings.nemo_speech_model = settings.nemo_speech_model.strip() or DEFAULT_NEMO_SPEECH_MODEL
+    settings.nemo_speech_lib_path = settings.nemo_speech_lib_path.strip()
+
     if settings.llm_base_url and not _is_http_url(settings.llm_base_url):
         raise SettingsError(
             f"Некорректный LLM_BASE_URL: {settings.llm_base_url!r} "
@@ -258,6 +310,8 @@ def validate_settings(settings: WebSettings) -> None:
         ("llm_model", settings.llm_model),
         ("pyannote_local_model", settings.pyannote_local_model),
         ("gigaam_model_path", settings.gigaam_model_path),
+        ("nemo_speech_binary", settings.nemo_speech_binary),
+        ("nemo_speech_lib_path", settings.nemo_speech_lib_path),
     )
     for label, value in paths:
         if not value.strip():

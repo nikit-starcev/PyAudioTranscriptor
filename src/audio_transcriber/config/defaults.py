@@ -66,6 +66,38 @@ DEFAULT_REFERENCE_TARGET_DBFS = -30.0
 #: при том же числе говорящих. Поэтому наш дефолт — 0.5.
 DEFAULT_DIARIZATION_MIN_DURATION_OFF = 0.5
 
+# --- Диаризация: выбор движка и параметры NeMo-Speech.cpp (#62) --------------
+#: Движок диаризации по умолчанию: ``auto`` — pyannote, если NeMo-Speech.cpp
+#: не сконфигурирован (бинарник недоступен), иначе nemo-speech.
+DEFAULT_DIARIZATION_ENGINE = "auto"
+
+#: Допустимые движки диаризации.
+VALID_DIARIZATION_ENGINES = ("auto", "pyannote", "nemo-speech")
+
+#: Имя/путь бинарника NeMo-Speech.cpp по умолчанию (ищется в ``PATH``).
+DEFAULT_NEMO_SPEECH_BINARY = "nemo-speech"
+
+#: Модель диаризации NeMo-Speech.cpp по умолчанию — Sortformer streaming,
+#: 4 спикера (CC-BY-4.0, q8_0 ~140 МиБ). Может быть именем из каталога,
+#: HF-репозиторием или путём к ``.gguf``.
+DEFAULT_NEMO_SPEECH_MODEL = "nvidia/diar_streaming_sortformer_4spk-v2"
+
+#: Устройство для ``nemo-speech diarize --device`` по умолчанию.
+DEFAULT_NEMO_SPEECH_DEVICE = "auto"
+
+#: Допустимые устройства NeMo-Speech.cpp (Vulkan-сборка использует GPU).
+VALID_NEMO_SPEECH_DEVICES = ("auto", "vulkan", "cpu")
+
+#: Максимум спикеров у модели Sortformer (EEND, фиксированная голова на 4).
+#: ``num_speakers``/``max_speakers`` выше лимита не поддерживаются — движок
+#: предупреждает и продолжает с этим потолком.
+NEMO_SPEECH_MAX_SPEAKERS = 4
+
+#: Разделяемые библиотеки, которые нельзя добавлять в ``LD_LIBRARY_PATH`` из
+#: каталога библиотек движка: бандл-libstdc++/libgcc_s затеняют системные и
+#: ломают загрузку Vulkan-ICD (Radeon). При их наличии каталог не подмешивается.
+NEMO_SPEECH_FORBIDDEN_LIBS = ("libstdc++.so.6", "libgcc_s.so.1")
+
 #: Путь к SQLite-базе глоссария по умолчанию (относительно каталога запуска).
 #: Файл создаётся при первом импорте или запуске (``glossary import``).
 DEFAULT_GLOSSARY_DB = "glossary.db"

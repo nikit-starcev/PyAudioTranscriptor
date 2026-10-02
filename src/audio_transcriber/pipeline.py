@@ -42,11 +42,11 @@ from audio_transcriber.diarization.enrollment import (
     SpeakerEmbeddingEngine,
     assign_speaker_names,
 )
+from audio_transcriber.diarization.factory import create_diarizer
 from audio_transcriber.diarization.overlap import DIARIZATION_IMPL_VERSION
 from audio_transcriber.diarization.pyannote_engine import (
     DEFAULT_PIPELINE as DIARIZATION_PIPELINE,
 )
-from audio_transcriber.diarization.pyannote_engine import PyannoteSpeakerDiarizer
 from audio_transcriber.diarization.reference import ReferencePrepareOptions
 from audio_transcriber.diarization.samples import extract_speaker_samples
 from audio_transcriber.domain.enums import AsrBackend, Device
@@ -317,6 +317,12 @@ def _diarization_cache_params(
     return {
         "engine": type(diarizer).__name__,
         "device": device.value,
+        # Выбранный движок и его параметры: смена nemo-speech -> pyannote (или
+        # модели/устройства nemo) меняет результат при тех же входных данных.
+        "diarization_engine": config.diarization_engine,
+        "nemo_speech_binary": config.nemo_speech_binary,
+        "nemo_speech_model": config.nemo_speech_model,
+        "nemo_speech_device": config.nemo_speech_device,
         "denoise": config.denoise,
         "num_speakers": config.num_speakers,
         "min_speakers": config.min_speakers,
@@ -490,16 +496,15 @@ def run_pipeline(
             Device.CPU if config.asr_backend is AsrBackend.WHISPER_CPP else device
         )
         _ensure_not_cancelled(cancel_event, "перед диаризацией")
+        # Enrollment по образцам возможен не у всех движков: у EEND-модели
+        # nemo-speech нет per-speaker эмбеддингов. Флаг выставляется при
+        # создании активного движка.
+        enrollment_supported = True
         if config.diarization_enabled:
-            active_diarizer = diarizer or PyannoteSpeakerDiarizer(
-                diarization_device,
-                hf_token=config.hf_token,
-                local_model_path=config.pyannote_local_model,
-                on_progress=emit,
-                min_duration_off=config.diarization_min_duration_off,
-                clustering_threshold=config.diarization_clustering_threshold,
-                clustering_fb=config.diarization_clustering_fb,
+            active_diarizer = diarizer or create_diarizer(
+                config, diarization_device, on_progress=emit
             )
+            enrollment_supported = getattr(active_diarizer, "supports_enrollment", True)
             dia_key = cache.key(
                 "diarization",
                 config.input_file,
@@ -558,24 +563,33 @@ def run_pipeline(
         # К явным образцам добавляются файлы библиотеки ``voices_dir``.
         references = config.resolved_speaker_references()
         if config.diarization_enabled and references and speaker_segments:
-            logger.info("Сопоставление говорящих с образцами голоса (enrollment)...")
-            emit(ProgressEvent("diarization", "Сопоставление голосов", fraction=None))
-            enrollment_names = assign_speaker_names(
-                speaker_segments=speaker_segments,
-                references=references,
-                audio_path=audio_path,
-                min_similarity=config.enrollment_min_similarity,
-                device=diarization_device,
-                local_model_path=config.pyannote_local_model,
-                engine=enrollment_engine,
-                waveform=shared_waveform.get() if shared_waveform is not None else None,
-                prepare=ReferencePrepareOptions(
-                    enabled=config.reference_prepare,
-                    min_speech_seconds=config.enrollment_min_sample_seconds,
-                    max_seconds=config.enrollment_max_sample_seconds,
-                    target_dbfs=config.reference_target_dbfs,
-                ),
-            )
+            if not enrollment_supported:
+                logger.warning(
+                    "Enrollment по образцам голоса недоступен для движка "
+                    "%s: у EEND-модели Sortformer нет per-speaker эмбеддингов — "
+                    "имена говорящих по образцам не присваиваются. Используйте "
+                    "движок pyannote или --speaker-name ИНДЕКС=Имя.",
+                    type(active_diarizer).__name__,
+                )
+            else:
+                logger.info("Сопоставление говорящих с образцами голоса (enrollment)...")
+                emit(ProgressEvent("diarization", "Сопоставление голосов", fraction=None))
+                enrollment_names = assign_speaker_names(
+                    speaker_segments=speaker_segments,
+                    references=references,
+                    audio_path=audio_path,
+                    min_similarity=config.enrollment_min_similarity,
+                    device=diarization_device,
+                    local_model_path=config.pyannote_local_model,
+                    engine=enrollment_engine,
+                    waveform=shared_waveform.get() if shared_waveform is not None else None,
+                    prepare=ReferencePrepareOptions(
+                        enabled=config.reference_prepare,
+                        min_speech_seconds=config.enrollment_min_sample_seconds,
+                        max_seconds=config.enrollment_max_sample_seconds,
+                        target_dbfs=config.reference_target_dbfs,
+                    ),
+                )
         _ensure_not_cancelled(cancel_event, "после сопоставления голосов")
     finally:
         # Временный денойзенный WAV нужен только ASR и диаризации; удаляем его,
