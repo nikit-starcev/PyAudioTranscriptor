@@ -18,6 +18,9 @@ class AsrBackend(StrEnum):
 
     FASTER_WHISPER = "faster-whisper"
     WHISPER_CPP = "whisper-cpp"
+    #: GigaAM v3 (RU) через onnx-asr/ONNX Runtime — без torch. Опциональная
+    #: зависимость: при её отсутствии движок мягко деградирует с явной ошибкой.
+    GIGAAM = "gigaam"
 
 
 class ExportFormat(StrEnum):

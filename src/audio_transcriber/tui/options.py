@@ -19,6 +19,7 @@ _LANG_OPTIONS = [
 _BACKEND_OPTIONS = [
     ("whisper-cpp (Vulkan)", "whisper-cpp"),
     ("faster-whisper", "faster-whisper"),
+    ("gigaam (onnx-asr, RU)", "gigaam"),
 ]
 
 _DEVICE_OPTIONS = [

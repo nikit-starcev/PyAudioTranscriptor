@@ -53,6 +53,17 @@ ARGS=(transcribe "$AUDIO_FILE")
 [ -n "${WHISPER_CPP_MODEL:-}" ] && ARGS+=(--whisper-cpp-model "$WHISPER_CPP_MODEL")
 [ -n "${WHISPER_CPP_BINARY:-}" ] && ARGS+=(--whisper-cpp-binary "$WHISPER_CPP_BINARY")
 [ -n "${WHISPER_CPP_LIB_PATH:-}" ] && ARGS+=(--whisper-cpp-lib-path "$WHISPER_CPP_LIB_PATH")
+[ -n "${GIGAAM_MODEL:-}" ] && ARGS+=(--gigaam-model "$GIGAAM_MODEL")
+[ -n "${GIGAAM_MODEL_PATH:-}" ] && ARGS+=(--gigaam-model-path "$GIGAAM_MODEL_PATH")
+[ -n "${GIGAAM_QUANTIZATION:-}" ] && ARGS+=(--gigaam-quantization "$GIGAAM_QUANTIZATION")
+[ "${GIGAAM_VAD:-true}" = "false" ] && ARGS+=(--no-gigaam-vad)
+[ "${HYBRID_ASR:-false}" = "true" ] && ARGS+=(--hybrid-asr)
+[ -n "${HYBRID_FALLBACK_BACKEND:-}" ] && ARGS+=(--hybrid-fallback-backend "$HYBRID_FALLBACK_BACKEND")
+[ -n "${HYBRID_LOW_LOGPROB_THRESHOLD:-}" ] && ARGS+=(--hybrid-low-logprob-threshold "$HYBRID_LOW_LOGPROB_THRESHOLD")
+[ -n "${HYBRID_NO_SPEECH_THRESHOLD:-}" ] && ARGS+=(--hybrid-no-speech-threshold "$HYBRID_NO_SPEECH_THRESHOLD")
+[ -n "${HYBRID_SILENCE_RMS_THRESHOLD:-}" ] && ARGS+=(--hybrid-silence-rms-threshold "$HYBRID_SILENCE_RMS_THRESHOLD")
+[ -n "${HYBRID_MIN_SEGMENT_SECONDS:-}" ] && ARGS+=(--hybrid-min-segment-seconds "$HYBRID_MIN_SEGMENT_SECONDS")
+[ -n "${HYBRID_CONTEXT_SECONDS:-}" ] && ARGS+=(--hybrid-context-seconds "$HYBRID_CONTEXT_SECONDS")
 
 if [ -n "${FORMATS:-}" ]; then
     IFS=',' read -ra FORMAT_LIST <<< "$FORMATS"

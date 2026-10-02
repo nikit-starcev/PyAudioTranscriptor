@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from audio_transcriber.config.settings import AppConfig
-from audio_transcriber.domain.enums import Device, ExportFormat
+from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
 from audio_transcriber.utils.exceptions import ConfigurationError
 
 
@@ -672,3 +672,95 @@ def test_llm_provider_blank_fields_normalized_to_none(audio_file: Path) -> None:
     assert config.llm_base_url is None
     assert config.llm_model_name is None
     assert config.llm_api_key is None
+
+
+# --- GigaAM (#46) и гибридный ASR (#57) -------------------------------------
+
+
+def test_gigaam_backend_uses_defaults(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file, asr_backend=AsrBackend.GIGAAM)
+
+    assert config.asr_backend is AsrBackend.GIGAAM
+    assert config.gigaam_model == "gigaam-v3-e2e-rnnt"
+    assert config.gigaam_model_path is None
+    assert config.gigaam_quantization is None
+    assert config.gigaam_vad is True
+
+
+def test_gigaam_model_path_string_is_normalized_to_path(audio_file: Path) -> None:
+    config = AppConfig(
+        input_file=audio_file,
+        asr_backend=AsrBackend.GIGAAM,
+        gigaam_model_path="models/gigaam",
+    )
+    assert config.gigaam_model_path == Path("models/gigaam")
+
+
+def test_gigaam_quantization_blank_normalized_to_none(audio_file: Path) -> None:
+    config = AppConfig(
+        input_file=audio_file, asr_backend=AsrBackend.GIGAAM, gigaam_quantization="  "
+    )
+    assert config.gigaam_quantization is None
+
+
+def test_gigaam_vad_must_be_boolean(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, asr_backend=AsrBackend.GIGAAM, gigaam_vad="yes")  # type: ignore[arg-type]
+
+
+def test_hybrid_disabled_by_default(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file)
+
+    assert config.hybrid_asr is False
+    assert config.hybrid_fallback_backend is AsrBackend.FASTER_WHISPER
+    assert config.hybrid_low_logprob_threshold == pytest.approx(-1.0)
+    assert config.hybrid_no_speech_threshold == pytest.approx(0.6)
+    assert config.hybrid_context_seconds > 0.0
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("hybrid_low_logprob_threshold", 0.5),
+        ("hybrid_no_speech_threshold", 1.5),
+        ("hybrid_silence_rms_threshold", -0.1),
+        ("hybrid_min_segment_seconds", 0.0),
+        ("hybrid_context_seconds", -0.1),
+    ],
+)
+def test_hybrid_thresholds_reject_out_of_range(
+    audio_file: Path, field: str, value: float
+) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, **{field: value})
+
+
+def test_hybrid_whisper_cpp_requires_model(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(
+            input_file=audio_file,
+            hybrid_asr=True,
+            hybrid_fallback_backend=AsrBackend.WHISPER_CPP,
+        )
+
+
+def test_hybrid_whisper_cpp_accepts_model(audio_file: Path, tmp_path: Path) -> None:
+    model = tmp_path / "ggml.bin"
+    model.write_bytes(b"x")
+
+    config = AppConfig(
+        input_file=audio_file,
+        hybrid_asr=True,
+        hybrid_fallback_backend=AsrBackend.WHISPER_CPP,
+        whisper_cpp_model=model,
+    )
+    assert config.hybrid_fallback_backend is AsrBackend.WHISPER_CPP
+
+
+def test_hybrid_same_engine_warns(
+    audio_file: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level("WARNING"):
+        AppConfig(input_file=audio_file, hybrid_asr=True)
+
+    assert any("совпадают" in record.message for record in caplog.records)

@@ -90,6 +90,17 @@ $cliArgs += Get-ValueArg "--asr-backend" "ASR_BACKEND"
 $cliArgs += Get-ValueArg "--whisper-cpp-model" "WHISPER_CPP_MODEL"
 $cliArgs += Get-ValueArg "--whisper-cpp-binary" "WHISPER_CPP_BINARY"
 $cliArgs += Get-ValueArg "--whisper-cpp-lib-path" "WHISPER_CPP_LIB_PATH"
+$cliArgs += Get-ValueArg "--gigaam-model" "GIGAAM_MODEL"
+$cliArgs += Get-ValueArg "--gigaam-model-path" "GIGAAM_MODEL_PATH"
+$cliArgs += Get-ValueArg "--gigaam-quantization" "GIGAAM_QUANTIZATION"
+if ($config["GIGAAM_VAD"] -eq "false") { $cliArgs += "--no-gigaam-vad" }
+if ($config["HYBRID_ASR"] -eq "true") { $cliArgs += "--hybrid-asr" }
+$cliArgs += Get-ValueArg "--hybrid-fallback-backend" "HYBRID_FALLBACK_BACKEND"
+$cliArgs += Get-ValueArg "--hybrid-low-logprob-threshold" "HYBRID_LOW_LOGPROB_THRESHOLD"
+$cliArgs += Get-ValueArg "--hybrid-no-speech-threshold" "HYBRID_NO_SPEECH_THRESHOLD"
+$cliArgs += Get-ValueArg "--hybrid-silence-rms-threshold" "HYBRID_SILENCE_RMS_THRESHOLD"
+$cliArgs += Get-ValueArg "--hybrid-min-segment-seconds" "HYBRID_MIN_SEGMENT_SECONDS"
+$cliArgs += Get-ValueArg "--hybrid-context-seconds" "HYBRID_CONTEXT_SECONDS"
 
 if ($config["FORMATS"]) {
     foreach ($fmt in $config["FORMATS"].Split(",")) {

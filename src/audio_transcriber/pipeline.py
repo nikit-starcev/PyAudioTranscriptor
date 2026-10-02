@@ -64,6 +64,15 @@ from audio_transcriber.merging.overlap import apply_overlap_regions
 from audio_transcriber.merging.sentence_merger import SentenceMerger
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.transcription.base import SpeechRecognizer
+from audio_transcriber.transcription.gigaam_engine import (
+    ASR_IMPL_VERSION as GIGAAM_ASR_IMPL_VERSION,
+)
+from audio_transcriber.transcription.gigaam_engine import GigaAmRecognizer
+from audio_transcriber.transcription.hybrid import (
+    HYBRID_IMPL_VERSION,
+    HybridOptions,
+    HybridSpeechRecognizer,
+)
 from audio_transcriber.transcription.whisper_cpp_engine import (
     ASR_IMPL_VERSION,
     DEFAULT_CHUNK_OVERLAP,
@@ -157,11 +166,14 @@ def _whisper_cpp_chunk_settings() -> tuple[float, float]:
     return chunk_seconds, chunk_overlap
 
 
-def _build_recognizer(
-    config: AppConfig, device: Device, on_progress: ProgressCallback | None = None
+def _build_single_recognizer(
+    config: AppConfig,
+    backend: AsrBackend,
+    device: Device,
+    on_progress: ProgressCallback | None = None,
 ) -> SpeechRecognizer:
-    """Создаёт движок распознавания речи в зависимости от выбранного бэкенда."""
-    if config.asr_backend is AsrBackend.WHISPER_CPP:
+    """Создаёт один движок распознавания для выбранного бэкенда."""
+    if backend is AsrBackend.WHISPER_CPP:
         # Silero-VAD-модель для whisper.cpp (необязательно). Если путь задан,
         # VAD выравнивается с faster-whisper (vad_filter=True) — те же условия
         # отсечения тишины/не-речи.
@@ -179,11 +191,51 @@ def _build_recognizer(
             chunk_seconds=chunk_seconds,
             chunk_overlap=chunk_overlap,
         )
+    if backend is AsrBackend.GIGAAM:
+        return GigaAmRecognizer(
+            config.gigaam_model,
+            model_path=config.gigaam_model_path,
+            quantization=config.gigaam_quantization,
+            device=device,
+            use_vad=config.gigaam_vad,
+            on_progress=on_progress,
+        )
     return WhisperSpeechRecognizer(
         config.model_name,
         device,
         initial_prompt=config.initial_prompt,
         hotwords=config.hotwords,
+        on_progress=on_progress,
+    )
+
+
+def _build_recognizer(
+    config: AppConfig, device: Device, on_progress: ProgressCallback | None = None
+) -> SpeechRecognizer:
+    """Создаёт движок распознавания речи в зависимости от выбранного бэкенда.
+
+    При включённом гибридном ASR (#57) основной движок оборачивается в
+    :class:`HybridSpeechRecognizer`: «плохие» сегменты дорабатывает резервный
+    движок (faster-whisper/whisper.cpp). Резервный создаётся без собственного
+    прогресс-колбэка, чтобы его события не перебивали прогресс основного.
+    """
+    primary = _build_single_recognizer(config, config.asr_backend, device, on_progress)
+    if not config.hybrid_asr:
+        return primary
+
+    fallback = _build_single_recognizer(
+        config, config.hybrid_fallback_backend, device, on_progress=None
+    )
+    return HybridSpeechRecognizer(
+        primary,
+        fallback,
+        options=HybridOptions(
+            low_logprob_threshold=config.hybrid_low_logprob_threshold,
+            no_speech_threshold=config.hybrid_no_speech_threshold,
+            silence_rms_threshold=config.hybrid_silence_rms_threshold,
+            min_segment_seconds=config.hybrid_min_segment_seconds,
+            context_seconds=config.hybrid_context_seconds,
+        ),
         on_progress=on_progress,
     )
 
@@ -224,8 +276,37 @@ def _asr_cache_params(
         # Версия реализации движка: чанкинг длинных файлов меняет результат при
         # тех же параметрах, поэтому старый кэш должен быть пересчитан ровно раз.
         params["asr_impl_version"] = ASR_IMPL_VERSION
+    elif config.asr_backend is AsrBackend.GIGAAM:
+        # Движок + модель + квантизация — всё, от чего зависит результат.
+        params["gigaam_model"] = config.gigaam_model
+        params["gigaam_model_path"] = (
+            str(config.gigaam_model_path) if config.gigaam_model_path else None
+        )
+        params["gigaam_quantization"] = config.gigaam_quantization
+        params["gigaam_vad"] = config.gigaam_vad
+        params["asr_impl_version"] = GIGAAM_ASR_IMPL_VERSION
     else:
         params["model"] = config.model_name
+
+    if config.hybrid_asr:
+        fallback_is_cpp = config.hybrid_fallback_backend is AsrBackend.WHISPER_CPP
+        params["hybrid"] = {
+            # Версия логики отбора/склейки: меняет результат при тех же порогах.
+            "impl_version": HYBRID_IMPL_VERSION,
+            "fallback_backend": config.hybrid_fallback_backend.value,
+            # Модель резервного движка тоже определяет результат и обязана
+            # участвовать в ключе (иначе смена модели не пересчитает кэш).
+            "fallback_model": (
+                str(config.whisper_cpp_model)
+                if fallback_is_cpp and config.whisper_cpp_model
+                else config.model_name
+            ),
+            "low_logprob_threshold": config.hybrid_low_logprob_threshold,
+            "no_speech_threshold": config.hybrid_no_speech_threshold,
+            "silence_rms_threshold": config.hybrid_silence_rms_threshold,
+            "min_segment_seconds": config.hybrid_min_segment_seconds,
+            "context_seconds": config.hybrid_context_seconds,
+        }
     return params
 
 

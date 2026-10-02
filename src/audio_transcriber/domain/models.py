@@ -20,6 +20,10 @@ class TranscriptionSegment:
     end: float
     text: str
     avg_logprob: float | None = None
+    #: Вероятность того, что в сегменте нет речи (Whisper). ``None`` — движок
+    #: не предоставил значение (GigaAM/whisper.cpp). Используется детектором
+    #: «плохих» сегментов гибридного ASR (#57).
+    no_speech_prob: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

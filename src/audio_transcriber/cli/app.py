@@ -16,7 +16,13 @@ from audio_transcriber.cleaning.repetition_filter import (
 from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_ENROLLMENT_MIN_SIMILARITY,
+    DEFAULT_GIGAAM_MODEL,
     DEFAULT_GLOSSARY_DB,
+    DEFAULT_HYBRID_CONTEXT_SECONDS,
+    DEFAULT_HYBRID_LOW_LOGPROB_THRESHOLD,
+    DEFAULT_HYBRID_MIN_SEGMENT_SECONDS,
+    DEFAULT_HYBRID_NO_SPEECH_THRESHOLD,
+    DEFAULT_HYBRID_SILENCE_RMS_THRESHOLD,
     DEFAULT_LLM_PROVIDER,
     DEFAULT_LLM_REQUEST_TIMEOUT,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
@@ -409,8 +415,10 @@ def transcribe(
         "--asr-backend",
         case_sensitive=False,
         help=(
-            "Движок распознавания: faster-whisper (CUDA/CPU через PyTorch) "
-            "или whisper-cpp (GPU через Vulkan — для AMD-карт без ROCm)."
+            "Движок распознавания: faster-whisper (CUDA/CPU через PyTorch), "
+            "whisper-cpp (GPU через Vulkan — для AMD-карт без ROCm) или "
+            "gigaam (GigaAM v3 RU через onnx-asr, без torch; опциональная "
+            "зависимость onnx-asr[cpu,hub])."
         ),
     ),
     whisper_cpp_model: Path | None = typer.Option(
@@ -436,6 +444,99 @@ def transcribe(
         "--whisper-cpp-threads",
         min=1,
         help="Число потоков для whisper.cpp (по умолчанию — значение самого бинарника).",
+    ),
+    gigaam_model: str = typer.Option(
+        DEFAULT_GIGAAM_MODEL,
+        "--gigaam-model",
+        envvar="GIGAAM_MODEL",
+        help=(
+            "Имя модели onnx-asr для бэкенда gigaam "
+            "(gigaam-v3-e2e-rnnt, gigaam-v3-ctc, gigaam-v3-e2e-ctc, ...). "
+            f"По умолчанию {DEFAULT_GIGAAM_MODEL} (пунктуация и заглавные буквы)."
+        ),
+    ),
+    gigaam_model_path: Path | None = typer.Option(
+        None,
+        "--gigaam-model-path",
+        envvar="GIGAAM_MODEL_PATH",
+        help=(
+            "Локальный каталог с ONNX-моделью GigaAM. Если не задан — модель "
+            "скачивается с Hugging Face при первом запуске (нужен onnx-asr[hub])."
+        ),
+    ),
+    gigaam_quantization: str | None = typer.Option(
+        None,
+        "--gigaam-quantization",
+        envvar="GIGAAM_QUANTIZATION",
+        help="Квантизация ONNX-модели GigaAM (например, int8). По умолчанию без неё.",
+    ),
+    gigaam_vad: bool = typer.Option(
+        True,
+        "--gigaam-vad/--no-gigaam-vad",
+        help=(
+            "Резать длинное аудио встроенным VAD onnx-asr для GigaAM "
+            "(рекомендуется: окно модели 20–30 с). При недоступной VAD-модели "
+            "распознавание идёт без VAD. По умолчанию включено."
+        ),
+    ),
+    hybrid_asr: bool = typer.Option(
+        False,
+        "--hybrid-asr",
+        help=(
+            "Гибридный ASR: после основного движка «плохие» сегменты (низкая "
+            "уверенность, тишина, обрывки) повторно распознаются резервным "
+            "движком Whisper. По умолчанию выключено."
+        ),
+    ),
+    hybrid_fallback_backend: AsrBackend = typer.Option(
+        AsrBackend.FASTER_WHISPER.value,
+        "--hybrid-fallback-backend",
+        case_sensitive=False,
+        help=(
+            "Резервный движок для доработки «плохих» сегментов: faster-whisper "
+            "(модель --model) или whisper-cpp (модель --whisper-cpp-model)."
+        ),
+    ),
+    hybrid_low_logprob_threshold: float = typer.Option(
+        DEFAULT_HYBRID_LOW_LOGPROB_THRESHOLD,
+        "--hybrid-low-logprob-threshold",
+        help=(
+            "Порог средней логвероятности для доработки (<= 0): ниже — сегмент "
+            f"считается «плохим». По умолчанию {DEFAULT_HYBRID_LOW_LOGPROB_THRESHOLD}."
+        ),
+    ),
+    hybrid_no_speech_threshold: float = typer.Option(
+        DEFAULT_HYBRID_NO_SPEECH_THRESHOLD,
+        "--hybrid-no-speech-threshold",
+        help=(
+            "Порог вероятности отсутствия речи (Whisper, 0..1): выше — сегмент "
+            f"дорабатывается. По умолчанию {DEFAULT_HYBRID_NO_SPEECH_THRESHOLD}."
+        ),
+    ),
+    hybrid_silence_rms_threshold: float = typer.Option(
+        DEFAULT_HYBRID_SILENCE_RMS_THRESHOLD,
+        "--hybrid-silence-rms-threshold",
+        help=(
+            "Порог RMS-энергии сегмента (шкала [-1, 1]): ниже — тишина/шум. "
+            f"По умолчанию {DEFAULT_HYBRID_SILENCE_RMS_THRESHOLD}."
+        ),
+    ),
+    hybrid_min_segment_seconds: float = typer.Option(
+        DEFAULT_HYBRID_MIN_SEGMENT_SECONDS,
+        "--hybrid-min-segment-seconds",
+        help=(
+            "Сегменты короче этого значения дорабатываются резервным движком. "
+            f"По умолчанию {DEFAULT_HYBRID_MIN_SEGMENT_SECONDS} с."
+        ),
+    ),
+    hybrid_context_seconds: float = typer.Option(
+        DEFAULT_HYBRID_CONTEXT_SECONDS,
+        "--hybrid-context-seconds",
+        help=(
+            "Контекст вокруг «плохого» сегмента при нарезке для Whisper (с); "
+            f"результат обрезается границами сегмента. По умолчанию "
+            f"{DEFAULT_HYBRID_CONTEXT_SECONDS} с."
+        ),
     ),
     llm: bool = typer.Option(
         False,
@@ -664,6 +765,17 @@ def transcribe(
             whisper_cpp_binary=whisper_cpp_binary,
             whisper_cpp_lib_path=whisper_cpp_lib_path,
             whisper_cpp_threads=whisper_cpp_threads,
+            gigaam_model=gigaam_model,
+            gigaam_model_path=gigaam_model_path,
+            gigaam_quantization=gigaam_quantization,
+            gigaam_vad=gigaam_vad,
+            hybrid_asr=hybrid_asr,
+            hybrid_fallback_backend=hybrid_fallback_backend,
+            hybrid_low_logprob_threshold=hybrid_low_logprob_threshold,
+            hybrid_no_speech_threshold=hybrid_no_speech_threshold,
+            hybrid_silence_rms_threshold=hybrid_silence_rms_threshold,
+            hybrid_min_segment_seconds=hybrid_min_segment_seconds,
+            hybrid_context_seconds=hybrid_context_seconds,
             llm_enabled=llm,
             llm_provider=llm_provider,
             llm_base_url=llm_base_url,
@@ -696,7 +808,25 @@ def transcribe(
         logger.info("Входной файл: %s", config.input_file)
         logger.info("Директория результатов: %s", config.output_dir)
         logger.info("Бэкенд распознавания: %s", config.asr_backend.value)
-        logger.info("Модель распознавания: %s", config.model_name)
+        if config.asr_backend is AsrBackend.GIGAAM:
+            logger.info(
+                "Модель GigaAM: %s (квантизация: %s, VAD: %s)",
+                config.gigaam_model,
+                config.gigaam_quantization or "нет",
+                "вкл" if config.gigaam_vad else "выкл",
+            )
+        else:
+            logger.info("Модель распознавания: %s", config.model_name)
+        if config.hybrid_asr:
+            logger.info(
+                "Гибридный ASR: резервный движок %s (модель %s)",
+                config.hybrid_fallback_backend.value,
+                (
+                    config.whisper_cpp_model
+                    if config.hybrid_fallback_backend is AsrBackend.WHISPER_CPP
+                    else config.model_name
+                ),
+            )
         logger.info("Язык: %s", config.language or "автоопределение")
         logger.info("Устройство: %s (запрошено: %s)", resolved_device.value, config.device.value)
         logger.info("Форматы экспорта: %s", ", ".join(fmt.value for fmt in config.export_formats))

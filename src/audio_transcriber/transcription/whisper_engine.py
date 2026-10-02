@@ -125,6 +125,10 @@ class WhisperSpeechRecognizer:
                         end=segment.end,
                         text=segment.text.strip(),
                         avg_logprob=segment.avg_logprob,
+                        # Вероятность отсутствия речи — используется детектором
+                        # «плохих» сегментов гибридного ASR (#57). Старые версии
+                        # faster-whisper поля не имеют — берём через getattr.
+                        no_speech_prob=getattr(segment, "no_speech_prob", None),
                     )
                 )
         except Exception as exc:

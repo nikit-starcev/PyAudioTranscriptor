@@ -35,6 +35,12 @@ audio-transcriber = "audio_transcriber.cli.app:app"
 denoise = [
     "deepfilternet>=0.5.6 ; python_version < '3.14'",
 ]
+# GigaAM v3 (RU) через onnx-asr/ONNX Runtime — без torch (#46).
+# Ставится отдельно: uv pip install --python .venv/bin/python 'onnx-asr[cpu,hub]'.
+# Модель скачивается с Hugging Face при первом запуске (extra ``hub``).
+gigaam = [
+    "onnx-asr[cpu,hub]>=0.12,<1",
+]
 # Веб-интерфейс (этап 1): локальный сервер 127.0.0.1 + REST API + раздача SPA.
 web = [
     "fastapi>=0.115",

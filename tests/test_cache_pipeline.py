@@ -29,12 +29,21 @@ from audio_transcriber.pipeline import (
     _whisper_cpp_chunk_settings,
     run_pipeline,
 )
+from audio_transcriber.transcription.gigaam_engine import (
+    ASR_IMPL_VERSION as GIGAAM_ASR_IMPL_VERSION,
+)
+from audio_transcriber.transcription.gigaam_engine import GigaAmRecognizer
+from audio_transcriber.transcription.hybrid import (
+    HYBRID_IMPL_VERSION,
+    HybridSpeechRecognizer,
+)
 from audio_transcriber.transcription.whisper_cpp_engine import (
     ASR_IMPL_VERSION,
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_CHUNK_SECONDS,
     WhisperCppRecognizer,
 )
+from audio_transcriber.transcription.whisper_engine import WhisperSpeechRecognizer
 
 
 class RecordingRecognizer:
@@ -494,3 +503,94 @@ def test_diarization_cache_key_changes_with_speaker_range(
     )
 
     assert before != after
+
+
+# --- Ключ кэша для GigaAM (#46) и гибрида (#57) -----------------------------
+
+
+def _gigaam_config(audio_file: Path, tmp_path: Path, **overrides) -> AppConfig:
+    options = {
+        "asr_backend": AsrBackend.GIGAAM,
+        "gigaam_model": "gigaam-v3-e2e-rnnt",
+    }
+    options.update(overrides)
+    return _config(audio_file, tmp_path, **options)
+
+
+def test_gigaam_cache_params_include_model_and_quantization(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    config = _gigaam_config(
+        audio_file,
+        tmp_path,
+        gigaam_quantization="int8",
+        gigaam_vad=False,
+    )
+    recognizer = GigaAmRecognizer(
+        config.gigaam_model, device=Device.CPU, use_vad=False, quantization="int8"
+    )
+
+    params = _asr_cache_params(config, Device.CPU, recognizer)
+
+    assert params["backend"] == "gigaam"
+    assert params["gigaam_model"] == "gigaam-v3-e2e-rnnt"
+    assert params["gigaam_quantization"] == "int8"
+    assert params["gigaam_vad"] is False
+    assert params["asr_impl_version"] == GIGAAM_ASR_IMPL_VERSION
+
+
+def test_gigaam_cache_key_changes_with_model(audio_file: Path, tmp_path: Path) -> None:
+    first = _gigaam_config(audio_file, tmp_path, gigaam_model="gigaam-v3-e2e-rnnt")
+    second = _gigaam_config(audio_file, tmp_path, gigaam_model="gigaam-v3-ctc")
+
+    first_key = compute_cache_key(
+        "asr", audio_file, _asr_cache_params(first, Device.CPU, RecordingRecognizer())
+    )
+    second_key = compute_cache_key(
+        "asr", audio_file, _asr_cache_params(second, Device.CPU, RecordingRecognizer())
+    )
+
+    assert first_key != second_key
+
+
+def test_hybrid_cache_params_include_fallback_and_thresholds(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    config = _gigaam_config(
+        audio_file,
+        tmp_path,
+        hybrid_asr=True,
+        hybrid_low_logprob_threshold=-0.7,
+        hybrid_no_speech_threshold=0.8,
+        hybrid_context_seconds=0.25,
+    )
+
+    params = _asr_cache_params(config, Device.CPU, RecordingRecognizer())
+    hybrid_params = params["hybrid"]
+
+    assert hybrid_params["fallback_backend"] == "faster-whisper"
+    assert hybrid_params["fallback_model"] == config.model_name
+    assert hybrid_params["low_logprob_threshold"] == pytest.approx(-0.7)
+    assert hybrid_params["no_speech_threshold"] == pytest.approx(0.8)
+    assert hybrid_params["context_seconds"] == pytest.approx(0.25)
+    assert hybrid_params["impl_version"] == HYBRID_IMPL_VERSION
+
+
+def test_build_recognizer_returns_gigaam(audio_file: Path, tmp_path: Path) -> None:
+    config = _gigaam_config(audio_file, tmp_path)
+
+    recognizer = _build_recognizer(config, Device.CPU)
+
+    assert isinstance(recognizer, GigaAmRecognizer)
+
+
+def test_build_recognizer_wraps_primary_and_fallback(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    config = _gigaam_config(audio_file, tmp_path, hybrid_asr=True)
+
+    recognizer = _build_recognizer(config, Device.CPU)
+
+    assert isinstance(recognizer, HybridSpeechRecognizer)
+    assert isinstance(recognizer._primary, GigaAmRecognizer)
+    assert isinstance(recognizer._fallback, WhisperSpeechRecognizer)

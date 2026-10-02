@@ -13,6 +13,12 @@ from audio_transcriber.cleaning.repetition_filter import (
 )
 from audio_transcriber.config.defaults import (
     DEFAULT_ENROLLMENT_MIN_SIMILARITY,
+    DEFAULT_GIGAAM_MODEL,
+    DEFAULT_HYBRID_CONTEXT_SECONDS,
+    DEFAULT_HYBRID_LOW_LOGPROB_THRESHOLD,
+    DEFAULT_HYBRID_MIN_SEGMENT_SECONDS,
+    DEFAULT_HYBRID_NO_SPEECH_THRESHOLD,
+    DEFAULT_HYBRID_SILENCE_RMS_THRESHOLD,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
 )
 from audio_transcriber.config.settings import AppConfig
@@ -124,6 +130,41 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
     wcp_threads_raw = defaults.get("WHISPER_CPP_THREADS", "").strip()
     whisper_cpp_threads = int(wcp_threads_raw) if wcp_threads_raw.isdigit() else None
 
+    # GigaAM (#46) и гибрид (#57): в TUI нет отдельных виджетов — значения
+    # берутся из config.env, чтобы поведение совпадало с CLI.
+    gigaam_model = defaults.get("GIGAAM_MODEL", "").strip() or DEFAULT_GIGAAM_MODEL
+    gigaam_model_path_raw = defaults.get("GIGAAM_MODEL_PATH", "").strip()
+    gigaam_model_path = Path(gigaam_model_path_raw) if gigaam_model_path_raw else None
+    gigaam_quantization = defaults.get("GIGAAM_QUANTIZATION", "").strip() or None
+    gigaam_vad = _to_bool(defaults.get("GIGAAM_VAD"), default=True)
+    hybrid_asr = _to_bool(defaults.get("HYBRID_ASR"), default=False)
+    fallback_raw = defaults.get("HYBRID_FALLBACK_BACKEND", "").strip()
+    hybrid_fallback_backend = (
+        AsrBackend(fallback_raw)
+        if fallback_raw in {item.value for item in AsrBackend}
+        else AsrBackend.FASTER_WHISPER
+    )
+    hybrid_low_logprob_threshold = _to_float(
+        defaults.get("HYBRID_LOW_LOGPROB_THRESHOLD") or None,
+        DEFAULT_HYBRID_LOW_LOGPROB_THRESHOLD,
+    )
+    hybrid_no_speech_threshold = _to_float(
+        defaults.get("HYBRID_NO_SPEECH_THRESHOLD") or None,
+        DEFAULT_HYBRID_NO_SPEECH_THRESHOLD,
+    )
+    hybrid_silence_rms_threshold = _to_float(
+        defaults.get("HYBRID_SILENCE_RMS_THRESHOLD") or None,
+        DEFAULT_HYBRID_SILENCE_RMS_THRESHOLD,
+    )
+    hybrid_min_segment_seconds = _to_float(
+        defaults.get("HYBRID_MIN_SEGMENT_SECONDS") or None,
+        DEFAULT_HYBRID_MIN_SEGMENT_SECONDS,
+    )
+    hybrid_context_seconds = _to_float(
+        defaults.get("HYBRID_CONTEXT_SECONDS") or None,
+        DEFAULT_HYBRID_CONTEXT_SECONDS,
+    )
+
     low_conf_raw = app.query_one("#low_conf", Input).value.strip()
     low_confidence_threshold = _to_float(low_conf_raw or None, DEFAULT_LOW_CONFIDENCE_THRESHOLD)
 
@@ -179,6 +220,17 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
         whisper_cpp_binary=wcp_binary,
         whisper_cpp_lib_path=wcp_lib or None,
         whisper_cpp_threads=whisper_cpp_threads,
+        gigaam_model=gigaam_model,
+        gigaam_model_path=gigaam_model_path,
+        gigaam_quantization=gigaam_quantization,
+        gigaam_vad=gigaam_vad,
+        hybrid_asr=hybrid_asr,
+        hybrid_fallback_backend=hybrid_fallback_backend,
+        hybrid_low_logprob_threshold=hybrid_low_logprob_threshold,
+        hybrid_no_speech_threshold=hybrid_no_speech_threshold,
+        hybrid_silence_rms_threshold=hybrid_silence_rms_threshold,
+        hybrid_min_segment_seconds=hybrid_min_segment_seconds,
+        hybrid_context_seconds=hybrid_context_seconds,
         llm_enabled=llm_enabled,
         llm_model=Path(llm_model) if llm_model else None,
         llm_binary=llm_binary,

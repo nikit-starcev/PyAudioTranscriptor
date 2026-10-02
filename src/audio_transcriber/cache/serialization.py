@@ -52,6 +52,7 @@ def asr_payload(
                 "end": segment.end,
                 "text": segment.text,
                 "avg_logprob": segment.avg_logprob,
+                "no_speech_prob": segment.no_speech_prob,
             }
             for segment in segments
         ],
@@ -71,6 +72,9 @@ def asr_from_payload(data: dict[str, Any]) -> tuple[list[TranscriptionSegment], 
             end=_as_float(item["end"]),
             text=_as_str(item["text"]),
             avg_logprob=_as_optional_float(item.get("avg_logprob")),
+            # Терпимость к старому формату кэша: без ``no_speech_prob`` поле
+            # остаётся ``None`` (детектор гибрида просто не использует его).
+            no_speech_prob=_as_optional_float(item.get("no_speech_prob")),
         )
         for item in _as_list(data.get("segments"))
     ]

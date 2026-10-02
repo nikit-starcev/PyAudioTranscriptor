@@ -271,6 +271,7 @@ def _dependencies(env: Mapping[str, str]) -> list[tuple[str, str, bool]]:
     return [
         ("av", "av (декодирование аудио)", True),
         ("faster_whisper", "faster-whisper", backend == AsrBackend.FASTER_WHISPER.value),
+        ("onnx_asr", "onnx-asr (GigaAM)", backend == AsrBackend.GIGAAM.value),
         ("pyannote.audio", "pyannote.audio (диаризация)", diarization),
         ("torch", "torch", diarization),
         ("textual", "textual (TUI)", False),
@@ -332,7 +333,7 @@ def _check_binaries(env: Mapping[str, str]) -> list[DoctorCheck]:
                 label="Бинарник whisper-cli",
                 ok=True,
                 critical=False,
-                detail="не требуется (бэкенд faster-whisper)",
+                detail=f"не требуется (бэкенд {backend or DEFAULT_ASR_BACKEND.value})",
             )
         )
 
@@ -382,6 +383,25 @@ def _check_models(env: Mapping[str, str]) -> list[DoctorCheck]:
                 detail=raw or "не задана",
                 hint="" if ok else "Задайте WHISPER_CPP_MODEL/--whisper-cpp-model.",
                 links=() if ok else (LINK_GGML_MODELS,),
+            )
+        )
+    elif backend == AsrBackend.GIGAAM.value:
+        # GigaAM через onnx-asr: модель скачивается с Hugging Face или берётся
+        # из GIGAAM_MODEL_PATH. Локальный файл не обязателен — мягкая проверка.
+        raw = env.get("GIGAAM_MODEL_PATH", "").strip()
+        if raw and _is_dir(Path(raw)):
+            detail = f"локальный каталог: {raw}"
+        elif raw:
+            detail = "путь не найден — модель будет загружена с Hugging Face"
+        else:
+            detail = "модель будет загружена с Hugging Face при первом запуске"
+        checks.append(
+            DoctorCheck(
+                key="model:gigaam",
+                label="Модель GigaAM (onnx-asr)",
+                ok=True,
+                critical=False,
+                detail=detail,
             )
         )
 
@@ -438,7 +458,7 @@ def _check_vulkan(env: Mapping[str, str]) -> DoctorCheck:
             label="GPU Vulkan",
             ok=True,
             critical=False,
-            detail="не применимо (бэкенд faster-whisper)",
+            detail=f"не применимо (бэкенд {backend or DEFAULT_ASR_BACKEND.value})",
         )
     binary = env.get("WHISPER_CPP_BINARY", DEFAULT_WHISPER_BINARY).strip()
     if not _binary_available(binary):

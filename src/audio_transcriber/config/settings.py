@@ -25,6 +25,12 @@ from audio_transcriber.config.defaults import (
     DEFAULT_ENROLLMENT_MAX_SAMPLE_SECONDS,
     DEFAULT_ENROLLMENT_MIN_SAMPLE_SECONDS,
     DEFAULT_ENROLLMENT_MIN_SIMILARITY,
+    DEFAULT_GIGAAM_MODEL,
+    DEFAULT_HYBRID_CONTEXT_SECONDS,
+    DEFAULT_HYBRID_LOW_LOGPROB_THRESHOLD,
+    DEFAULT_HYBRID_MIN_SEGMENT_SECONDS,
+    DEFAULT_HYBRID_NO_SPEECH_THRESHOLD,
+    DEFAULT_HYBRID_SILENCE_RMS_THRESHOLD,
     DEFAULT_LLM_PROVIDER,
     DEFAULT_LLM_REQUEST_TIMEOUT,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
@@ -161,6 +167,27 @@ class AppConfig:
     whisper_cpp_model: Path | None = None
     whisper_cpp_lib_path: str | None = None
     whisper_cpp_threads: int | None = None
+    # --- GigaAM v3 (RU) через onnx-asr (#46) ---
+    # Имя модели onnx-asr (``gigaam-v3-e2e-rnnt`` и т.п.), локальный каталог
+    # модели (``None`` — загрузка с Hugging Face) и квантизация (``int8``/...).
+    # Все три входят в ключ кэша ASR.
+    gigaam_model: str = DEFAULT_GIGAAM_MODEL
+    gigaam_model_path: Path | None = None
+    gigaam_quantization: str | None = None
+    # Резать длинное аудио встроенным VAD onnx-asr (рекомендуется: у GigaAM
+    # ограниченное окно). При недоступной VAD-модели движок мягко деградирует.
+    gigaam_vad: bool = True
+    # --- Гибридный ASR (#57): «плохие» сегменты основного движка → Whisper ---
+    # Включается флагом; дорабатываются только сегменты, не прошедшие пороги.
+    hybrid_asr: bool = False
+    # Резервный движок для доработки: faster-whisper (модель ``model_name``)
+    # или whisper-cpp (модель ``whisper_cpp_model``).
+    hybrid_fallback_backend: AsrBackend = AsrBackend.FASTER_WHISPER
+    hybrid_low_logprob_threshold: float = DEFAULT_HYBRID_LOW_LOGPROB_THRESHOLD
+    hybrid_no_speech_threshold: float = DEFAULT_HYBRID_NO_SPEECH_THRESHOLD
+    hybrid_silence_rms_threshold: float = DEFAULT_HYBRID_SILENCE_RMS_THRESHOLD
+    hybrid_min_segment_seconds: float = DEFAULT_HYBRID_MIN_SEGMENT_SECONDS
+    hybrid_context_seconds: float = DEFAULT_HYBRID_CONTEXT_SECONDS
     llm_enabled: bool = False
     # Провайдер LLM-постобработки: ``llama`` — локальный llama-server
     # (по умолчанию), ``openai`` — внешний OpenAI-совместимый API.
@@ -217,6 +244,9 @@ class AppConfig:
         # БД глоссария: CLI может передать строку — приводим к Path.
         if self.glossary_db is not None:
             self.glossary_db = Path(self.glossary_db)
+        # Путь к локальной модели GigaAM: CLI/окружение могут передать строку.
+        if self.gigaam_model_path is not None:
+            self.gigaam_model_path = Path(self.gigaam_model_path)
         # Образцы голоса: допускаем одиночный путь или последовательность на имя.
         self.speaker_references = _normalize_speaker_references(self.speaker_references)
         self._validate()
@@ -339,6 +369,9 @@ class AppConfig:
                 "Для бэкенда whisper-cpp необходимо указать путь к ggml-модели "
                 "(--whisper-cpp-model)"
             )
+
+        self._validate_gigaam()
+        self._validate_hybrid()
 
         self._validate_llm_provider()
 
@@ -485,6 +518,67 @@ class AppConfig:
             logger.warning(
                 "LLM включена с провайдером openai, но не задано имя модели "
                 "(LLM_MODEL_NAME/--llm-model-name) — LLM-постобработка будет пропущена"
+            )
+
+    def _validate_gigaam(self) -> None:
+        """Проверяет параметры бэкенда GigaAM (onnx-asr)."""
+        if not isinstance(self.gigaam_vad, bool):
+            raise ConfigurationError("GIGAAM_VAD должно быть true или false")
+
+        if not isinstance(self.gigaam_model, str) or not self.gigaam_model.strip():
+            raise ConfigurationError("GIGAAM_MODEL должно быть непустой строкой")
+        self.gigaam_model = self.gigaam_model.strip()
+
+        if self.gigaam_quantization is not None:
+            if not isinstance(self.gigaam_quantization, str):
+                raise ConfigurationError("GIGAAM_QUANTIZATION должно быть строкой")
+            # Пустое значение — «без квантизации»: нормализуем в None, чтобы
+            # ключ кэша и вызов onnx-asr были однозначны.
+            self.gigaam_quantization = self.gigaam_quantization.strip() or None
+
+    def _validate_hybrid(self) -> None:
+        """Проверяет параметры гибридного ASR (#57)."""
+        if not isinstance(self.hybrid_asr, bool):
+            raise ConfigurationError("HYBRID_ASR должно быть true или false")
+
+        if self.hybrid_low_logprob_threshold > 0.0:
+            raise ConfigurationError(
+                "HYBRID_LOW_LOGPROB_THRESHOLD должно быть числом <= 0 "
+                "(логвероятности не превышают нуля)"
+            )
+        if not (0.0 <= self.hybrid_no_speech_threshold <= 1.0):
+            raise ConfigurationError(
+                "HYBRID_NO_SPEECH_THRESHOLD должно быть числом в диапазоне [0; 1]"
+            )
+        if self.hybrid_silence_rms_threshold < 0.0:
+            raise ConfigurationError(
+                "HYBRID_SILENCE_RMS_THRESHOLD не может быть отрицательным"
+            )
+        if self.hybrid_min_segment_seconds <= 0.0:
+            raise ConfigurationError(
+                "HYBRID_MIN_SEGMENT_SECONDS должно быть положительным числом"
+            )
+        if self.hybrid_context_seconds < 0.0:
+            raise ConfigurationError(
+                "HYBRID_CONTEXT_SECONDS не может быть отрицательным"
+            )
+
+        if not self.hybrid_asr:
+            return
+
+        if self.hybrid_fallback_backend is AsrBackend.WHISPER_CPP and (
+            self.whisper_cpp_model is None
+        ):
+            raise ConfigurationError(
+                "Гибридный ASR с резервным бэкендом whisper-cpp требует путь к "
+                "ggml-модели (--whisper-cpp-model)"
+            )
+        if self.hybrid_fallback_backend is self.asr_backend:
+            logger.warning(
+                "Гибридный ASR включён, но основной и резервный движки совпадают "
+                "(%s) — оба прохода выполняет один и тот же движок; "
+                "смысл гибрида теряется",
+                self.asr_backend.value,
             )
 
     def _validate_reference_prepare(self) -> None:
