@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 
 import {
+  collectSpeakers,
+  describeApply,
   errorMessage,
   formatDuration,
   type ApplyNamesResponse,
@@ -24,24 +26,6 @@ type Props = {
 
 type EditState = { sid: string; kind: 'rename' | 'library'; value: string }
 
-function describeApply(response: ApplyNamesResponse, total: number): string {
-  if (response.error) return response.error
-  const matched = Object.entries(response.matched)
-  const parts = [`Сопоставлено ${matched.length} из ${total}`]
-  if (matched.length > 0) {
-    parts.push(matched.map(([sid, name]) => `${sid} → ${name}`).join(', '))
-  }
-  const candidates = Object.entries(response.best_candidates)
-    .sort((a, b) => b[1].score - a[1].score)
-    .slice(0, 3)
-    .map(
-      ([sid, candidate]) =>
-        `${sid} ≈ «${candidate.name}» ${candidate.score.toFixed(2)} < ${response.threshold.toFixed(2)}`,
-    )
-  if (candidates.length > 0) parts.push(`не добрали: ${candidates.join('; ')}`)
-  return parts.join(' · ')
-}
-
 function SpeakersPanel({
   jobId,
   result,
@@ -57,12 +41,23 @@ function SpeakersPanel({
   const [edit, setEdit] = useState<EditState | null>(null)
   const [mergeTarget, setMergeTarget] = useState<Record<string, string>>({})
 
-  const counts = useMemo(() => {
-    const map: Record<string, number> = {}
+  //: Все говорящие результата (включая упомянутых только как участники
+  //: наложения) в устойчивом порядке SPEAKER_00, SPEAKER_01, …
+  const speakers = useMemo(() => collectSpeakers(result), [result])
+
+  //: Реплики, где говорящий основной, и отдельно — где он участник наложения.
+  //: Раньше считались только основные: говорящий, встречающийся лишь в
+  //: наложении, показывался как «0 реплик» и выглядел отсутствующим.
+  const { counts, extraCounts } = useMemo(() => {
+    const primary: Record<string, number> = {}
+    const extra: Record<string, number> = {}
     for (const entry of result.entries) {
-      if (entry.speaker_id) map[entry.speaker_id] = (map[entry.speaker_id] ?? 0) + 1
+      if (entry.speaker_id) primary[entry.speaker_id] = (primary[entry.speaker_id] ?? 0) + 1
+      for (const id of entry.extra_speaker_ids) {
+        extra[id] = (extra[id] ?? 0) + 1
+      }
     }
-    return map
+    return { counts: primary, extraCounts: extra }
   }, [result.entries])
 
   const run = async (task: () => Promise<void>) => {
@@ -101,7 +96,7 @@ function SpeakersPanel({
   }
 
   const applyNames = () => {
-    const total = result.speakers.length
+    const total = speakers.length
     void run(async () => {
       const response = await onApplyNames()
       setStatus({
@@ -126,13 +121,13 @@ function SpeakersPanel({
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <h3 className="font-medium">Говорящие</h3>
         <span className="text-xs text-slate-400 dark:text-slate-500">
-          {result.speakers.length} шт.
+          {speakers.length} шт.
         </span>
         <div className="ml-auto flex flex-wrap gap-2">
           <button
             type="button"
             onClick={applyNames}
-            disabled={busy || result.speakers.length === 0}
+            disabled={busy || speakers.length === 0}
             className="rounded-md bg-slate-800 px-3 py-1.5 text-xs text-white hover:bg-slate-700 disabled:opacity-40 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-white"
           >
             Применить имена
@@ -161,10 +156,10 @@ function SpeakersPanel({
       )}
 
       <ul className="space-y-2">
-        {result.speakers.map((speaker) => {
+        {speakers.map((speaker) => {
           const editing = edit?.sid === speaker.id ? edit : null
           const duration = sampleMeta[speaker.id]?.duration
-          const others = result.speakers.filter((item) => item.id !== speaker.id)
+          const others = speakers.filter((item) => item.id !== speaker.id)
           return (
             <li
               key={speaker.id}
@@ -207,7 +202,10 @@ function SpeakersPanel({
                   </div>
                 ) : (
                   <>
-                    <span className="min-w-0 truncate text-sm font-medium" title={speaker.display_name}>
+                    <span
+                      className="min-w-0 break-words text-sm font-medium leading-snug"
+                      title={speaker.display_name}
+                    >
                       {speaker.display_name}
                     </span>
                     <button
@@ -227,7 +225,17 @@ function SpeakersPanel({
               {/* Служебная строка: реплики · образец · длительность — фиксированные слоты,
                   чтобы значения не «прыгали» при разной длине имени. */}
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-400 dark:text-slate-500 sm:col-span-2 sm:row-start-2">
-                <span className="tabular-nums">{counts[speaker.id] ?? 0} реплик</span>
+                <span className="tabular-nums" title="Реплики, где говорящий основной">
+                  {counts[speaker.id] ?? 0} реплик
+                </span>
+                {(extraCounts[speaker.id] ?? 0) > 0 && (
+                  <span
+                    className="tabular-nums"
+                    title="Реплики, где говорящий — участник наложения"
+                  >
+                    +{extraCounts[speaker.id]} в наложении
+                  </span>
+                )}
                 <span>Образец {speaker.has_sample ? '✓' : '—'}</span>
                 {speaker.has_sample && (
                   <span className="tabular-nums" title="Длительность образца">

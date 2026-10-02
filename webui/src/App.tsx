@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   api,
+  describeApply,
   EXPORT_FORMATS,
   errorMessage,
   formatDuration,
@@ -126,6 +127,13 @@ function App() {
   const [protocol, setProtocol] = useState<ProtocolResponse | null>(null)
   const [protocolBusy, setProtocolBusy] = useState(false)
   const [protocolError, setProtocolError] = useState<string | null>(null)
+  // Отдельное действие «Переопределить говорящих» (#37): переиспользует
+  // enrollment (POST apply-names), поэтому показывает свой итог в баннере.
+  const [applyBusy, setApplyBusy] = useState(false)
+  const [applyNotice, setApplyNotice] = useState<{
+    kind: 'info' | 'error'
+    text: string
+  } | null>(null)
   // Формат прямой выгрузки стенограммы; по умолчанию — первый из настроек.
   const [exportFormat, setExportFormat] = useState('txt')
   const [summary, setSummary] = useState<string | null>(null)
@@ -722,6 +730,35 @@ function App() {
     [refreshSamples],
   )
 
+  //: «Переопределить говорящих» (#37): применяет enrollment текущего результата
+  //: по актуальной библиотеке `voices/` без повторного распознавания и
+  //: показывает, сколько имён сопоставлено и лучших недобранных. Ручные правки
+  //: текста (#26) и текущие имена сохраняются на бэкенде.
+  const runApplyNames = useCallback(
+    async (jobId: string) => {
+      setError(null)
+      setApplyBusy(true)
+      setApplyNotice(null)
+      try {
+        const response = await applyNames(jobId)
+        setApplyNotice({
+          kind: response.error ? 'error' : 'info',
+          text: describeApply(response, response.result.speakers.length),
+        })
+      } catch (cause) {
+        setApplyNotice({ kind: 'error', text: errorMessage(cause) })
+      } finally {
+        setApplyBusy(false)
+      }
+    },
+    [applyNames],
+  )
+
+  //: Смена активной задачи делает прежний итог сопоставления неактуальным.
+  useEffect(() => {
+    setApplyNotice(null)
+  }, [activeJobId])
+
   const saveToLibrary = useCallback(
     async (
       jobId: string,
@@ -800,6 +837,16 @@ function App() {
               Модели
             </button>
             <button
+              onClick={() => {
+                if (activeJobId) void runApplyNames(activeJobId)
+              }}
+              disabled={!result || !activeJobId || applyBusy}
+              title="Сопоставить говорящих с именами по актуальной библиотеке голосов (enrollment, без повторного распознавания)"
+              className="rounded-md border border-blue-300 px-3 py-1.5 text-sm text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-950/50"
+            >
+              {applyBusy ? 'Переопределяю…' : 'Переопределить говорящих'}
+            </button>
+            <button
               onClick={() => setVoicesOpen(true)}
               className="rounded-md border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
             >
@@ -829,6 +876,27 @@ function App() {
         {error && (
           <div className="rounded-md border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/50 dark:text-red-300">
             {error}
+          </div>
+        )}
+
+        {applyNotice && (
+          <div
+            role="status"
+            className={`flex items-start justify-between gap-3 rounded-md border px-4 py-2 text-sm ${
+              applyNotice.kind === 'error'
+                ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/50 dark:text-red-300'
+                : 'border-blue-200 bg-blue-50 text-blue-800 dark:border-blue-900 dark:bg-blue-950/50 dark:text-blue-200'
+            }`}
+          >
+            <p className="min-w-0 break-words">{applyNotice.text}</p>
+            <button
+              type="button"
+              onClick={() => setApplyNotice(null)}
+              title="Скрыть сообщение"
+              className="shrink-0 rounded border border-current/30 px-2 py-0.5 text-xs hover:bg-white/40 dark:hover:bg-black/20"
+            >
+              Скрыть
+            </button>
           </div>
         )}
 

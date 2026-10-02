@@ -360,7 +360,7 @@ function TranscriptTable({
                   </td>
                   <td className="px-3 py-1.5">
                     <div
-                      className="max-w-[9rem] truncate sm:max-w-[16rem]"
+                      className="max-w-[9rem] whitespace-normal break-words leading-snug sm:max-w-[16rem]"
                       title={pieces.map((piece) => piece.name).join(' + ')}
                     >
                       {pieces.map((piece, pieceIndex) => (

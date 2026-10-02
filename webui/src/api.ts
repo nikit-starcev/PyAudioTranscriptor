@@ -473,3 +473,64 @@ export function speakerName(speakers: SpeakerInfo[], id: string | null): string 
   if (id == null) return '—'
   return speakers.find((speaker) => speaker.id === id)?.display_name ?? id
 }
+
+//: Ключ сортировки говорящих: числовой суффикс id (``SPEAKER_02`` → 2), затем
+//: сам id. Говорящие без числа уходят в конец, чтобы порядок был стабильным и
+//: предсказуемым (00, 01, 02, …), а не зависел от порядка диаризации.
+function speakerSortKey(id: string): [number, string] {
+  const match = id.match(/(\d+)(?!.*\d)/)
+  return [match ? Number(match[1]) : Number.MAX_SAFE_INTEGER, id]
+}
+
+export function sortSpeakers(speakers: SpeakerInfo[]): SpeakerInfo[] {
+  return [...speakers].sort((a, b) => {
+    const [aIndex, aId] = speakerSortKey(a.id)
+    const [bIndex, bId] = speakerSortKey(b.id)
+    return aIndex !== bIndex ? aIndex - bIndex : aId.localeCompare(bId)
+  })
+}
+
+/**
+ * Полный список говорящих результата — объединение `result.speakers` и id,
+ * на которые ссылаются реплики (основные и дополнительные). Гарантирует, что
+ * говорящий, упомянутый только как участник наложения (`extra_speaker_ids`),
+ * не потеряется, даже если его нет в `result.speakers` (старые результаты).
+ * Порядок — по возрастанию id.
+ */
+export function collectSpeakers(result: TranscriptResult): SpeakerInfo[] {
+  const byId = new Map<string, SpeakerInfo>()
+  for (const speaker of result.speakers) byId.set(speaker.id, speaker)
+  for (const entry of result.entries) {
+    for (const id of [entry.speaker_id, ...entry.extra_speaker_ids]) {
+      if (id && !byId.has(id)) {
+        byId.set(id, { id, display_name: id, has_sample: false })
+      }
+    }
+  }
+  return sortSpeakers([...byId.values()])
+}
+
+/**
+ * Человекочитаемый итог применения имён по голосу: сколько сопоставлено и
+ * лучшие недобранные пары (как в TUI). `total` — число говорящих результата.
+ */
+export function describeApply(response: ApplyNamesResponse, total: number): string {
+  if (response.error) return response.error
+  const matched = Object.entries(response.matched)
+  const parts =
+    matched.length > 0
+      ? [
+          `Сопоставлено ${matched.length} из ${total}: ` +
+            matched.map(([sid, name]) => `${sid} → ${name}`).join(', '),
+        ]
+      : [`Имена по голосу не сопоставлены (0 из ${total}, ниже порога)`]
+  const candidates = Object.entries(response.best_candidates)
+    .sort((a, b) => b[1].score - a[1].score)
+    .slice(0, 3)
+    .map(
+      ([sid, candidate]) =>
+        `${sid} ≈ «${candidate.name}» ${candidate.score.toFixed(2)} < ${response.threshold.toFixed(2)}`,
+    )
+  if (candidates.length > 0) parts.push(`не добрали: ${candidates.join('; ')}`)
+  return parts.join(' · ')
+}
