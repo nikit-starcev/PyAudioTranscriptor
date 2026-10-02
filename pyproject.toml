@@ -1,6 +1,9 @@
 [project]
 name = "audio-transcriber"
-version = "0.3.1"
+# Версия не хардкодится: её выводят hatch-vcs из git-тега ``vX.Y.Z``.
+# Между тегами добавляется dev-суффикс (X.Y.Z.devN+gHASH), а на теге берётся
+# ровно версия тега. См. ``[tool.hatch.version]`` ниже и ``RELEASING.md``.
+dynamic = ["version"]
 description = "Локальная CLI-утилита для транскрибации аудиозаписей с разделением говорящих (speaker diarization)"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -40,8 +43,13 @@ web = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+# Единственный источник версии — git-тег ``vX.Y.Z`` (PEP 440 через setuptools-scm).
+# Тег → ``X.Y.Z``; после тега → ``X.Y.Z.devN+ghash``. Версии в ``pyproject.toml`` нет.
+[tool.hatch.version]
+source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/audio_transcriber"]
