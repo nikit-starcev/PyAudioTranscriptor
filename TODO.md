@@ -283,6 +283,12 @@
 
 ## Важно
 
+- **«Transcription by CastingWords» просачивается в расшифровку (галлюцинация).** (#77)
+  whisper.cpp выдал субтитровую подпись сервиса на неречевом участке (реплика без говорящего, ~44:57).
+  В `cleaning/artifact_filter.py` нет «transcription by» (есть «субтитры/subtitles by/translated by»).
+  Добавить варианты (`transcription by`, `transcribed by`, `castingwords`, др. сервисы) + резать короткие
+  реплики без говорящего/низкой уверенности; тест на реальной записи.
+
 - **CLI не наследует `config.env` + зависание pyannote на gated-модели.** (#76)
   (а) CLI-дефолты опций перебивают `config.env`: `ASR_BACKEND` (faster-whisper вместо whisper-cpp), `NEMO_SPEECH_BINARY`
   (→ hybrid недоступен → auto ушёл на pyannote), `PYANNOTE_LOCAL_MODEL`. Нужно: CLI берёт значения из config.env,
