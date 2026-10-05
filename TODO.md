@@ -281,13 +281,11 @@
   и индикатор на стадии `asr`; «whisper.cpp · GPU Vulkan (RX 590)» / «CPU (GigaAM)»; пометка, что
   денойз и диаризация — CPU (`5280171`).
 
-## Важно
+- ✅ **Артефакт «Transcription by CastingWords»** (#77): в `cleaning/artifact_filter.py` добавлены
+  `transcription by`/`transcribed by` + сервисы-подписи (`castingwords`, `rev com`, `otter ai`, …);
+  на реальном результате отсекается ровно артефакт, соседние реплики целы (`b1c0d4d`).
 
-- **«Transcription by CastingWords» просачивается в расшифровку (галлюцинация).** (#77)
-  whisper.cpp выдал субтитровую подпись сервиса на неречевом участке (реплика без говорящего, ~44:57).
-  В `cleaning/artifact_filter.py` нет «transcription by» (есть «субтитры/subtitles by/translated by»).
-  Добавить варианты (`transcription by`, `transcribed by`, `castingwords`, др. сервисы) + резать короткие
-  реплики без говорящего/низкой уверенности; тест на реальной записи.
+## Важно
 
 - **CLI не наследует `config.env` + зависание pyannote на gated-модели.** (#76)
   (а) CLI-дефолты опций перебивают `config.env`: `ASR_BACKEND` (faster-whisper вместо whisper-cpp), `NEMO_SPEECH_BINARY`
