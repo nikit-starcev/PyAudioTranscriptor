@@ -283,6 +283,13 @@
 
 ## Важно
 
+- **CLI не наследует `config.env` + зависание pyannote на gated-модели.** (#76)
+  (а) CLI-дефолты опций перебивают `config.env`: `ASR_BACKEND` (faster-whisper вместо whisper-cpp), `NEMO_SPEECH_BINARY`
+  (→ hybrid недоступен → auto ушёл на pyannote), `PYANNOTE_LOCAL_MODEL`. Нужно: CLI берёт значения из config.env,
+  флаги — только явный override (как веб через `build_job_config`). (б) pyannote при отсутствии локального пути/токена
+  долбит HF за gated `config.yaml` → 401 → зависание (CLOSE-WAIT, 45+ мин); при заданном локальном пути не ходить в HF,
+  при 401 — быстрый понятный фейл. Связано с чистым прогоном для #13.
+
 - **Качество определения говорящих: диаризация ошибается.** (#13)
   Один человек дробится на нескольких «Спикеров» и/или реплики приписываются
   не тем участникам. Где: `diarization/pyannote_engine.py`, `merging/aligner.py`.
