@@ -20,7 +20,7 @@ import tempfile
 import threading
 import uuid
 import webbrowser
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
@@ -629,12 +629,10 @@ def create_app(
     def spa_fallback(full_path: str) -> Response:
         if full_path == "api" or full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Не найдено")
-        candidate = STATIC_DIR / full_path
-        try:
-            if candidate.is_file():
+        if full_path:
+            candidate = _resolve_static_file(full_path)
+            if candidate is not None:
                 return FileResponse(candidate)
-        except OSError:
-            pass
         return _index_response()
 
     return app
@@ -2544,6 +2542,31 @@ def _index_response() -> Response:
     return HTMLResponse(_PLACEHOLDER_HTML)
 
 
+def _resolve_static_file(full_path: str) -> Path | None:
+    """Файл статики внутри :data:`STATIC_DIR` или ``None`` (нет файла).
+
+    Защита от path traversal (issue #79): запрошенный путь разрешается
+    (``resolve()``) и принимается, только если остаётся внутри каталога
+    статики. Попытки выйти наружу — ``../``, ``..%2f`` (после декодирования),
+    абсолютный путь — приводят к ``HTTPException(404)``, а не к отдаче
+    произвольного файла хоста. Если путь внутри, но файла нет, возвращается
+    ``None`` — вызывающий отдаёт SPA-фолбэк (``index.html``).
+    """
+    static_root = STATIC_DIR.resolve()
+    try:
+        target = (STATIC_DIR / full_path).resolve()
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="Не найдено") from exc
+    if not target.is_relative_to(static_root):
+        raise HTTPException(status_code=404, detail="Не найдено")
+    try:
+        if target.is_file():
+            return target
+    except (OSError, ValueError):
+        return None
+    return None
+
+
 def _list_files(
     input_dir: Path, *, include_processed: bool = False
 ) -> list[dict[str, object]]:
@@ -2756,12 +2779,36 @@ def _probe_duration(path: Path) -> float | None:
     return probe_duration(path)
 
 
+#: Размер чанка при потоковой отдаче аудио. Диапазон никогда не
+#: материализуется целиком в памяти (issue #80): браузерный
+#: ``<audio preload="metadata">`` шлёт ``Range: bytes=0-``, что раньше
+#: приводило к чтению всего файла в память.
+_STREAM_CHUNK_SIZE = 128 * 1024
+
+
+def _file_chunks(path: Path, start: int, length: int, chunk_size: int) -> Iterator[bytes]:
+    """Потоковое чтение ``length`` байт файла с позиции ``start`` чанками."""
+    remaining = length
+    with path.open("rb") as handle:
+        handle.seek(start)
+        while remaining > 0:
+            data = handle.read(min(chunk_size, remaining))
+            if not data:
+                break
+            remaining -= len(data)
+            yield data
+
+
 def _range_response(path: Path, range_header: str | None, *, media_type: str) -> Response:
-    """Ответ с поддержкой HTTP Range для прослушивания исходного аудио."""
+    """Ответ с поддержкой HTTP Range для прослушивания исходного аудио.
+
+    Тело отдаётся потоково (``StreamingResponse``) чанками по
+    :data:`_STREAM_CHUNK_SIZE` — без чтения диапазона (и тем более всего файла
+    при ``Range: bytes=0-``) в память. Заголовки ``Content-Range``,
+    ``Content-Length`` и ``Accept-Ranges`` формируются по правилам RFC 7233.
+    """
     size = path.stat().st_size
-    start, end = 0, max(size - 1, 0)
-    status = 200
-    headers = {"Accept-Ranges": "bytes", "Content-Length": str(size)}
+    headers = {"Accept-Ranges": "bytes"}
     if range_header and range_header.startswith("bytes=") and size > 0:
         spec = range_header[len("bytes=") :].split(",", 1)[0].strip()
         first, _, last = spec.partition("-")
@@ -2772,14 +2819,22 @@ def _range_response(path: Path, range_header: str | None, *, media_type: str) ->
                 headers={"Content-Range": f"bytes */{size}", "Accept-Ranges": "bytes"},
             )
         start, end = resolved
-        status = 206
+        length = end - start + 1
         headers["Content-Range"] = f"bytes {start}-{end}/{size}"
-        headers["Content-Length"] = str(end - start + 1)
-    length = end - start + 1 if size > 0 else 0
-    with path.open("rb") as handle:
-        handle.seek(start)
-        data = handle.read(length)
-    return Response(content=data, status_code=status, media_type=media_type, headers=headers)
+        headers["Content-Length"] = str(length)
+        return StreamingResponse(
+            _file_chunks(path, start, length, _STREAM_CHUNK_SIZE),
+            status_code=206,
+            media_type=media_type,
+            headers=headers,
+        )
+    headers["Content-Length"] = str(size)
+    return StreamingResponse(
+        _file_chunks(path, 0, size, _STREAM_CHUNK_SIZE),
+        status_code=200,
+        media_type=media_type,
+        headers=headers,
+    )
 
 
 def _parse_range(first: str, last: str, size: int) -> tuple[int, int] | None:

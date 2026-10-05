@@ -15,6 +15,22 @@
   JSON-результате и API (поле `words` у реплик), включены по умолчанию; флаг
   `--word-timestamps/--no-word-timestamps`, `WORD_TIMESTAMPS`, тумблер в вебе.
 
+### Fixed
+
+- **Path traversal в отдаче статики SPA** (#79): catch-all `{full_path:path}`
+  теперь разрешает путь и отдаёт файл только внутри каталога статики
+  (`resolve()` + `is_relative_to`); `../`, `..%2f`, encoded и абсолютные пути
+  получают `404`, а не файл хоста. Обычные ассеты и SPA-фолбэк сохранены.
+- **OOM при HTTP Range для аудио** (#80): ответ отдаётся потоково
+  (`StreamingResponse`) чанками по 128 КиБ вместо чтения всего диапазона
+  (`bytes=0-` от `<audio preload="metadata">`) в память; заголовки
+  `Content-Range`/`Content-Length`/`Accept-Ranges` и `416` для невалидного
+  диапазона сохранены.
+- **Секреты в argv обёрток запуска и права `config.env`** (#81): `run.sh`/
+  `run.ps1` больше не передают `--hf-token`/`--llm-api-key` (видны в `ps`);
+  CLI берёт их из `config.env`/окружения. `config.env` — `chmod 600`,
+  `doctor` предупреждает при правах шире `0600`.
+
 ## [0.5.0] - 2026-10-05
 
 ### Added

@@ -996,3 +996,17 @@ def test_diarization_hybrid_overload_split_must_be_bool(audio_file: Path) -> Non
             input_file=audio_file,
             diarization_hybrid_overload_split="yes",  # type: ignore[arg-type]
         )
+
+
+def test_collect_env_kwargs_picks_secrets_from_config_env(tmp_path: Path) -> None:
+    """Секреты берутся из config.env/окружения без флагов argv (issue #81)."""
+    from audio_transcriber.cli.env_config import collect_env_kwargs
+
+    kwargs = collect_env_kwargs(
+        {"HF_TOKEN": "hf_secret", "LLM_API_KEY": "sk-secret"},
+        input_file=tmp_path / "audio.mp3",
+        output_dir=tmp_path / "out",
+    )
+
+    assert kwargs["hf_token"] == "hf_secret"
+    assert kwargs["llm_api_key"] == "sk-secret"

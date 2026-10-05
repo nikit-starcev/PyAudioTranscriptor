@@ -79,3 +79,29 @@ def test_run_wrappers_export_all_config_env() -> None:
     assert "source config.env" in sh_text
     # run.ps1: переносит разобранные значения в окружение процесса.
     assert "SetEnvironmentVariable" in ps_text
+
+
+#: Секреты, которые нельзя передавать флагами argv — они видны в
+#: ``ps``/``/proc/<pid>/cmdline`` (issue #81).
+_SECRET_FLAGS = ("--hf-token", "--llm-api-key")
+
+
+def test_run_wrappers_do_not_pass_secrets_in_argv() -> None:
+    """Обёртки не пробрасывают секреты флагами — только через окружение/файл."""
+    sh_text = (_PROJECT_ROOT / "run.sh").read_text(encoding="utf-8")
+    ps_text = (_PROJECT_ROOT / "run.ps1").read_text(encoding="utf-8")
+
+    for flag in _SECRET_FLAGS:
+        assert flag not in sh_text, f"run.sh пробрасывает секрет флагом {flag}"
+        assert flag not in ps_text, f"run.ps1 пробрасывает секрет флагом {flag}"
+
+
+def test_run_wrappers_still_forward_secret_env_vars() -> None:
+    """Секреты остаются доступны CLI через config.env/окружение, не argv."""
+    assert "HF_TOKEN" in _run_sh_vars()
+    assert "HF_TOKEN" in _run_ps1_vars()
+    # run.sh экспортирует весь config.env (`set -a`), run.ps1 — через окружение.
+    sh_text = (_PROJECT_ROOT / "run.sh").read_text(encoding="utf-8")
+    ps_text = (_PROJECT_ROOT / "run.ps1").read_text(encoding="utf-8")
+    assert "set -a" in sh_text and "source config.env" in sh_text
+    assert "SetEnvironmentVariable" in ps_text

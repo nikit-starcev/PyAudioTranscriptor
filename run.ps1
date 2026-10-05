@@ -25,6 +25,7 @@
 #
 # Перед первым запуском:
 #   Copy-Item config.example.env config.env
+#   # в файле токены — ограничьте доступ (на Linux/macOS: chmod 600 config.env)
 #   # затем откройте config.env и укажите свой токен Hugging Face и параметры
 
 param(
@@ -131,7 +132,9 @@ $cliArgs += Get-ValueArg "--enrollment-min-similarity" "ENROLLMENT_MIN_SIMILARIT
 $cliArgs += Get-ValueArg "--voices-dir" "VOICES_DIR"
 if ($config["EXPORT_SPEAKER_SAMPLES"] -eq "false") { $cliArgs += "--no-speaker-samples" }
 
-$cliArgs += Get-ValueArg "--hf-token" "HF_TOKEN"
+# Секреты (HF_TOKEN, LLM_API_KEY) намеренно НЕ пробрасываются флагами argv:
+# они видны в списке процессов. config.env уже разобран и экспортирован в
+# окружение выше, поэтому CLI берёт их оттуда сам.
 $cliArgs += Get-ValueArg "--pyannote-local-model" "PYANNOTE_LOCAL_MODEL"
 if ($config["ENABLE_CORRECTION"] -eq "true") { $cliArgs += "--enable-correction" }
 if ($config["CLEAN_ARTIFACTS"] -eq "false") { $cliArgs += "--no-clean" }
@@ -159,7 +162,6 @@ if ($config["LLM_ENABLED"] -eq "true") { $cliArgs += "--llm" }
 $cliArgs += Get-ValueArg "--llm-provider" "LLM_PROVIDER"
 $cliArgs += Get-ValueArg "--llm-base-url" "LLM_BASE_URL"
 $cliArgs += Get-ValueArg "--llm-model-name" "LLM_MODEL_NAME"
-$cliArgs += Get-ValueArg "--llm-api-key" "LLM_API_KEY"
 $cliArgs += Get-ValueArg "--llm-model" "LLM_MODEL"
 $cliArgs += Get-ValueArg "--llm-binary" "LLM_BINARY"
 $cliArgs += Get-ValueArg "--llm-lib-path" "LLM_LIB_PATH"

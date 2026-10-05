@@ -12,6 +12,7 @@
 #
 # Перед первым запуском:
 #   cp config.example.env config.env
+#   chmod 600 config.env   # в файле токены — доступ только владельцу
 #   # затем откройте config.env и укажите свой токен Hugging Face и параметры
 
 set -euo pipefail
@@ -96,7 +97,9 @@ fi
 [ -n "${VOICES_DIR:-}" ] && ARGS+=(--voices-dir "$VOICES_DIR")
 [ "${EXPORT_SPEAKER_SAMPLES:-true}" = "false" ] && ARGS+=(--no-speaker-samples)
 
-[ -n "${HF_TOKEN:-}" ] && ARGS+=(--hf-token "$HF_TOKEN")
+# Секреты (HF_TOKEN, LLM_API_KEY) намеренно НЕ пробрасываются флагами argv:
+# они видны в `ps`/`/proc/<pid>/cmdline`. config.env уже загружен выше
+# (`set -a; source config.env`), поэтому CLI сам берёт их из окружения/файла.
 [ -n "${PYANNOTE_LOCAL_MODEL:-}" ] && ARGS+=(--pyannote-local-model "$PYANNOTE_LOCAL_MODEL")
 [ "${ENABLE_CORRECTION:-false}" = "true" ] && ARGS+=(--enable-correction)
 [ "${CLEAN_ARTIFACTS:-true}" = "false" ] && ARGS+=(--no-clean)
@@ -124,7 +127,6 @@ fi
 [ -n "${LLM_PROVIDER:-}" ] && ARGS+=(--llm-provider "$LLM_PROVIDER")
 [ -n "${LLM_BASE_URL:-}" ] && ARGS+=(--llm-base-url "$LLM_BASE_URL")
 [ -n "${LLM_MODEL_NAME:-}" ] && ARGS+=(--llm-model-name "$LLM_MODEL_NAME")
-[ -n "${LLM_API_KEY:-}" ] && ARGS+=(--llm-api-key "$LLM_API_KEY")
 [ -n "${LLM_MODEL:-}" ] && ARGS+=(--llm-model "$LLM_MODEL")
 [ -n "${LLM_BINARY:-}" ] && ARGS+=(--llm-binary "$LLM_BINARY")
 [ -n "${LLM_LIB_PATH:-}" ] && ARGS+=(--llm-lib-path "$LLM_LIB_PATH")

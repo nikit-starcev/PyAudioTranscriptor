@@ -18,6 +18,7 @@ import importlib.util
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -739,6 +740,24 @@ def _check_vulkan(env: Mapping[str, str]) -> DoctorCheck:
     )
 
 
+def _unsafe_config_env_mode(config_env_path: Path) -> str | None:
+    """Восьмеричный режим ``config.env``, если права шире ``0600``.
+
+    ``None`` — права безопасны либо платформа не POSIX (на Windows
+    POSIX-режимы не применяются). Файл содержит живые токены, поэтому доступ
+    группе или остальным (любые биты вне ``0600``) небезопасен.
+    """
+    if os.name != "posix":
+        return None
+    try:
+        mode = stat.S_IMODE(config_env_path.stat().st_mode)
+    except OSError:
+        return None
+    if mode & 0o077:
+        return f"{mode:04o}"
+    return None
+
+
 def _check_config_env(config_env_path: Path | None) -> DoctorCheck:
     if config_env_path is None:
         return DoctorCheck(
@@ -756,13 +775,34 @@ def _check_config_env(config_env_path: Path | None) -> DoctorCheck:
         readable = True
     except OSError:
         readable = False
+    if not readable:
+        return DoctorCheck(
+            key="config_env",
+            label="config.env",
+            ok=False,
+            critical=False,
+            detail=str(config_env_path),
+            hint="Файл не читается — проверьте права доступа.",
+        )
+    unsafe_mode = _unsafe_config_env_mode(config_env_path)
+    if unsafe_mode is not None:
+        return DoctorCheck(
+            key="config_env",
+            label="config.env",
+            ok=False,
+            critical=False,
+            detail=f"{config_env_path} (права {unsafe_mode})",
+            hint=(
+                "Файл содержит токены, но доступен группе/остальным. "
+                "Ограничьте доступ: chmod 600 config.env."
+            ),
+        )
     return DoctorCheck(
         key="config_env",
         label="config.env",
-        ok=readable,
+        ok=True,
         critical=False,
         detail=str(config_env_path),
-        hint="" if readable else "Файл не читается — проверьте права доступа.",
     )
 
 

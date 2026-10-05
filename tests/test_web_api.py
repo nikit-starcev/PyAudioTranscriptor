@@ -27,7 +27,13 @@ from audio_transcriber.domain.models import (
 )
 from audio_transcriber.progress import ProgressEvent
 from audio_transcriber.utils.exceptions import ProcessingCancelled
-from audio_transcriber.web.app import _resolve_upload_file, create_app
+from audio_transcriber.web.app import (
+    _STREAM_CHUNK_SIZE,
+    _file_chunks,
+    _resolve_static_file,
+    _resolve_upload_file,
+    create_app,
+)
 from audio_transcriber.web.events import JobEventBus
 from audio_transcriber.web.paths import WebPaths
 from audio_transcriber.web.runner import ORPHAN_ERROR_MESSAGE, JobRunner
@@ -728,6 +734,100 @@ def test_audio_endpoint_supports_range(client: TestClient) -> None:
     assert full.content == b"0123456789"
 
 
+def _audio_job(client: TestClient, name: str, data: bytes) -> str:
+    uploaded = _upload(client, name, data)
+    response = client.post("/api/jobs", json={"path": uploaded["name"]})
+    assert response.status_code == 201
+    return response.json()["id"]
+
+
+def test_audio_range_open_ended_and_suffix(client: TestClient) -> None:
+    """``bytes=a-`` и ``bytes=-n`` отдают правильные срезы и заголовки."""
+    data = b"0123456789"
+    job_id = _audio_job(client, "slices.mp3", data)
+
+    open_ended = client.get(f"/api/jobs/{job_id}/audio", headers={"Range": "bytes=5-"})
+    assert open_ended.status_code == 206
+    assert open_ended.content == b"56789"
+    assert open_ended.headers["content-range"] == "bytes 5-9/10"
+    assert open_ended.headers["content-length"] == "5"
+    assert open_ended.headers["accept-ranges"] == "bytes"
+
+    suffix = client.get(f"/api/jobs/{job_id}/audio", headers={"Range": "bytes=-3"})
+    assert suffix.status_code == 206
+    assert suffix.content == b"789"
+    assert suffix.headers["content-range"] == "bytes 7-9/10"
+
+
+def test_audio_range_invalid_returns_416(client: TestClient) -> None:
+    job_id = _audio_job(client, "bad-range.mp3", b"0123456789")
+
+    response = client.get(f"/api/jobs/{job_id}/audio", headers={"Range": "bytes=99-"})
+    assert response.status_code == 416
+    assert response.headers["content-range"] == "bytes */10"
+
+
+class _RecordingHandle:
+    """Обёртка файла, записывающая запрошенные размеры чтения."""
+
+    def __init__(self, handle: object, reads: list[int]) -> None:
+        self._handle = handle
+        self._reads = reads
+
+    def __enter__(self) -> _RecordingHandle:
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        self._handle.close()  # type: ignore[attr-defined]
+        return False
+
+    def seek(self, *args: int) -> int:
+        return self._handle.seek(*args)  # type: ignore[attr-defined]
+
+    def read(self, size: int = -1) -> bytes:
+        self._reads.append(size)
+        return self._handle.read(size)  # type: ignore[attr-defined]
+
+
+def test_audio_range_streams_without_reading_whole_file(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``Range: bytes=0-`` отдаётся чанками, а не читается целиком в память (#80)."""
+    data = b"x" * (_STREAM_CHUNK_SIZE * 3 + 123)
+    job_id = _audio_job(client, "big.mp3", data)
+
+    reads: list[int] = []
+    real_open = Path.open
+
+    def recording_open(self: Path, mode: str = "r", *args: object, **kwargs: object):
+        handle = real_open(self, mode, *args, **kwargs)  # type: ignore[arg-type]
+        if self.name == "big.mp3":
+            return _RecordingHandle(handle, reads)
+        return handle
+
+    monkeypatch.setattr(Path, "open", recording_open)
+
+    response = client.get(f"/api/jobs/{job_id}/audio", headers={"Range": "bytes=0-"})
+
+    assert response.status_code == 206
+    assert response.headers["content-range"] == f"bytes 0-{len(data) - 1}/{len(data)}"
+    assert response.headers["content-length"] == str(len(data))
+    assert response.content == data
+    # Файл больше чанка: чтений несколько, и ни одно не запросило весь файл.
+    assert len(reads) > 1
+    assert max(reads) <= _STREAM_CHUNK_SIZE
+
+
+def test_file_chunks_streams_only_requested_range(tmp_path: Path) -> None:
+    """Генератор читает ровно запрошенный диапазон чанками заданного размера."""
+    path = tmp_path / "chunks.bin"
+    path.write_bytes(b"abcdefghij")
+
+    chunks = list(_file_chunks(path, start=2, length=5, chunk_size=2))
+
+    assert chunks == [b"cd", b"ef", b"g"]
+
+
 def test_delete_job_soft_hides_and_restore(client: TestClient) -> None:
     """Обычное удаление — мягкое: скрывает из списка, запись и артефакты целы."""
     uploaded = _upload(client)
@@ -1251,6 +1351,63 @@ def test_spa_index_served(client: TestClient) -> None:
 
 def test_unknown_api_path_returns_404(client: TestClient) -> None:
     assert client.get("/api/does-not-exist").status_code == 404
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "/..%2f..%2fetc%2fpasswd",
+        "/%2e%2e/%2e%2e/etc/passwd",
+        "/%2Fetc%2Fpasswd",
+        "/..%2fapi%2f..%2f..%2fetc%2fpasswd",
+    ],
+)
+def test_static_path_traversal_returns_404(client: TestClient, url: str) -> None:
+    """Обход каталога статики (../, encoded, абсолютный) не отдаёт файлы хоста (#79)."""
+    response = client.get(url)
+
+    assert response.status_code == 404
+    assert "root:" not in response.text  # не /etc/passwd
+
+
+def test_resolve_static_file_rejects_escape(tmp_path: Path) -> None:
+    with pytest.raises(HTTPException) as escaped:
+        _resolve_static_file("../../etc/passwd")
+    assert escaped.value.status_code == 404
+
+    with pytest.raises(HTTPException) as absolute:
+        _resolve_static_file("/etc/passwd")
+    assert absolute.value.status_code == 404
+
+    with pytest.raises(HTTPException) as null_byte:
+        _resolve_static_file("bad\x00name")
+    assert null_byte.value.status_code == 404
+
+
+def test_spa_fallback_serves_index_for_unknown_route(client: TestClient) -> None:
+    """Неизвестный маршрут внутри статики отдаёт SPA-фолбэк (не 404)."""
+    response = client.get("/jobs/42")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+
+
+def test_static_asset_served(client: TestClient) -> None:
+    """Обычные пути статики (index.html и ассеты) работают после фикса."""
+    from audio_transcriber.web.paths import STATIC_DIR
+
+    assets = STATIC_DIR / "assets"
+    if not assets.is_dir() or not any(assets.iterdir()):
+        pytest.skip("SPA не собран")
+
+    index = client.get("/index.html")
+    assert index.status_code == 200
+    assert "text/html" in index.headers["content-type"]
+
+    asset = next(iter(sorted(assets.iterdir())))
+    served = client.get(f"/assets/{asset.name}")
+    assert served.status_code == 200
+    assert served.content == asset.read_bytes()
 
 
 def test_rerun_clears_stale_sse_history(

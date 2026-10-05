@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -347,10 +348,51 @@ def test_config_env_check_reads_existing_file(
     _patch_writable(monkeypatch)
     config_path = tmp_path / "config.env"
     config_path.write_text("OUTPUT_DIR=out\n", encoding="utf-8")
+    config_path.chmod(0o600)
 
     checks = doctor.run_doctor(config_path, _base_env(tmp_path))
 
     assert _find(checks, "config_env").ok
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX-права не применяются")
+def test_config_env_wide_permissions_warn_not_critical(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Права шире 0600 — предупреждение (не критично), код возврата не меняется."""
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+    config_path = tmp_path / "config.env"
+    config_path.write_text("HF_TOKEN=hf_secret\n", encoding="utf-8")
+    config_path.chmod(0o644)
+
+    checks = doctor.run_doctor(config_path, _base_env(tmp_path))
+    check = _find(checks, "config_env")
+
+    assert not check.ok
+    assert not check.critical
+    assert "0644" in check.detail
+    assert "chmod 600" in check.hint
+    assert not doctor.has_critical_failures(checks)
+    report = doctor.format_report(checks)
+    assert "config.env" in report and "[не критично]" in report
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX-права не применяются")
+def test_config_env_owner_only_has_no_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+    config_path = tmp_path / "config.env"
+    config_path.write_text("HF_TOKEN=hf_secret\n", encoding="utf-8")
+    config_path.chmod(0o600)
+
+    checks = doctor.run_doctor(config_path, _base_env(tmp_path))
+
+    check = _find(checks, "config_env")
+    assert check.ok
+    assert "права" not in check.detail
 
 
 def test_format_report_marks_failures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
