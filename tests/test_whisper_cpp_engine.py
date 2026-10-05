@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import wave
 from pathlib import Path
 
@@ -323,4 +324,69 @@ def test_probe_failure_falls_back_to_conversion(
     cmd = captured[0]
     assert Path(cmd[cmd.index("-f") + 1]).name == "audio.wav"
     assert written
+
+
+class _HungProc:
+    """Процесс, который никогда не завершается сам (дедлок GPU/Vulkan)."""
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self.returncode: int | None = None
+        self.stderr: object = iter([])
+        self.terminated = False
+        self.killed = False
+
+    def poll(self) -> int | None:
+        return -15 if (self.terminated or self.killed) else None
+
+    def wait(self, timeout: float | None = None) -> int:
+        raise subprocess.TimeoutExpired(cmd="whisper-cli", timeout=timeout)
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def kill(self) -> None:
+        self.killed = True
+
+
+def test_hung_process_times_out_is_killed_and_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Зависший whisper-cli не должен ждать вечно: таймаут → terminate + ошибка."""
+    model = tmp_path / "model.bin"
+    model.write_bytes(b"fake")
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"")
+
+    hung = _HungProc(pid=5150)
+
+    def _fake_popen(*_args: object, **_kwargs: object) -> _HungProc:
+        return hung
+
+    monkeypatch.setattr(
+        whisper_module, "load_waveform", lambda _path: np.zeros(16000, dtype=np.float32)
+    )
+    monkeypatch.setattr(whisper_module, "write_wav", lambda _path, _waveform: None)
+    monkeypatch.setattr(whisper_module.subprocess, "Popen", _fake_popen)
+
+    recognizer = WhisperCppRecognizer(model, timeout=0.05)
+
+    with pytest.raises(TranscriptionError) as excinfo:
+        recognizer.transcribe(audio)
+
+    assert "не завершился" in str(excinfo.value)
+    assert hung.terminated and hung.killed
+    assert 5150 not in subprocess_registry._active_processes
+
+
+def test_timeout_none_disables_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``timeout=None`` (или <= 0) — прежнее поведение без дедлайна."""
+    model = tmp_path / "model.bin"
+    model.write_bytes(b"fake")
+
+    assert WhisperCppRecognizer(model, timeout=None).timeout is None
+    assert WhisperCppRecognizer(model, timeout=0).timeout is None
+    assert WhisperCppRecognizer(model, timeout=12.5).timeout == 12.5
 

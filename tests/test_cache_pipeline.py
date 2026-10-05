@@ -13,7 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from audio_transcriber.cache.store import compute_cache_key
+from audio_transcriber.cache.denoiser import CachingDenoiser
+from audio_transcriber.cache.store import StageCache, compute_cache_key
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.diarization.overlap import DIARIZATION_IMPL_VERSION
 from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
@@ -25,8 +26,10 @@ from audio_transcriber.domain.models import (
 from audio_transcriber.pipeline import (
     _asr_cache_params,
     _build_recognizer,
+    _denoise_cache_signature,
     _diarization_cache_params,
     _whisper_cpp_chunk_settings,
+    _whisper_cpp_timeout,
     run_pipeline,
 )
 from audio_transcriber.transcription.gigaam_engine import (
@@ -41,6 +44,7 @@ from audio_transcriber.transcription.whisper_cpp_engine import (
     ASR_IMPL_VERSION,
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_CHUNK_SECONDS,
+    DEFAULT_WHISPER_CPP_TIMEOUT,
     WhisperCppRecognizer,
 )
 from audio_transcriber.transcription.whisper_engine import WhisperSpeechRecognizer
@@ -418,6 +422,47 @@ def test_build_recognizer_reads_chunk_env(
     assert recognizer.chunk_overlap == 1.5
 
 
+# --- Таймаут whisper-cli (#82) ----------------------------------------------
+
+
+def test_whisper_cpp_timeout_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("WHISPER_CPP_TIMEOUT", raising=False)
+
+    assert _whisper_cpp_timeout() == DEFAULT_WHISPER_CPP_TIMEOUT
+
+
+def test_whisper_cpp_timeout_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WHISPER_CPP_TIMEOUT", "120")
+
+    assert _whisper_cpp_timeout() == 120.0
+
+
+def test_whisper_cpp_timeout_zero_disables(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WHISPER_CPP_TIMEOUT", "0")
+
+    assert _whisper_cpp_timeout() is None
+
+
+def test_whisper_cpp_timeout_invalid_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WHISPER_CPP_TIMEOUT", "не число")
+
+    assert _whisper_cpp_timeout() == DEFAULT_WHISPER_CPP_TIMEOUT
+
+
+def test_build_recognizer_reads_timeout_env(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("WHISPER_CPP_TIMEOUT", "90")
+    config = _whisper_cpp_config(audio_file, tmp_path)
+
+    recognizer = _build_recognizer(config, Device.CPU)
+
+    assert isinstance(recognizer, WhisperCppRecognizer)
+    assert recognizer.timeout == 90.0
+
+
 def test_diarization_cache_params_include_impl_version(
     audio_file: Path, tmp_path: Path
 ) -> None:
@@ -594,3 +639,197 @@ def test_build_recognizer_wraps_primary_and_fallback(
     assert isinstance(recognizer, HybridSpeechRecognizer)
     assert isinstance(recognizer._primary, GigaAmRecognizer)
     assert isinstance(recognizer._fallback, WhisperSpeechRecognizer)
+
+
+# --- Кэш-ключи: настройка vs факт денойза, параметры движков (#83) -----------
+
+
+class _ParamDenoiser(RecordingDenoiser):
+    """Денойзер с параметрами движка (как у DeepFilterNet)."""
+
+    def __init__(self, output: Path, chunk_seconds: float) -> None:
+        super().__init__(output)
+        self.chunk_seconds = chunk_seconds
+
+
+def test_denoise_signature_tracks_fact_and_params(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    denoised = tmp_path / "denoised.wav"
+    denoised.write_bytes(b"RIFF-cleaned")
+    cache = StageCache(tmp_path / "cache", enabled=True)
+
+    applied_denoiser = CachingDenoiser(
+        _ParamDenoiser(denoised, 30.0), cache, source=audio_file
+    )
+    applied_denoiser.denoise(audio_file)
+    applied = _denoise_cache_signature(applied_denoiser, denoised, audio_file)
+
+    assert applied["applied"] is True
+    assert isinstance(applied["key"], str)
+
+    # Параметры движка денойза входят в ключ (#83, п.2): их смена меняет подпись.
+    other_denoiser = CachingDenoiser(
+        _ParamDenoiser(denoised, 10.0), cache, source=audio_file
+    )
+    other_denoiser.denoise(audio_file)
+    changed = _denoise_cache_signature(other_denoiser, denoised, audio_file)
+    assert changed["key"] != applied["key"]
+
+    # Денойз не применён (вернулся исходный файл / движка нет) — единая подпись.
+    assert _denoise_cache_signature(applied_denoiser, audio_file, audio_file) == {
+        "applied": False,
+        "key": None,
+    }
+    assert _denoise_cache_signature(None, audio_file, audio_file) == {
+        "applied": False,
+        "key": None,
+    }
+
+
+def test_asr_cache_key_changes_with_denoise_signature(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    config = _config(audio_file, tmp_path)
+
+    base = _asr_cache_params(config, Device.CPU, RecordingRecognizer())
+    applied = _asr_cache_params(
+        config,
+        Device.CPU,
+        RecordingRecognizer(),
+        denoise_signature={"applied": True, "key": "k1"},
+    )
+    degraded = _asr_cache_params(
+        config,
+        Device.CPU,
+        RecordingRecognizer(),
+        denoise_signature={"applied": False, "key": None},
+    )
+
+    # Прямой вызов без подписи сохраняет поле отсутствующим (обратная совместимость).
+    assert "denoise" not in base
+    assert compute_cache_key("asr", audio_file, applied) != compute_cache_key(
+        "asr", audio_file, degraded
+    )
+
+
+def test_asr_cache_invalidated_when_denoise_fact_changes(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    denoised = tmp_path / "denoised.wav"
+    denoised.write_bytes(b"RIFF-cleaned")
+    config = _config(audio_file, tmp_path, denoise=True, diarization_enabled=False)
+
+    class _DegradingDenoiser(RecordingDenoiser):
+        def denoise(self, input_path: Path) -> Path:
+            self.calls += 1
+            return input_path
+
+    # 1) денойз реально применён — ASR считается и кэшируется.
+    first = RecordingRecognizer()
+    _run(config, first, RecordingDiarizer(), denoiser=RecordingDenoiser(denoised))
+    assert first.calls == 1
+
+    # 2) денойз деградировал (вернул исходник): факт изменился → ASR пересчитан.
+    second = RecordingRecognizer()
+    _run(config, second, RecordingDiarizer(), denoiser=_DegradingDenoiser(denoised))
+    assert second.calls == 1
+
+    # 3) снова реальный денойз того же файла — попадание в кэш ASR из шага 1.
+    third = RecordingRecognizer()
+    _run(config, third, RecordingDiarizer(), denoiser=RecordingDenoiser(denoised))
+    assert third.calls == 0
+
+
+def test_asr_cache_invalidated_when_denoise_params_change(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    denoised = tmp_path / "denoised.wav"
+    denoised.write_bytes(b"RIFF-cleaned")
+    config = _config(audio_file, tmp_path, denoise=True, diarization_enabled=False)
+
+    first = RecordingRecognizer()
+    _run(
+        config,
+        first,
+        RecordingDiarizer(),
+        denoiser=_ParamDenoiser(denoised, 30.0),
+    )
+    assert first.calls == 1
+
+    # Иные параметры денойза дают другой ключ денойза → другой вход ASR.
+    changed = RecordingRecognizer()
+    _run(
+        config,
+        changed,
+        RecordingDiarizer(),
+        denoiser=_ParamDenoiser(denoised, 10.0),
+    )
+    assert changed.calls == 1
+
+
+def test_diarization_cache_params_include_routing_and_estimator(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    config = _config(audio_file, tmp_path)
+
+    params = _diarization_cache_params(config, Device.CPU, RecordingDiarizer())
+
+    for field in (
+        "diarization_hybrid_enabled",
+        "diarization_estimate_enabled",
+        "diarization_estimate_seconds",
+        "diarization_estimate_threshold",
+        "diarization_estimate_model",
+        "diarization_route_max_speakers",
+        "speaker_count_estimator_version",
+    ):
+        assert field in params
+
+
+def test_diarization_cache_key_changes_with_estimator_params(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    base = _config(audio_file, tmp_path, diarization_estimate_threshold=0.5)
+    changed = _config(
+        audio_file,
+        tmp_path,
+        diarization_estimate_threshold=0.9,
+        diarization_hybrid_enabled=False,
+    )
+
+    before = compute_cache_key(
+        "diarization",
+        audio_file,
+        _diarization_cache_params(base, Device.CPU, RecordingDiarizer()),
+    )
+    after = compute_cache_key(
+        "diarization",
+        audio_file,
+        _diarization_cache_params(changed, Device.CPU, RecordingDiarizer()),
+    )
+
+    assert before != after
+
+
+def test_diarization_cache_key_changes_with_denoise_signature(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    config = _config(audio_file, tmp_path)
+
+    applied = _diarization_cache_params(
+        config,
+        Device.CPU,
+        RecordingDiarizer(),
+        denoise_signature={"applied": True, "key": "k1"},
+    )
+    degraded = _diarization_cache_params(
+        config,
+        Device.CPU,
+        RecordingDiarizer(),
+        denoise_signature={"applied": False, "key": None},
+    )
+
+    assert compute_cache_key("diarization", audio_file, applied) != compute_cache_key(
+        "diarization", audio_file, degraded
+    )

@@ -58,9 +58,14 @@ __all__ = [
     "ESTIMATE_MODEL_URL",
     "SILERO_VAD_FILENAME",
     "SILERO_VAD_URL",
+    "SPEAKER_COUNT_ESTIMATOR_VERSION",
     "default_model_cache_dir",
     "estimate_speaker_count",
 ]
+
+#: Версия алгоритма оценки числа говорящих. Участвует в ключе кэша диаризации
+#: (#83): её смена может изменить маршрут движка ``auto`` и потому результат.
+SPEAKER_COUNT_ESTIMATOR_VERSION = 1
 
 #: Тип речевого фрагмента: (начало, конец) в сэмплах.
 SpeechSpan = tuple[int, int]

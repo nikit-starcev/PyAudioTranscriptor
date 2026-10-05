@@ -54,6 +54,7 @@ from audio_transcriber.diarization.pyannote_engine import (
 )
 from audio_transcriber.diarization.reference import ReferencePrepareOptions
 from audio_transcriber.diarization.samples import extract_speaker_samples
+from audio_transcriber.diarization.speaker_count import SPEAKER_COUNT_ESTIMATOR_VERSION
 from audio_transcriber.domain.enums import AsrBackend, Device
 from audio_transcriber.domain.models import SpeakerOverlap, TranscriptionResult
 from audio_transcriber.export.factory import create_exporter
@@ -83,6 +84,7 @@ from audio_transcriber.transcription.whisper_cpp_engine import (
     ASR_IMPL_VERSION,
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_CHUNK_SECONDS,
+    DEFAULT_WHISPER_CPP_TIMEOUT,
     WhisperCppRecognizer,
 )
 from audio_transcriber.transcription.whisper_engine import WhisperSpeechRecognizer
@@ -172,6 +174,30 @@ def _whisper_cpp_chunk_settings() -> tuple[float, float]:
     return chunk_seconds, chunk_overlap
 
 
+def _whisper_cpp_timeout() -> float | None:
+    """Таймаут whisper-cli из окружения (``WHISPER_CPP_TIMEOUT``, секунды).
+
+    Пусто/некорректное значение — дефолт :data:`DEFAULT_WHISPER_CPP_TIMEOUT`;
+    ``0`` или отрицательное — таймаут отключён (``None``), прежнее поведение.
+    """
+    raw = os.environ.get("WHISPER_CPP_TIMEOUT", "").strip()
+    if not raw:
+        return DEFAULT_WHISPER_CPP_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "WHISPER_CPP_TIMEOUT=%r — не число, использую %.0f с",
+            raw,
+            DEFAULT_WHISPER_CPP_TIMEOUT,
+        )
+        return DEFAULT_WHISPER_CPP_TIMEOUT
+    if value <= 0:
+        logger.info("WHISPER_CPP_TIMEOUT=%s — таймаут whisper.cpp отключён", raw)
+        return None
+    return value
+
+
 def _build_single_recognizer(
     config: AppConfig,
     backend: AsrBackend,
@@ -197,6 +223,7 @@ def _build_single_recognizer(
             chunk_seconds=chunk_seconds,
             chunk_overlap=chunk_overlap,
             word_timestamps=config.word_timestamps,
+            timeout=_whisper_cpp_timeout(),
         )
     if backend is AsrBackend.GIGAAM:
         # GigaAM не отдаёт пословные метки через текущий интерфейс onnx-asr —
@@ -255,13 +282,37 @@ def _build_recognizer(
     )
 
 
+def _denoise_cache_signature(
+    denoiser: DenoiserProtocol | None, actual_path: Path, input_path: Path
+) -> dict[str, object]:
+    """Подпись фактически применённого денойза для ключей ASR/диаризации (#83).
+
+    Настройка ``config.denoise`` не отражает факт: DeepFilterNet при
+    недоступности/сбое молча отдаёт исходный файл, а ключ ASR всё равно
+    помечался как «денойз включён». Поэтому в ключ идёт подпись из двух частей:
+    ``applied`` (вернулся ли действительно очищенный файл) и ``key`` (ключ
+    стадии денойза, включающий движок+параметры+исходный файл). Отключённый и
+    деградировавший денойз дают одинаковую подпись — и это корректно: на вход
+    ASR/диаризации попадает один и тот же исходный файл.
+    """
+    if denoiser is None:
+        return {"applied": False, "key": None}
+    applied = actual_path != input_path
+    key = getattr(denoiser, "cache_key", None) if applied else None
+    return {"applied": applied, "key": key}
+
+
 def _asr_cache_params(
-    config: AppConfig, device: Device, recognizer: SpeechRecognizer
+    config: AppConfig,
+    device: Device,
+    recognizer: SpeechRecognizer,
+    *,
+    denoise_signature: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Релевантные параметры стадии ASR для ключа кэша.
 
     Включается только то, что влияет на результат: бэкенд и его модель, язык,
-    устройство, подсказки и признак денойза (он меняет входное аудио).
+    устройство, подсказки и подпись денойза (он меняет входное аудио).
     Имя класса движка отсекает кэш при смене реализации.
     """
     params: dict[str, object] = {
@@ -269,13 +320,15 @@ def _asr_cache_params(
         "backend": config.asr_backend.value,
         "language": config.language,
         "device": device.value,
-        "denoise": config.denoise,
         "initial_prompt": config.initial_prompt,
         "hotwords": config.hotwords,
         # Пословные таймстемпы меняют сохранённый результат ASR — их
         # переключение должно сбрасывать кэш ASR (#45).
         "word_timestamps": config.word_timestamps,
     }
+    if denoise_signature is not None:
+        # Факт и параметры денойза, а не настройка ``config.denoise`` (#83).
+        params["denoise"] = denoise_signature
     if config.asr_backend is AsrBackend.WHISPER_CPP:
         params["whisper_cpp_model"] = (
             str(config.whisper_cpp_model) if config.whisper_cpp_model else None
@@ -329,7 +382,11 @@ def _asr_cache_params(
 
 
 def _diarization_cache_params(
-    config: AppConfig, device: Device, diarizer: SpeakerDiarizer
+    config: AppConfig,
+    device: Device,
+    diarizer: SpeakerDiarizer,
+    *,
+    denoise_signature: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Релевантные параметры стадии диаризации для ключа кэша."""
     params: dict[str, object] = {
@@ -341,7 +398,6 @@ def _diarization_cache_params(
         "nemo_speech_binary": config.nemo_speech_binary,
         "nemo_speech_model": config.nemo_speech_model,
         "nemo_speech_device": config.nemo_speech_device,
-        "denoise": config.denoise,
         "num_speakers": config.num_speakers,
         "min_speakers": config.min_speakers,
         "max_speakers": config.max_speakers,
@@ -361,7 +417,20 @@ def _diarization_cache_params(
         ),
         # Пометка наложения влияет на то, собираются ли зоны перекрытий.
         "mark_overlap": config.mark_overlap,
+        # Маршрутизация ``auto`` и оценщик числа говорящих (#83): его параметры
+        # и версия меняют выбранный движок (nemo-speech/hybrid/pyannote) и/или
+        # переданный гибриду ориентир ``expected_speakers``.
+        "diarization_hybrid_enabled": config.diarization_hybrid_enabled,
+        "diarization_estimate_enabled": config.diarization_estimate_enabled,
+        "diarization_estimate_seconds": config.diarization_estimate_seconds,
+        "diarization_estimate_threshold": config.diarization_estimate_threshold,
+        "diarization_estimate_model": config.diarization_estimate_model,
+        "diarization_route_max_speakers": config.diarization_route_max_speakers,
+        "speaker_count_estimator_version": SPEAKER_COUNT_ESTIMATOR_VERSION,
     }
+    if denoise_signature is not None:
+        # Факт и параметры денойза, а не настройка ``config.denoise`` (#83).
+        params["denoise"] = denoise_signature
     if isinstance(diarizer, HybridSpeakerDiarizer):
         # Параметры гибрида (окна/порог/модель эмбеддингов) меняют результат при
         # том же входе, поэтому входят в ключ только для гибридного движка —
@@ -373,6 +442,9 @@ def _diarization_cache_params(
         params["hybrid_embedding_model"] = config.diarization_estimate_model
         params["hybrid_threshold"] = config.diarization_hybrid_threshold
         params["hybrid_linkage"] = config.diarization_hybrid_linkage
+        params["hybrid_overload_split"] = config.diarization_hybrid_overload_split
+        params["hybrid_subwindow_seconds"] = config.diarization_hybrid_subwindow_seconds
+        params["hybrid_max_split_depth"] = config.diarization_hybrid_max_split_depth
     return params
 
 
@@ -491,10 +563,21 @@ def run_pipeline(
                 audio_path,
                 getattr(denoiser, "last_waveform", None) if denoiser is not None else None,
             )
+        # Подпись фактически применённого денойза: и ASR, и диаризация должны
+        # использовать один и тот же её вид, иначе кэш разъедется (#83).
+        denoise_signature = _denoise_cache_signature(
+            denoiser, audio_path, config.input_file
+        )
         _ensure_not_cancelled(cancel_event, "после шумоподавления")
 
         _ensure_not_cancelled(cancel_event, "перед распознаванием речи")
-        asr_key = cache.key("asr", config.input_file, _asr_cache_params(config, device, recognizer))
+        asr_key = cache.key(
+            "asr",
+            config.input_file,
+            _asr_cache_params(
+                config, device, recognizer, denoise_signature=denoise_signature
+            ),
+        )
         cached_asr = cache.load("asr", asr_key)
         if cached_asr is not None:
             try:
@@ -542,7 +625,12 @@ def run_pipeline(
             dia_key = cache.key(
                 "diarization",
                 config.input_file,
-                _diarization_cache_params(config, diarization_device, active_diarizer),
+                _diarization_cache_params(
+                    config,
+                    diarization_device,
+                    active_diarizer,
+                    denoise_signature=denoise_signature,
+                ),
             )
             cached_dia = cache.load("diarization", dia_key)
             if cached_dia is not None:

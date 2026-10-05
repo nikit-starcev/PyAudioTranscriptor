@@ -45,9 +45,21 @@ import re
 from dataclasses import replace
 
 from audio_transcriber.domain.models import TranscriptEntry
-from audio_transcriber.utils.text import WORD_PATTERN
+from audio_transcriber.utils.text import WORD_PATTERN, sync_words_to_text
 
 logger = logging.getLogger(__name__)
+
+
+def _with_cleaned_text(entry: TranscriptEntry, new_text: str) -> TranscriptEntry:
+    """Заменяет текст реплики, согласуя с ним пословные метки (#84).
+
+    Иначе ``json_exporter`` выгрузил бы ``words`` с токенами удалённых пометок.
+    """
+    return replace(
+        entry,
+        text=new_text,
+        words=sync_words_to_text(entry.text, list(entry.words), new_text),
+    )
 
 # Основы «шумовых» слов (без учёта регистра). Сравнение — по началу слова,
 # поэтому одна основа покрывает склонения/формы: «аплоди» — аплодисменты,
@@ -541,7 +553,9 @@ class ArtifactCleaner:
             # «Голое» шумовое слово без пометок — копим серию для проверки.
             if _is_noise_only(new_text):
                 pending_noise.append(
-                    replace(entry, text=new_text) if new_text != entry.text else entry
+                    _with_cleaned_text(entry, new_text)
+                    if new_text != entry.text
+                    else entry
                 )
                 continue
 
@@ -553,7 +567,7 @@ class ArtifactCleaner:
                     new_text,
                     ", ".join(removed),
                 )
-                cleaned_entries.append(replace(entry, text=new_text))
+                cleaned_entries.append(_with_cleaned_text(entry, new_text))
             else:
                 cleaned_entries.append(entry)
 

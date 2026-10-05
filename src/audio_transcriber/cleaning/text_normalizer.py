@@ -23,6 +23,7 @@ import re
 from dataclasses import replace
 
 from audio_transcriber.domain.models import TranscriptEntry
+from audio_transcriber.utils.text import sync_words_to_text
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,16 @@ class TextNormalizer:
             if new_text != entry.text:
                 changed += 1
                 logger.debug("Нормализация: «%s» → «%s»", entry.text, new_text)
-                result.append(replace(entry, text=new_text))
+                # Нормализация меняет пунктуацию/пробелы — пословные метки
+                # согласуем с новым текстом (пунктуация в ключ не входит, слова
+                # сохраняются), иначе экспорт покажет старые токены (#84).
+                result.append(
+                    replace(
+                        entry,
+                        text=new_text,
+                        words=sync_words_to_text(entry.text, list(entry.words), new_text),
+                    )
+                )
             else:
                 result.append(entry)
 

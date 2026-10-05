@@ -343,6 +343,11 @@ class DeepFilterDenoiser:
         if overlap_seconds < 0:
             raise ValueError("overlap_seconds не может быть отрицательным")
 
+        #: Исходные параметры конвейера (секунды/Гц) — нужны ключу кэша
+        #: шумоподавления, чтобы смена чанкинга/частоты сбрасывала старый
+        #: денойзенный WAV (#83). В сэмплах хранить их нельзя: зависят от SR.
+        self._chunk_seconds = float(chunk_seconds)
+        self._overlap_seconds = float(overlap_seconds)
         self._chunk_size = round(chunk_seconds * DF_SAMPLE_RATE)
         self._overlap = round(overlap_seconds * DF_SAMPLE_RATE)
         if self._chunk_size <= 0:
@@ -359,6 +364,21 @@ class DeepFilterDenoiser:
         #: Приёмник событий прогресса; публичный, чтобы обёртка могла прокинуть
         #: колбэк внутрь (см. ``CachingDenoiser``).
         self.on_progress = on_progress
+
+    @property
+    def chunk_seconds(self) -> float:
+        """Целевая длина чанка денойза (с) — параметр ключа кэша (#83)."""
+        return self._chunk_seconds
+
+    @property
+    def overlap_seconds(self) -> float:
+        """Перекрытие соседних чанков денойза (с) — параметр ключа кэша (#83)."""
+        return self._overlap_seconds
+
+    @property
+    def output_sample_rate(self) -> int:
+        """Частота дискретизации выходного WAV (Гц) — параметр ключа кэша (#83)."""
+        return self._output_sample_rate
 
     @property
     def last_waveform(self) -> np.ndarray | None:

@@ -27,6 +27,7 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -51,8 +52,16 @@ logger = logging.getLogger(__name__)
 #: Версия реализации ASR whisper.cpp. Участвует в ключе кэша (см.
 #: ``pipeline._asr_cache_params``): при изменении логики, влияющей на результат
 #: при тех же параметрах (отказ от лишнего перекодирования входа, чанкинг
-#: длинных файлов, пословные таймстемпы), старый кэш должен инвалидироваться.
-ASR_IMPL_VERSION = 4
+#: длинных файлов, пословные таймстемпы, учёт фактического денойза #83), старый
+#: кэш должен инвалидироваться.
+ASR_IMPL_VERSION = 5
+
+#: Таймаут одного вызова whisper-cli (секунды). Битая входная дорожка или
+#: дедлок GPU/Vulkan может повесить распознавание навсегда; по истечении
+#: процесс принудительно гасится, а стадия падает внятной ошибкой. ``None``
+#: (или ``<= 0``) отключает таймаут — прежнее поведение. Настраивается через
+#: ``WHISPER_CPP_TIMEOUT``.
+DEFAULT_WHISPER_CPP_TIMEOUT = 3600.0
 
 #: Целевая длина куска при чанкинге длинных файлов (с). 30 с — «родное» окно
 #: Whisper: кусок распознаётся за один проход, без накопления текстового
@@ -546,6 +555,7 @@ class WhisperCppRecognizer:
         chunk_seconds: float = DEFAULT_CHUNK_SECONDS,
         chunk_overlap: float = DEFAULT_CHUNK_OVERLAP,
         word_timestamps: bool = True,
+        timeout: float | None = DEFAULT_WHISPER_CPP_TIMEOUT,
     ) -> None:
         self._model_path = Path(model_path)
         self._binary = binary
@@ -558,6 +568,10 @@ class WhisperCppRecognizer:
         self._vad_model = Path(vad_model) if vad_model is not None else None
         #: Собирать ли пословные таймстемпы из токенов ``-ojf`` (#45).
         self._word_timestamps = word_timestamps
+        #: Таймаут одного вызова whisper-cli; ``None`` — без ограничения.
+        self._timeout: float | None = (
+            float(timeout) if timeout is not None and timeout > 0 else None
+        )
         # ``chunk_seconds <= 0`` — чанкинг выключен (старое поведение: один
         # вызов whisper-cli на весь файл).
         self._chunk_seconds = max(0.0, float(chunk_seconds))
@@ -580,6 +594,11 @@ class WhisperCppRecognizer:
     def word_timestamps(self) -> bool:
         """Собираются ли пословные таймстемпы (#45)."""
         return self._word_timestamps
+
+    @property
+    def timeout(self) -> float | None:
+        """Таймаут одного вызова whisper-cli (с); ``None`` — без ограничения."""
+        return self._timeout
 
     def _emit(self, fraction: float | None = None, detail: str = "") -> None:
         if self._on_progress is not None:
@@ -726,19 +745,46 @@ class WhisperCppRecognizer:
         # аварийном выходе whisper-cli не останется висеть.
         register_process(proc)
         stderr_tail: list[str] = []
-        try:
-            assert proc.stderr is not None
-            for line in proc.stderr:
-                stderr_tail.append(line)
-                if len(stderr_tail) > 40:
-                    stderr_tail.pop(0)
-                match = _PROGRESS_RE.search(line)
-                if match and on_fraction is not None:
-                    on_fraction(float(match.group(1)) / 100.0)
 
-            proc.wait()
+        def _drain_stderr() -> None:
+            """Читает stderr в фоне: хвост для диагностики + прогресс-события."""
+            assert proc.stderr is not None
+            try:
+                for line in proc.stderr:
+                    stderr_tail.append(line)
+                    if len(stderr_tail) > 40:
+                        stderr_tail.pop(0)
+                    match = _PROGRESS_RE.search(line)
+                    if match and on_fraction is not None:
+                        on_fraction(float(match.group(1)) / 100.0)
+            except (OSError, ValueError):
+                # Поток закрыт при принудительном завершении процесса.
+                pass
+
+        reader = threading.Thread(
+            target=_drain_stderr, name="whisper-cpp-stderr", daemon=True
+        )
+        reader.start()
+        try:
+            try:
+                # Ждём завершения с дедлайном: при зависании (битый вход,
+                # дедлок GPU/Vulkan) процесс не должен висеть вечно (#82).
+                proc.wait(timeout=self._timeout)
+            except subprocess.TimeoutExpired as exc:
+                terminate_process(proc)
+                reader.join(timeout=5.0)
+                detail = "".join(stderr_tail).strip()[-2000:]
+                message = (
+                    f"whisper.cpp не завершился за {self._timeout:g} с "
+                    "(возможен дедлок GPU/Vulkan или битый вход) — "
+                    "процесс принудительно остановлен"
+                )
+                if detail:
+                    message = f"{message}. Последние строки stderr: {detail}"
+                raise TranscriptionError(message) from exc
         finally:
             terminate_process(proc)
+        reader.join(timeout=5.0)
 
         json_path = Path(str(output_base) + ".json")
         if proc.returncode != 0 or not json_path.exists():

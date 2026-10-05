@@ -48,6 +48,11 @@ class CachingDenoiser:
         self._source = source
         self._last_hit = False
         self._last_waveform: np.ndarray | None = None
+        #: Ключ денойза последнего вызова ``denoise``. Участвует в ключах ASR и
+        #: диаризации: он детерминированно описывает фактически применённый
+        #: денойз (движок + параметры + исходный файл), в отличие от одной лишь
+        #: настройки ``denoise`` (#83).
+        self._last_key: str | None = None
         self._on_progress = on_progress
         if on_progress is not None and hasattr(inner, "on_progress"):
             inner.on_progress = on_progress
@@ -68,15 +73,37 @@ class CachingDenoiser:
         """
         return self._last_waveform
 
+    @property
+    def cache_key(self) -> str | None:
+        """Ключ денойза последнего :meth:`denoise` (``None``, пока не вызывался).
+
+        Потребители (ключи ASR/диаризации) используют его как стабильную
+        «подпись» фактически применённого денойза (#83): он уже включает
+        исходный файл, движок и его параметры.
+        """
+        return self._last_key
+
+    def _params(self) -> dict[str, object]:
+        """Параметры денойзера, влияющие на результат (движок + чанкинг/частота).
+
+        Без них смена ``chunk_seconds``/``overlap_seconds``/
+        ``output_sample_rate`` переиспользовала бы старый очищенный WAV (#83).
+        Параметры читаются через ``getattr``: произвольный ``DenoiserProtocol``
+        может их не иметь — тогда в ключ входит только имя класса движка.
+        """
+        params: dict[str, object] = {"engine": type(self._inner).__name__}
+        for name in ("chunk_seconds", "overlap_seconds", "output_sample_rate"):
+            value = getattr(self._inner, name, None)
+            if value is not None:
+                params[name] = value
+        return params
+
     def _key(self) -> str:
-        return self._cache.key(
-            "denoise",
-            self._source,
-            {"denoise": True, "engine": type(self._inner).__name__},
-        )
+        return self._cache.key("denoise", self._source, self._params())
 
     def denoise(self, input_path: Path) -> Path:
         key = self._key()
+        self._last_key = key
         cached = self._cache.load_audio("denoise", key)
         if cached is not None:
             logger.info("Кэш шумоподавления: попадание (%s)", key[:12])
