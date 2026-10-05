@@ -173,7 +173,9 @@ def test_hybrid_recovers_more_than_four_speakers(monkeypatch: pytest.MonkeyPatch
     ]
 
 
-def test_hybrid_uses_expected_speakers_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_hybrid_soft_estimate_does_not_force_clusters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     samples = np.full(150 * SR, 0.5, dtype=np.float32)
     _patch_windows(monkeypatch, [AnalysisWindow(0, 150 * SR, 0, 150 * SR)])
     _patch_diarize(
@@ -188,8 +190,54 @@ def test_hybrid_uses_expected_speakers_hint(monkeypatch: pytest.MonkeyPatch) -> 
 
     segments = diarizer.diarize(Path("audio.wav"), waveform=samples)
 
-    # Ориентир N=1 → все локальные говорящие слиты в один кластер.
+    # Оценка N=1 — мягкий ориентир и НЕ форсирует один кластер: кластеризация
+    # идёт по порогу, поэтому два ортогональных эмбеддинга дают двух говорящих.
+    assert {segment.speaker_id for segment in segments} == {"SPEAKER_00", "SPEAKER_01"}
+
+
+def test_hybrid_explicit_num_speakers_forces_exact_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    samples = np.full(150 * SR, 0.5, dtype=np.float32)
+    _patch_windows(monkeypatch, [AnalysisWindow(0, 150 * SR, 0, 150 * SR)])
+    _patch_diarize(
+        monkeypatch,
+        [[SpeakerSegment(0.0, 5.0, "a"), SpeakerSegment(5.0, 10.0, "b")]],
+    )
+    diarizer = _diarizer(embedder=_SequenceEmbedder([_A, _B]), monkeypatch=monkeypatch)
+
+    segments = diarizer.diarize(Path("audio.wav"), waveform=samples, num_speakers=1)
+
+    # Явное num_speakers=1 кластеризует ровно в один кластер.
     assert {segment.speaker_id for segment in segments} == {"SPEAKER_00"}
+
+
+def test_hybrid_soft_estimate_bounds_runaway_oversegmentation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    samples = np.full(150 * SR, 0.5, dtype=np.float32)
+    _patch_windows(monkeypatch, [AnalysisWindow(0, 150 * SR, 0, 150 * SR)])
+    _patch_diarize(
+        monkeypatch,
+        [
+            [
+                SpeakerSegment(i * 2.0, i * 2.0 + 2.0, f"s{i}")
+                for i in range(10)
+            ]
+        ],
+    )
+    vectors = np.eye(10, dtype=np.float32)
+    diarizer = _diarizer(
+        embedder=_SequenceEmbedder([vectors[i] for i in range(10)]),
+        monkeypatch=monkeypatch,
+        expected_speakers=1,
+    )
+
+    segments = diarizer.diarize(Path("audio.wav"), waveform=samples)
+
+    # Десять ортогональных эмбеддингов по порогу дали бы 10 кластеров; мягкая
+    # оценка 1 ограничивает сверху запасом headroom (4) → не больше 5.
+    assert len({segment.speaker_id for segment in segments}) <= 5
 
 
 def test_hybrid_window_overlap_produces_no_duplicates(

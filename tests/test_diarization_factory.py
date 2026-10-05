@@ -300,7 +300,9 @@ def test_create_diarizer_hybrid_carries_settings(
     assert diarizer._window_seconds == 60.0
     assert diarizer._overlap_seconds == 1.0
     assert diarizer._threshold == 0.65
-    assert diarizer._expected_speakers == 6
+    # Явное num_speakers — не оценка: как мягкий ориентир в конструктор не
+    # передаётся (точное число уходит в ``diarize`` из конвейера).
+    assert diarizer._expected_speakers is None
     assert diarizer._overload_split is False
     assert diarizer._subwindow_seconds == 20.0
     assert diarizer._max_split_depth == 2
@@ -315,6 +317,19 @@ def test_create_diarizer_auto_above_cap_builds_hybrid(
 
     assert isinstance(diarizer, HybridSpeakerDiarizer)
     assert diarizer._expected_speakers == 6
+
+
+def test_create_diarizer_explicit_num_speakers_passes_no_estimate(
+    audio_file: Path, engines: dict[str, object]
+) -> None:
+    # Явное num_speakers=7 маршрутизирует на гибрид, но как оценка не
+    # передаётся: точное число придёт в ``diarize`` из конвейера.
+    diarizer = factory.create_diarizer(
+        _config(audio_file, num_speakers=7), Device.CPU
+    )
+
+    assert isinstance(diarizer, HybridSpeakerDiarizer)
+    assert diarizer._expected_speakers is None
 
 
 def test_create_diarizer_auto_routes_and_emits_progress(

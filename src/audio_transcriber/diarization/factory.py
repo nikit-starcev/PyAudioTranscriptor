@@ -293,7 +293,11 @@ def create_diarizer(
             max_split_depth=config.diarization_hybrid_max_split_depth,
             embedding_model=config.diarization_estimate_model,
             threshold=config.diarization_estimate_threshold,
-            expected_speakers=decision.speaker_count,
+            # Мягкий ориентир передаём гибриду только когда число реально
+            # оценено (``auto``). Явные ``num_speakers``/``min/max_speakers``
+            # пользователь задаёт точно — они уходят в ``diarize`` из конвейера
+            # и там применяются как жёсткое число/границы, а не как оценка.
+            expected_speakers=decision.speaker_count if decision.estimated else None,
         )
     return PyannoteSpeakerDiarizer(
         device,

@@ -6,6 +6,10 @@ from pathlib import Path
 
 import pytest
 
+from audio_transcriber.config.defaults import (
+    DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
+    DEFAULT_DIARIZATION_HYBRID_THRESHOLD,
+)
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
 from audio_transcriber.utils.exceptions import ConfigurationError
@@ -837,7 +841,11 @@ def test_diarization_estimate_defaults(audio_file: Path) -> None:
 
     assert config.diarization_estimate_enabled is True
     assert config.diarization_estimate_seconds == 30.0
-    assert config.diarization_estimate_threshold == 0.7
+    # 0.55: на реальной записи оценщик даёт ~8 говорящих (0.7 недооценивал → 5).
+    assert config.diarization_estimate_threshold == DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD
+    assert DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD == 0.55
+    # Порог гибрида по умолчанию следует за оценщиком (одна модель CAM++).
+    assert DEFAULT_DIARIZATION_HYBRID_THRESHOLD == DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD
     assert config.diarization_estimate_model.endswith(".onnx")
     assert config.diarization_route_max_speakers == 4
 

@@ -13,7 +13,11 @@
    достаточной длительности считается speaker-эмбеддинг (общий модуль
    :mod:`audio_transcriber.diarization.embeddings`, модель CAM++).
 4. Все эмбеддинги кластеризуются глобально (агломеративно, косинус,
-   average-linkage). Каждому кластеру — глобальный ``SPEAKER_XX``.
+   average-linkage) **по порогу**. Каждому кластеру — глобальный ``SPEAKER_XX``.
+   Явное ``num_speakers`` (пользователь задал точно) кластеризует ровно в это
+   число; дешёвая **оценка** N (нужна движку ``auto`` для маршрутизации) —
+   только мягкий ориентир и не форсирует число кластеров, иначе недооценка N
+   склеивала бы участников.
 5. Локальные сегменты перекладываются в глобальные ID и склеиваются;
    перекрытие окон учтено зонами владения (без дублей и пропусков).
 
@@ -75,7 +79,16 @@ logger = logging.getLogger(__name__)
 
 #: Версия алгоритма гибрида. Изменение окон/склейки/кластеризации меняет
 #: результат при тех же входах — участвует в ключе кэша диаризации.
-DIARIZATION_HYBRID_IMPL_VERSION = 2
+#: 3 — кластеризация по порогу вместо форсирования числа кластеров по оценке N.
+DIARIZATION_HYBRID_IMPL_VERSION = 3
+
+#: Запас (в говорящих) к мягкой оценке числа говорящих при кластеризации.
+#: Оценка ``expected_speakers`` никогда не задаёт точное число кластеров: она
+#: лишь ограничивает их сверху значением ``оценка + запас``. Запас нужен,
+#: потому что дешёвая оценка заметно недооценивает N, а также шумна; порог
+#: кластеризации — основной механизм, а оценка — только страховка от
+#: лавинного переразбиения.
+_ESTIMATE_HEADROOM = 4
 
 #: Радиус поиска паузы при сдвиге границы окна (секунды).
 DEFAULT_SNAP_RADIUS_SECONDS = 3.0
@@ -334,39 +347,54 @@ def _assign_global_clusters(
     observations: Sequence[tuple[int, str, np.ndarray]],
     *,
     threshold: float,
+    num_speakers: int | None,
     expected_speakers: int | None,
     min_speakers: int | None,
     max_speakers: int | None,
 ) -> np.ndarray:
     """Глобально кластеризует эмбеддинги локальных говорящих → метки.
 
-    ``expected_speakers`` (оценка числа говорящих или явный ``num_speakers``)
-    используется как ориентир — точное число кластеров. Иначе — порог; при
-    заданных ``min/max`` число кластеров при необходимости доводится до границ.
+    Различаются два источника числа говорящих:
+
+    * **явное** ``num_speakers`` (пользователь задал точно) — кластеризация
+      идёт ровно в это число кластеров (в пределах числа наблюдений);
+    * **оценка** ``expected_speakers`` (от оценщика, нужна в первую очередь для
+      маршрутизации движка) — лишь мягкий ориентир: кластеризация идёт **по
+      порогу** (``n_clusters=None``), а оценка ограничивает число кластеров
+      сверху значением ``оценка + :data:`_ESTIMATE_HEADROOM```. Это страховка
+      от лавинного переразбиения, но **не** жёсткое равенство ``N`` (дешёвая
+      оценка недооценивает N, и форсирование по ней склеивало говорящих).
+
+    ``min_speakers``/``max_speakers`` — явные границы пользователя; применяются
+    только при кластеризации по порогу и приоритетнее мягкой оценки.
     """
     matrix = np.stack([vector for _window, _speaker, vector in observations]).astype(np.float32)
     count = int(matrix.shape[0])
     if count <= 1:
         return np.zeros(count, dtype=int)
 
-    n_clusters: int | None = None
-    if expected_speakers is not None:
-        n_clusters = max(1, min(int(expected_speakers), count))
+    if num_speakers is not None:
+        exact = max(1, min(int(num_speakers), count))
+        return embedding_utils.cluster_embeddings(
+            matrix, threshold=threshold, n_clusters=exact
+        )
 
-    labels = embedding_utils.cluster_embeddings(
-        matrix, threshold=threshold, n_clusters=n_clusters
-    )
-    if n_clusters is None and (min_speakers is not None or max_speakers is not None):
-        distinct = len(set(labels.tolist()))
-        target: int | None = None
-        if max_speakers is not None and distinct > max_speakers:
-            target = max(1, min(int(max_speakers), count))
-        elif min_speakers is not None and distinct < min_speakers:
-            target = max(1, min(int(min_speakers), count))
-        if target is not None and target != distinct:
-            labels = embedding_utils.cluster_embeddings(
-                matrix, threshold=threshold, n_clusters=target
-            )
+    labels = embedding_utils.cluster_embeddings(matrix, threshold=threshold, n_clusters=None)
+    distinct = len(set(labels.tolist()))
+
+    target: int | None = None
+    if max_speakers is not None and distinct > max_speakers:
+        target = max(1, min(int(max_speakers), count))
+    elif min_speakers is not None and distinct < min_speakers:
+        target = max(1, min(int(min_speakers), count))
+    elif expected_speakers is not None:
+        soft_cap = max(1, min(int(expected_speakers) + _ESTIMATE_HEADROOM, count))
+        if distinct > soft_cap:
+            target = soft_cap
+    if target is not None and target != distinct:
+        labels = embedding_utils.cluster_embeddings(
+            matrix, threshold=threshold, n_clusters=target
+        )
     return labels
 
 
@@ -407,7 +435,11 @@ class HybridSpeakerDiarizer:
     :param max_embedding_seconds: максимум аудио говорящего для одного эмбеддинга.
     :param embedding_model: имя/путь ONNX-модели эмбеддингов (CAM++).
     :param threshold: порог косинусного расстояния глобальной кластеризации.
-    :param expected_speakers: ориентир числа говорящих (оценка или ``num_speakers``).
+    :param expected_speakers: **мягкая оценка** числа говорящих (обычно от
+        оценщика для маршрутизации ``auto``). Не форсирует число кластеров: см.
+        :func:`_assign_global_clusters`. Явное число задаётся аргументом
+        ``num_speakers`` метода :meth:`diarize` — только оно кластеризует ровно
+        в это число.
     :param overload_split: переобрабатывать ли «перегруженные» окна мелкими.
     :param subwindow_seconds: длительность мелкого окна при переобработке.
     :param max_split_depth: максимальная глубина рекурсивной нарезки.
@@ -699,11 +731,11 @@ class HybridSpeakerDiarizer:
                 "диаризация не дала результата"
             )
 
-        expected = num_speakers if num_speakers is not None else self._expected_speakers
         labels = _assign_global_clusters(
             observations,
             threshold=self._threshold,
-            expected_speakers=expected,
+            num_speakers=num_speakers,
+            expected_speakers=self._expected_speakers,
             min_speakers=min_speakers,
             max_speakers=max_speakers,
         )
