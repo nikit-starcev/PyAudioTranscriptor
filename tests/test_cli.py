@@ -928,6 +928,58 @@ def test_transcribe_no_timeline_flag(
     assert captured["config"].timeline is False
 
 
+def test_transcribe_word_timestamps_enabled_by_default(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 0
+    assert captured["config"].word_timestamps is True
+
+
+def test_transcribe_no_word_timestamps_flag(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+
+    result = runner.invoke(
+        app,
+        [
+            "transcribe",
+            str(audio_file),
+            "-o",
+            str(tmp_path / "out"),
+            "--no-word-timestamps",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["config"].word_timestamps is False
+
+
+def test_transcribe_word_timestamps_from_config_env(
+    audio_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config_env,
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+    config_env({"WORD_TIMESTAMPS": "false"})
+
+    result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 0
+    assert captured["config"].word_timestamps is False
+
+
 # --- Пакет 8 «образцы голоса и библиотека» ---------------------------------
 
 

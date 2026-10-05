@@ -681,6 +681,15 @@ def transcribe(
             "включено; без данных диаризации таймлайн мягко пропускается."
         ),
     ),
+    word_timestamps: bool = typer.Option(
+        True,
+        "--word-timestamps/--no-word-timestamps",
+        help=(
+            "Пословные таймстемпы: собирать слова с временами из токенов ASR "
+            "(whisper.cpp — из -ojf; faster-whisper — из word-режима). "
+            "По умолчанию включено; при выключении поле words остаётся пустым."
+        ),
+    ),
     low_confidence_threshold: float = typer.Option(
         DEFAULT_LOW_CONFIDENCE_THRESHOLD,
         "--low-confidence-threshold",
@@ -1106,6 +1115,10 @@ def transcribe(
         logger.info(
             "Протокол по завершении: %s",
             "включён" if config.protocol_auto else "выключен (--no-protocol)",
+        )
+        logger.info(
+            "Пословные таймстемпы: %s",
+            "включены" if config.word_timestamps else "выключены (--no-word-timestamps)",
         )
         logger.info("Диаризация: %s", "включена" if config.diarization_enabled else "выключена")
         if config.diarization_enabled:

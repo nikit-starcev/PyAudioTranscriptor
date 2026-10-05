@@ -265,6 +265,8 @@ export type WebSettings = {
   /** Автоисправление опечаток (стадия correction, pymorphy3). */
   enable_correction: boolean
   protocol_auto: boolean
+  /** Пословные таймстемпы (#45): слова с временами в результате. */
+  word_timestamps: boolean
   /** Системные уведомления о завершении/ошибке/отмене задачи (#35). */
   notifications: boolean
   asr_backend: string

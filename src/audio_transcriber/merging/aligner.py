@@ -289,6 +289,8 @@ class OverlapSegmentMerger:
                     overlap=bool(extra_speakers),
                     extra_speakers=extra_speakers,
                     speaker_confidence=confidence,
+                    # Пословные таймстемпы реплики (#45).
+                    words=list(segment.words),
                 )
             )
 

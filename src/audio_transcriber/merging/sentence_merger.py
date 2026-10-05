@@ -97,6 +97,8 @@ class SentenceMerger:
                     speaker_confidence=_min_optional(
                         previous.speaker_confidence, entry.speaker_confidence
                     ),
+                    # Пословные метки склеиваем в порядке времени (#45).
+                    words=previous.words + entry.words,
                 )
             else:
                 merged.append(entry)

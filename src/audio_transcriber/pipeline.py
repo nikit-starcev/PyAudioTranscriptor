@@ -196,8 +196,16 @@ def _build_single_recognizer(
             vad_model=_whisper_cpp_vad_model(),
             chunk_seconds=chunk_seconds,
             chunk_overlap=chunk_overlap,
+            word_timestamps=config.word_timestamps,
         )
     if backend is AsrBackend.GIGAAM:
+        # GigaAM не отдаёт пословные метки через текущий интерфейс onnx-asr —
+        # фича мягко деградирует (слова не заполняются), конвейер не ломается.
+        if config.word_timestamps:
+            logger.debug(
+                "WORD_TIMESTAMPS включены, но бэкенд gigaam их не предоставляет — "
+                "пословные таймстемпы будут пустыми"
+            )
         return GigaAmRecognizer(
             config.gigaam_model,
             model_path=config.gigaam_model_path,
@@ -212,6 +220,7 @@ def _build_single_recognizer(
         initial_prompt=config.initial_prompt,
         hotwords=config.hotwords,
         on_progress=on_progress,
+        word_timestamps=config.word_timestamps,
     )
 
 
@@ -263,6 +272,9 @@ def _asr_cache_params(
         "denoise": config.denoise,
         "initial_prompt": config.initial_prompt,
         "hotwords": config.hotwords,
+        # Пословные таймстемпы меняют сохранённый результат ASR — их
+        # переключение должно сбрасывать кэш ASR (#45).
+        "word_timestamps": config.word_timestamps,
     }
     if config.asr_backend is AsrBackend.WHISPER_CPP:
         params["whisper_cpp_model"] = (

@@ -223,6 +223,10 @@ class AppConfig:
     # результатами) плюс подробная текстовая сводка в лог. Строится на этапе
     # экспорта только при наличии данных диаризации; иначе мягко пропускается.
     timeline: bool = True
+    # Пословные таймстемпы (#45): собирать слова с временами из токенов ASR
+    # (для whisper.cpp — из ``-ojf``; для faster-whisper — из word-режима).
+    # По умолчанию включено; при выключении поле ``words`` остаётся пустым.
+    word_timestamps: bool = True
     # Порог низкой уверенности ASR: реплики со средним avg_logprob ниже
     # порога помечаются в txt/docx/json. Логвероятности <= 0.
     low_confidence_threshold: float = DEFAULT_LOW_CONFIDENCE_THRESHOLD
@@ -381,6 +385,9 @@ class AppConfig:
 
         if not isinstance(self.timeline, bool):
             raise ConfigurationError("TIMELINE должно быть true или false")
+
+        if not isinstance(self.word_timestamps, bool):
+            raise ConfigurationError("WORD_TIMESTAMPS должно быть true или false")
 
         if not isinstance(self.export_speaker_samples, bool):
             raise ConfigurationError("EXPORT_SPEAKER_SAMPLES должно быть true или false")

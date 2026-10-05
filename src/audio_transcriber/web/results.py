@@ -43,9 +43,30 @@ def _is_low_confidence(entry: TranscriptEntry, threshold: float | None) -> bool:
     return entry.avg_logprob < threshold
 
 
+def words_to_dict(entry: TranscriptEntry) -> list[dict[str, object]]:
+    """Пословные таймстемпы реплики для API/экспорта (#45).
+
+    Пустой список — стадия выключена или движок не поддерживает; фронтенд
+    показывает прежний посегментный вид.
+    """
+    return [
+        {
+            "text": word.text,
+            "start": word.start,
+            "end": word.end,
+            "probability": word.probability,
+        }
+        for word in entry.words
+    ]
+
+
 def entry_to_dict(entry: TranscriptEntry, threshold: float | None) -> dict[str, object]:
-    """Одна реплика стенограммы для API."""
-    return {
+    """Одна реплика стенограммы для API.
+
+    Поле ``words`` (#45) добавляется, только если слова есть: при выключенной
+    стадии форма реплики остаётся прежней (обратная совместимость контракта).
+    """
+    payload: dict[str, object] = {
         "start": entry.start,
         "end": entry.end,
         "speaker_id": entry.speaker.id if entry.speaker is not None else None,
@@ -60,6 +81,10 @@ def entry_to_dict(entry: TranscriptEntry, threshold: float | None) -> dict[str, 
         "edited": entry.edited,
         "original_text": entry.original_text,
     }
+    words = words_to_dict(entry)
+    if words:
+        payload["words"] = words
+    return payload
 
 
 def _result_speakers(result: TranscriptionResult) -> list[Speaker]:

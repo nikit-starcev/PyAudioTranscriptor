@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from audio_transcriber.domain.enums import Device
-from audio_transcriber.domain.models import TranscriptionSegment
+from audio_transcriber.domain.models import TranscriptionSegment, WordTimestamp
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.utils.exceptions import TranscriptionError
 from audio_transcriber.utils.hotwords import truncate_hotwords_by_tokens
@@ -26,6 +26,7 @@ class WhisperSpeechRecognizer:
         initial_prompt: str | None = None,
         hotwords: str | None = None,
         on_progress: ProgressCallback | None = None,
+        word_timestamps: bool = True,
     ) -> None:
         self._model_name = model_name
         self._device = device
@@ -33,6 +34,8 @@ class WhisperSpeechRecognizer:
         self._hotwords = hotwords
         self._on_progress = on_progress
         self._model: Any = None
+        #: Собирать ли пословные таймстемпы из ``segment.words`` (#45).
+        self._word_timestamps = word_timestamps
 
     def _emit(self, fraction: float | None = None, detail: str = "") -> None:
         if self._on_progress is not None:
@@ -83,6 +86,37 @@ class WhisperSpeechRecognizer:
             logger.debug("Отброшенные термины: %s", ", ".join(dropped))
         return truncated or None
 
+    @staticmethod
+    def _segment_words(segment: Any) -> list[WordTimestamp]:
+        """Пословные метки faster-whisper (``segment.words``, #45).
+
+        ``None``/отсутствие — мягкая деградация (старая версия библиотеки).
+        Пробелы вокруг слова обрезаются; пустые пропускаются.
+        """
+        raw_words = getattr(segment, "words", None)
+        if not raw_words:
+            return []
+        words: list[WordTimestamp] = []
+        for word in raw_words:
+            text = str(getattr(word, "word", "") or "").strip()
+            if not text:
+                continue
+            probability = getattr(word, "probability", None)
+            words.append(
+                WordTimestamp(
+                    text=text,
+                    start=float(getattr(word, "start", segment.start)),
+                    end=float(getattr(word, "end", segment.end)),
+                    probability=(
+                        float(probability)
+                        if isinstance(probability, (int, float))
+                        and not isinstance(probability, bool)
+                        else None
+                    ),
+                )
+            )
+        return words
+
     def transcribe(
         self, audio_path: Path, *, language: str | None = None
     ) -> tuple[list[TranscriptionSegment], str, float]:
@@ -129,6 +163,14 @@ class WhisperSpeechRecognizer:
                         # «плохих» сегментов гибридного ASR (#57). Старые версии
                         # faster-whisper поля не имеют — берём через getattr.
                         no_speech_prob=getattr(segment, "no_speech_prob", None),
+                        # Пословные таймстемпы (#45): собственный word-режим
+                        # faster-whisper, который запрошен выше. Старые версии
+                        # библиотеки поля не имеют — мягкая деградация.
+                        words=(
+                            self._segment_words(segment)
+                            if self._word_timestamps
+                            else []
+                        ),
                     )
                 )
         except Exception as exc:

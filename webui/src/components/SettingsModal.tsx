@@ -37,6 +37,7 @@ type ToggleKey =
   | 'clean_artifacts'
   | 'enable_correction'
   | 'protocol_auto'
+  | 'word_timestamps'
 
 const TOGGLES: { key: ToggleKey; label: string; hint: string }[] = [
   {
@@ -61,6 +62,13 @@ const TOGGLES: { key: ToggleKey; label: string; hint: string }[] = [
     key: 'protocol_auto',
     label: 'Протокол сразу после обработки',
     hint: 'Автоматически считать резюме и экспортировать',
+  },
+  {
+    key: 'word_timestamps',
+    label: 'Пословные таймстемпы',
+    hint:
+      'Слова с временами (start/end) в результате — из токенов ASR; ' +
+      'доступны в JSON/API (поле words). По умолчанию включено',
   },
 ]
 
@@ -251,6 +259,7 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
         clean_artifacts: settings.clean_artifacts,
         enable_correction: settings.enable_correction,
         protocol_auto: settings.protocol_auto,
+        word_timestamps: settings.word_timestamps,
         notifications: settings.notifications,
         asr_backend: settings.asr_backend,
         device: settings.device,

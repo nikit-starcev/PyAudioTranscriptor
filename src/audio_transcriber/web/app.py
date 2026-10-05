@@ -397,6 +397,8 @@ class SettingsUpdate(BaseModel):
     clean_artifacts: bool | None = None
     enable_correction: bool | None = None
     protocol_auto: bool | None = None
+    #: Пословные таймстемпы (#45).
+    word_timestamps: bool | None = None
     #: Системные уведомления о завершении/ошибке/отмене веб-задачи (#35).
     notifications: bool | None = None
     hf_token: str | None = None

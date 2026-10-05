@@ -33,7 +33,7 @@ from pathlib import Path
 
 import numpy as np
 
-from audio_transcriber.domain.models import TranscriptionSegment
+from audio_transcriber.domain.models import TranscriptionSegment, WordTimestamp
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.utils.audio import (
     SAMPLE_RATE,
@@ -51,8 +51,8 @@ logger = logging.getLogger(__name__)
 #: Версия реализации ASR whisper.cpp. Участвует в ключе кэша (см.
 #: ``pipeline._asr_cache_params``): при изменении логики, влияющей на результат
 #: при тех же параметрах (отказ от лишнего перекодирования входа, чанкинг
-#: длинных файлов), старый кэш должен инвалидироваться.
-ASR_IMPL_VERSION = 3
+#: длинных файлов, пословные таймстемпы), старый кэш должен инвалидироваться.
+ASR_IMPL_VERSION = 4
 
 #: Целевая длина куска при чанкинге длинных файлов (с). 30 с — «родное» окно
 #: Whisper: кусок распознаётся за один проход, без накопления текстового
@@ -143,6 +143,180 @@ def _segment_avg_logprob(item: dict) -> float | None:
     if not logprobs:
         return None
     return sum(logprobs) / len(logprobs)
+
+
+def _token_seconds(value: object) -> float | None:
+    """Миллисекунды токена (``offsets.from``/``to``) в секунды.
+
+    Возвращает ``None`` для отсутствующего/нечислового значения: такой токен в
+    пословной разметке не участвует (мягкая деградация).
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) / 1000.0
+
+
+def _merge_word_probability(
+    left: float | None, right: float | None
+) -> float | None:
+    """Наихудшая (минимальная) вероятность из двух необязательных.
+
+    Как и ``_min_optional`` в объединителе реплик: ``None`` игнорируется; если
+    оба ``None`` — ``None``.
+    """
+    values = [value for value in (left, right) if value is not None]
+    return min(values) if values else None
+
+
+def _word_timestamps(
+    tokens: object, *, chunk_offset: float = 0.0
+) -> list[WordTimestamp]:
+    """Собирает пословные метки из токенов полного JSON whisper.cpp (``-ojf``).
+
+    Вход — список ``tokens`` одного сегмента: у каждого ``text``, ``offsets``
+    (``from``/``to`` в мс) и ``p``. Служебные токены (``[_BEG_]``, ``[_TT_*]``)
+    пропускаются. Слово начинается токеном с ведущим пробелом; последующие
+    токены без пробела — его под-токены (в т.ч. пунктуация) и дописываются к
+    текущему слову. ``chunk_offset`` (секунды) прибавляется ко временам — при
+    чанкинге вызывающий передаёт офсет куска.
+
+    Первое слово сегмента, начатое токеном **без** ведущего пробела, помечается
+    ``continuation=True`` — это продолжение слова из предыдущего куска; сшивка
+    выполняется в :func:`_stitch_chunk_words`.
+
+    Вероятность слова — минимум ``p`` по «лексическим» токенам слова (чистая
+    пунктуация не учитывается), ``None`` — вероятностей не было.
+    """
+    if not isinstance(tokens, list):
+        return []
+
+    words: list[WordTimestamp] = []
+    parts: list[str] = []
+    start: float | None = None
+    end: float | None = None
+    probabilities: list[float] = []
+    continuation = False
+
+    def flush() -> None:
+        nonlocal parts, start, end, probabilities, continuation
+        if parts and start is not None:
+            resolved_end = end if end is not None else start
+            if resolved_end < start:
+                # Инвертированный offsets.to у некоторых токенов whisper.cpp —
+                # не допускаем отрицательной длительности слова.
+                resolved_end = start
+            words.append(
+                WordTimestamp(
+                    text="".join(parts),
+                    start=start + chunk_offset,
+                    end=resolved_end + chunk_offset,
+                    probability=min(probabilities) if probabilities else None,
+                    continuation=continuation,
+                )
+            )
+        parts, start, end, probabilities, continuation = [], None, None, [], False
+
+    for token in tokens:
+        if not isinstance(token, dict):
+            continue
+        raw_text = str(token.get("text", ""))
+        stripped = raw_text.strip()
+        if not stripped or _SPECIAL_TOKEN_RE.match(stripped):
+            continue
+        offsets = token.get("offsets")
+        if not isinstance(offsets, dict):
+            continue
+        token_start = _token_seconds(offsets.get("from"))
+        if token_start is None:
+            continue
+        token_end = _token_seconds(offsets.get("to"))
+        starts_new_word = bool(raw_text) and raw_text[0].isspace()
+        if starts_new_word and parts:
+            flush()
+        if not parts:
+            start = token_start
+            continuation = not starts_new_word
+        parts.append(stripped)
+        if token_end is not None:
+            end = token_end if end is None else max(end, token_end)
+        probability = token.get("p")
+        # Вероятность слова считаем по «лексическим» токенам: чистая пунктуация
+        # (``.``, ``,``) низкой ``p`` не должна занижать уверенность слова.
+        if (
+            isinstance(probability, (int, float))
+            and not isinstance(probability, bool)
+            and probability > 0.0
+            and any(character.isalnum() for character in stripped)
+        ):
+            probabilities.append(float(probability))
+    flush()
+    return words
+
+
+def _shift_words(
+    words: list[WordTimestamp], offset: float
+) -> list[WordTimestamp]:
+    """Сдвигает пословные метки на ``offset`` секунд (офсет куска).
+
+    Пустой список или нулевой сдвиг возвращаются как копия исходного.
+    """
+    if not words or offset == 0.0:
+        return list(words)
+    return [
+        replace(word, start=word.start + offset, end=word.end + offset)
+        for word in words
+    ]
+
+
+def _stitch_chunk_words(
+    segments: list[TranscriptionSegment],
+) -> list[TranscriptionSegment]:
+    """Склеивает слова, разрезанные границей соседних кусков.
+
+    Слово с ``continuation=True`` (его первый токен не имел ведущего пробела) —
+    продолжение слова из предыдущего сегмента: приклеиваем его текст и время к
+    последнему слову предыдущего сегмента. Если предыдущего слова нет (сегмент
+    срезан в самом начале), флаг просто снимается. После сшивки флаг
+    ``continuation`` в результате не остаётся.
+    """
+    result = list(segments)
+    last_position: tuple[int, int] | None = None
+    for index, segment in enumerate(result):
+        words = list(segment.words)
+        if not words:
+            continue
+        first = words[0]
+        if first.continuation and last_position is not None:
+            prev_segment_index, prev_word_index = last_position
+            prev_words = list(result[prev_segment_index].words)
+            previous = prev_words[prev_word_index]
+            merged = replace(
+                previous,
+                text=previous.text + first.text,
+                start=min(previous.start, first.start),
+                end=max(previous.end, first.end),
+                probability=_merge_word_probability(
+                    previous.probability, first.probability
+                ),
+                continuation=False,
+            )
+            prev_words[prev_word_index] = merged
+            result[prev_segment_index] = replace(
+                result[prev_segment_index], words=prev_words
+            )
+            words = words[1:]
+            result[index] = replace(segment, words=words)
+            # Продолжение принадлежит предыдущему слову: если после сшивки у
+            # сегмента не осталось слов, «хвост» остаётся на слитом слове.
+            last_position = (
+                (index, len(words) - 1) if words else (prev_segment_index, prev_word_index)
+            )
+            continue
+        if first.continuation:
+            words[0] = replace(first, continuation=False)
+            result[index] = replace(segment, words=words)
+        last_position = (index, len(words) - 1)
+    return result
 
 
 def _frame_energy(
@@ -371,6 +545,7 @@ class WhisperCppRecognizer:
         vad_model: Path | None = None,
         chunk_seconds: float = DEFAULT_CHUNK_SECONDS,
         chunk_overlap: float = DEFAULT_CHUNK_OVERLAP,
+        word_timestamps: bool = True,
     ) -> None:
         self._model_path = Path(model_path)
         self._binary = binary
@@ -381,6 +556,8 @@ class WhisperCppRecognizer:
         self._on_progress = on_progress
         self._vad_filter = vad_filter
         self._vad_model = Path(vad_model) if vad_model is not None else None
+        #: Собирать ли пословные таймстемпы из токенов ``-ojf`` (#45).
+        self._word_timestamps = word_timestamps
         # ``chunk_seconds <= 0`` — чанкинг выключен (старое поведение: один
         # вызов whisper-cli на весь файл).
         self._chunk_seconds = max(0.0, float(chunk_seconds))
@@ -398,6 +575,11 @@ class WhisperCppRecognizer:
     def chunk_overlap(self) -> float:
         """Перекрытие соседних кусков (с)."""
         return self._chunk_overlap
+
+    @property
+    def word_timestamps(self) -> bool:
+        """Собираются ли пословные таймстемпы (#45)."""
+        return self._word_timestamps
 
     def _emit(self, fraction: float | None = None, detail: str = "") -> None:
         if self._on_progress is not None:
@@ -572,6 +754,11 @@ class WhisperCppRecognizer:
                 end=item["offsets"]["to"] / 1000.0,
                 text=item["text"].strip(),
                 avg_logprob=_segment_avg_logprob(item),
+                words=(
+                    _word_timestamps(item.get("tokens"))
+                    if self._word_timestamps
+                    else []
+                ),
             )
             for item in data.get("transcription", [])
             if item.get("text", "").strip()
@@ -633,6 +820,9 @@ class WhisperCppRecognizer:
                             segment,
                             start=segment.start + start_seconds,
                             end=segment.end + start_seconds,
+                            # Пословные метки получают тот же офсет куска, что
+                            # и границы сегмента.
+                            words=_shift_words(segment.words, start_seconds),
                         ),
                         chunk_center=center_seconds,
                         chunk_index=index,
@@ -644,6 +834,11 @@ class WhisperCppRecognizer:
             )
 
         segments = _deduplicate_chunk_segments(items)
+        if self._word_timestamps:
+            # Слова, разрезанные стыком соседних кусков, склеиваем после
+            # дедупликации: остаётся вариант сегмента из более центрального
+            # куска, а «продолжение» слова с другого куска приклеивается к нему.
+            segments = _stitch_chunk_words(segments)
         logger.info(
             "whisper.cpp: чанкинг завершён — кусков %d, реплик после дедупликации %d",
             total_chunks,
@@ -686,6 +881,10 @@ class WhisperCppRecognizer:
                     language=language,
                     on_fraction=on_fraction,
                 )
+                if self._word_timestamps:
+                    # Даже без чанкинга whisper.cpp может разрезать слово
+                    # границей сегмента — сшиваем и снимаем служебный флаг.
+                    segments = _stitch_chunk_words(segments)
 
         # Длительность берём из декодированного аудио. Если по какой-то причине
         # она неизвестна, откатываемся к концу последней реплики.

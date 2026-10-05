@@ -61,6 +61,7 @@ def test_get_settings_shape(client: TestClient, web_paths: WebPaths) -> None:
         "clean_artifacts",
         "enable_correction",
         "protocol_auto",
+        "word_timestamps",
         "input_dir",
         "output_dir",
         "glossary_db_path",
@@ -117,6 +118,37 @@ def test_settings_notifications_toggle_persists(client: TestClient) -> None:
     assert response.status_code == 200
     assert response.json()["notifications"] is False
     assert client.get("/api/settings").json()["notifications"] is False
+
+
+def test_settings_word_timestamps_toggle_persists(client: TestClient) -> None:
+    """#45: тумблер пословных таймстемпов по умолчанию включён и сохраняется."""
+    assert client.get("/api/settings").json()["word_timestamps"] is True
+
+    response = client.put("/api/settings", json={"word_timestamps": False})
+
+    assert response.status_code == 200
+    assert response.json()["word_timestamps"] is False
+    assert client.get("/api/settings").json()["word_timestamps"] is False
+
+
+def test_build_job_config_word_timestamps(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Изолируемся от реального config.env: проверяем именно overrides.
+    monkeypatch.setattr("audio_transcriber.web.config.env_defaults", lambda: {})
+
+    enabled = build_job_config(
+        audio_file, output_dir=tmp_path / "out", data_dir=tmp_path / "data"
+    )
+    disabled = build_job_config(
+        audio_file,
+        output_dir=tmp_path / "out",
+        data_dir=tmp_path / "data",
+        overrides={"WORD_TIMESTAMPS": "false"},
+    )
+
+    assert enabled.word_timestamps is True
+    assert disabled.word_timestamps is False
 
 
 def test_put_settings_rejects_invalid_formats(client: TestClient) -> None:

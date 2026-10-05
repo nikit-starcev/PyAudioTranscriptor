@@ -9,6 +9,30 @@ from pathlib import Path
 
 
 @dataclass(frozen=True, slots=True)
+class WordTimestamp:
+    """Пословная метка времени, собранная из токенов ASR (#45).
+
+    ``text`` — слово целиком (под-токены склеены, пунктуация присоединена),
+    ``start``/``end`` — секунды от начала файла **с учётом офсета куска**
+    (чанкинг whisper.cpp), ``probability`` — минимальная вероятность ``p``
+    среди «лексических» токенов слова (чистая пунктуация не учитывается;
+    ``None``, если движок вероятностей не дал).
+
+    ``continuation`` — служебный флаг: слово начинается токеном **без**
+    ведущего пробела, то есть это продолжение слова из предыдущего сегмента
+    (стык кусков с перекрытием). После сшивки слов в движке флаг снимается и
+    в результат/кэш не попадает; хранится в доменной модели, чтобы пережить
+    промежуточные преобразования.
+    """
+
+    text: str
+    start: float
+    end: float
+    probability: float | None = None
+    continuation: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class TranscriptionSegment:
     """Сегмент речи, полученный от движка распознавания (ASR).
 
@@ -24,6 +48,9 @@ class TranscriptionSegment:
     #: не предоставил значение (GigaAM/whisper.cpp). Используется детектором
     #: «плохих» сегментов гибридного ASR (#57).
     no_speech_prob: float | None = None
+    #: Пословные таймстемпы (опционально, #45). Пустой список — стадия не
+    #: запрашивалась/движок не поддерживает.
+    words: list[WordTimestamp] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +119,9 @@ class TranscriptEntry:
     # (для сброса). Таймкоды и говорящий при правке не меняются.
     edited: bool = False
     original_text: str | None = None
+    # Пословные таймстемпы реплики (#45). Пустой список — стадия выключена
+    # или движок не поддерживает. Ручная правка текста слова не меняет.
+    words: list[WordTimestamp] = field(default_factory=list)
 
     @property
     def speaker_label(self) -> str:

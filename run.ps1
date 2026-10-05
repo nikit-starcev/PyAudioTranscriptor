@@ -147,6 +147,7 @@ if ($config["CLEAR_CACHE"] -eq "true") { $cliArgs += "--clear-cache" }
 $cliArgs += Get-ValueArg "--cache-dir" "CACHE_DIR"
 if ($config["NOTIFICATIONS"] -eq "false") { $cliArgs += "--no-notify" }
 if ($config["TIMELINE"] -eq "false") { $cliArgs += "--no-timeline" }
+if ($config["WORD_TIMESTAMPS"] -eq "false") { $cliArgs += "--no-word-timestamps" }
 $cliArgs += Get-ValueArg "--correction-min-word-length" "CORRECTION_MIN_WORD_LENGTH"
 $cliArgs += Get-ValueArg "--correction-min-similarity" "CORRECTION_MIN_SIMILARITY"
 $cliArgs += Get-ValueArg "--correction-max-candidates" "CORRECTION_MAX_CANDIDATES"

@@ -413,6 +413,8 @@ def collect_env_kwargs(
         put("notifications", as_bool(val("NOTIFICATIONS"), default=True))
     if has("TIMELINE"):
         put("timeline", as_bool(val("TIMELINE"), default=True))
+    if has("WORD_TIMESTAMPS"):
+        put("word_timestamps", as_bool(val("WORD_TIMESTAMPS"), default=True))
     if has("PROTOCOL_AUTO"):
         put("protocol_auto", as_bool(val("PROTOCOL_AUTO"), default=True))
     if has("ENABLE_CORRECTION"):

@@ -112,6 +112,7 @@ fi
 [ -n "${CACHE_DIR:-}" ] && ARGS+=(--cache-dir "$CACHE_DIR")
 [ "${NOTIFICATIONS:-true}" = "false" ] && ARGS+=(--no-notify)
 [ "${TIMELINE:-true}" = "false" ] && ARGS+=(--no-timeline)
+[ "${WORD_TIMESTAMPS:-true}" = "false" ] && ARGS+=(--no-word-timestamps)
 [ -n "${CORRECTION_MIN_WORD_LENGTH:-}" ] && ARGS+=(--correction-min-word-length "$CORRECTION_MIN_WORD_LENGTH")
 [ -n "${CORRECTION_MIN_SIMILARITY:-}" ] && ARGS+=(--correction-min-similarity "$CORRECTION_MIN_SIMILARITY")
 [ -n "${CORRECTION_MAX_CANDIDATES:-}" ] && ARGS+=(--correction-max-candidates "$CORRECTION_MAX_CANDIDATES")

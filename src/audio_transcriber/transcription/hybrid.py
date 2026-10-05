@@ -37,7 +37,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_HYBRID_NO_SPEECH_THRESHOLD,
     DEFAULT_HYBRID_SILENCE_RMS_THRESHOLD,
 )
-from audio_transcriber.domain.models import TranscriptionSegment
+from audio_transcriber.domain.models import TranscriptionSegment, WordTimestamp
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.transcription.base import SpeechRecognizer
 from audio_transcriber.utils.audio import SAMPLE_RATE, load_waveform, write_wav
@@ -164,6 +164,35 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
+def _shift_clamped_words(
+    words: list[WordTimestamp],
+    offset: float,
+    low: float,
+    high: float,
+) -> list[WordTimestamp]:
+    """Переносит пословные метки в абсолютное время и обрезает окном (#45).
+
+    ``offset`` — начало вырезки, отданной резервному движку; ``low``/``high`` —
+    границы исходного сегмента. Слова, целиком лежащие вне окна, отбрасываются;
+    остальные обрезаются, как и таймстемпы сегмента.
+    """
+    result: list[WordTimestamp] = []
+    for word in words:
+        start = word.start + offset
+        end = word.end + offset
+        if end <= low or start >= high:
+            continue
+        result.append(
+            WordTimestamp(
+                text=word.text,
+                start=_clamp(start, low, high),
+                end=_clamp(end, low, high),
+                probability=word.probability,
+            )
+        )
+    return result
+
+
 class HybridSpeechRecognizer:
     """Основной движок + выборочная доработка «плохих» сегментов Whisper.
 
@@ -261,6 +290,12 @@ class HybridSpeechRecognizer:
                     text=text,
                     avg_logprob=fallback_segment.avg_logprob,
                     no_speech_prob=fallback_segment.no_speech_prob,
+                    # Пословные метки резервного движка (#45) переводим в
+                    # абсолютное время и обрезаем окном сегмента, как и его
+                    # границы; слова вне окна отбрасываем.
+                    words=_shift_clamped_words(
+                        fallback_segment.words, region_start, start, end
+                    ),
                 )
             )
 

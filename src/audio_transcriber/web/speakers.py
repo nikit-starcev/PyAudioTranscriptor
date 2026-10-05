@@ -29,6 +29,7 @@ from audio_transcriber.domain.models import (
     SpeakerSegment,
     TranscriptEntry,
     TranscriptionResult,
+    WordTimestamp,
 )
 from audio_transcriber.merging.same_name import (
     merge_result_same_name_speakers,
@@ -79,6 +80,23 @@ def result_from_payload(
             )
         text = item.get("text")
         original_text = item.get("original_text")
+        words: list[WordTimestamp] = []
+        for raw_word in _as_list(item.get("words")):
+            if not isinstance(raw_word, Mapping):
+                continue
+            word_text = raw_word.get("text")
+            word_start = _as_float(raw_word.get("start"))
+            word_end = _as_float(raw_word.get("end"))
+            if not isinstance(word_text, str) or word_start is None or word_end is None:
+                continue
+            words.append(
+                WordTimestamp(
+                    text=word_text,
+                    start=word_start,
+                    end=word_end,
+                    probability=_as_float(raw_word.get("probability")),
+                )
+            )
         entries.append(
             TranscriptEntry(
                 start=start,
@@ -90,6 +108,8 @@ def result_from_payload(
                 speaker_confidence=_as_float(item.get("speaker_confidence")),
                 edited=bool(item.get("edited")),
                 original_text=str(original_text) if isinstance(original_text, str) else None,
+                # Пословные таймстемпы сохраняются при правке говорящих (#45).
+                words=words,
             )
         )
 

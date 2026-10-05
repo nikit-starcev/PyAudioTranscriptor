@@ -298,6 +298,8 @@ def build_job_config(
         cache_dir=data_dir / "cache",
         notifications=_as_bool(defaults.get("NOTIFICATIONS"), default=True),
         timeline=False,
+        # Пословные таймстемпы (#45): по умолчанию включены.
+        word_timestamps=_as_bool(defaults.get("WORD_TIMESTAMPS"), default=True),
         low_confidence_threshold=_as_float(
             defaults.get("LOW_CONFIDENCE_THRESHOLD"), DEFAULT_LOW_CONFIDENCE_THRESHOLD
         ),

@@ -14,6 +14,7 @@ from audio_transcriber.domain.models import (
     SpeakerOverlap,
     SpeakerSegment,
     TranscriptionSegment,
+    WordTimestamp,
 )
 
 
@@ -41,6 +42,42 @@ def _as_list(value: Any) -> list[Any]:
     return value
 
 
+def _words_payload(words: list[WordTimestamp]) -> list[dict[str, Any]]:
+    """Пословные метки сегмента для кэша (#45).
+
+    Служебный флаг ``continuation`` не сохраняется: к моменту кэширования слова
+    уже сшиты движком, и в результате его нет.
+    """
+    return [
+        {
+            "text": word.text,
+            "start": word.start,
+            "end": word.end,
+            "probability": word.probability,
+        }
+        for word in words
+    ]
+
+
+def _words_from_payload(value: Any) -> list[WordTimestamp]:
+    """Разбирает пословные метки из кэша; отсутствие — пустой список.
+
+    Старый кэш (до #45) поля не имеет — это не ошибка, слова просто пусты.
+    Повреждённая структура — :class:`ValueError` (кэш пересчитается).
+    """
+    if value is None:
+        return []
+    return [
+        WordTimestamp(
+            text=_as_str(item["text"]),
+            start=_as_float(item["start"]),
+            end=_as_float(item["end"]),
+            probability=_as_optional_float(item.get("probability")),
+        )
+        for item in _as_list(value)
+    ]
+
+
 def asr_payload(
     segments: list[TranscriptionSegment], language: str | None, duration: float
 ) -> dict[str, Any]:
@@ -53,6 +90,7 @@ def asr_payload(
                 "text": segment.text,
                 "avg_logprob": segment.avg_logprob,
                 "no_speech_prob": segment.no_speech_prob,
+                "words": _words_payload(segment.words),
             }
             for segment in segments
         ],
@@ -75,6 +113,8 @@ def asr_from_payload(data: dict[str, Any]) -> tuple[list[TranscriptionSegment], 
             # Терпимость к старому формату кэша: без ``no_speech_prob`` поле
             # остаётся ``None`` (детектор гибрида просто не использует его).
             no_speech_prob=_as_optional_float(item.get("no_speech_prob")),
+            # Терпимость к старому формату кэша: без ``words`` (#45) — пусто.
+            words=_words_from_payload(item.get("words")),
         )
         for item in _as_list(data.get("segments"))
     ]

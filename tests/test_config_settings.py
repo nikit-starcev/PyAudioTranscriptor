@@ -444,6 +444,19 @@ def test_timeline_must_be_boolean(audio_file: Path) -> None:
         AppConfig(input_file=audio_file, timeline="yes")  # type: ignore[arg-type]
 
 
+def test_word_timestamps_default_to_true(audio_file: Path) -> None:
+    assert AppConfig(input_file=audio_file).word_timestamps is True
+
+
+def test_word_timestamps_accept_explicit_false(audio_file: Path) -> None:
+    assert AppConfig(input_file=audio_file, word_timestamps=False).word_timestamps is False
+
+
+def test_word_timestamps_must_be_boolean(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, word_timestamps="yes")  # type: ignore[arg-type]
+
+
 # --- Пакет 8 «образцы голоса и библиотека» ---------------------------------
 
 

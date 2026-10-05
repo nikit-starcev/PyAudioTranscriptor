@@ -85,6 +85,9 @@ class WebSettings:
     #: только неизвестные словоформы. Осторожный режим, по умолчанию выключен.
     enable_correction: bool = False
     protocol_auto: bool = False
+    #: Пословные таймстемпы (#45): собирать слова с временами из токенов ASR.
+    #: По умолчанию включено; доступны в результате API.
+    word_timestamps: bool = True
     #: Системные уведомления о завершении/ошибке/отмене веб-задачи (#35).
     #: Отдельная настройка веб-интерфейса; переопределяет ``NOTIFICATIONS``
     #: из ``config.env`` для веб-задач.
@@ -160,6 +163,7 @@ class WebSettings:
             "CLEAN_ARTIFACTS": _format_bool(self.clean_artifacts),
             "ENABLE_CORRECTION": _format_bool(self.enable_correction),
             "PROTOCOL_AUTO": _format_bool(self.protocol_auto),
+            "WORD_TIMESTAMPS": _format_bool(self.word_timestamps),
             "NOTIFICATIONS": _format_bool(self.notifications),
             "ASR_BACKEND": self.asr_backend,
             "DEVICE": self.device,
@@ -229,6 +233,7 @@ def default_settings(defaults: Mapping[str, str] | None = None) -> WebSettings:
         clean_artifacts=_as_bool(source.get("CLEAN_ARTIFACTS"), default=True),
         enable_correction=_as_bool(source.get("ENABLE_CORRECTION")),
         protocol_auto=_as_bool(source.get("PROTOCOL_AUTO")),
+        word_timestamps=_as_bool(source.get("WORD_TIMESTAMPS"), default=True),
         notifications=_as_bool(source.get("NOTIFICATIONS"), default=True),
         asr_backend=source.get("ASR_BACKEND", "").strip() or "faster-whisper",
         device=source.get("DEVICE", "").strip() or "auto",
@@ -357,6 +362,7 @@ def settings_from_mapping(
         clean_artifacts=pick_bool("clean_artifacts", current.clean_artifacts),
         enable_correction=pick_bool("enable_correction", current.enable_correction),
         protocol_auto=pick_bool("protocol_auto", current.protocol_auto),
+        word_timestamps=pick_bool("word_timestamps", current.word_timestamps),
         notifications=pick_bool("notifications", current.notifications),
         asr_backend=pick_nonempty("asr_backend", current.asr_backend),
         device=pick_nonempty("device", current.device),
@@ -462,6 +468,9 @@ def validate_settings(settings: WebSettings) -> None:
     settings.nemo_speech_binary = settings.nemo_speech_binary.strip() or DEFAULT_NEMO_SPEECH_BINARY
     settings.nemo_speech_model = settings.nemo_speech_model.strip() or DEFAULT_NEMO_SPEECH_MODEL
     settings.nemo_speech_lib_path = settings.nemo_speech_lib_path.strip()
+
+    if not isinstance(settings.word_timestamps, bool):
+        raise SettingsError("WORD_TIMESTAMPS должно быть true или false")
 
     if not isinstance(settings.diarization_estimate_enabled, bool):
         raise SettingsError("DIARIZATION_ESTIMATE_ENABLED должно быть true или false")
