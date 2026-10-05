@@ -288,7 +288,8 @@ def test_create_diarizer_hybrid_carries_settings(
         diarization_hybrid_overload_split=False,
         diarization_hybrid_subwindow_seconds=20.0,
         diarization_hybrid_max_split_depth=2,
-        diarization_estimate_threshold=0.65,
+        diarization_hybrid_threshold=1.35,
+        diarization_hybrid_linkage="complete",
     )
 
     diarizer = factory.create_diarizer(config, Device.CPU)
@@ -299,7 +300,8 @@ def test_create_diarizer_hybrid_carries_settings(
     assert diarizer._device == "vulkan"
     assert diarizer._window_seconds == 60.0
     assert diarizer._overlap_seconds == 1.0
-    assert diarizer._threshold == 0.65
+    assert diarizer._threshold == 1.35
+    assert diarizer._linkage == "complete"
     # Явное num_speakers — не оценка: как мягкий ориентир в конструктор не
     # передаётся (точное число уходит в ``diarize`` из конвейера).
     assert diarizer._expected_speakers is None

@@ -231,6 +231,7 @@ def test_hybrid_soft_estimate_bounds_runaway_oversegmentation(
         embedder=_SequenceEmbedder([vectors[i] for i in range(10)]),
         monkeypatch=monkeypatch,
         expected_speakers=1,
+        min_speaker_seconds=1.5,
     )
 
     segments = diarizer.diarize(Path("audio.wav"), waveform=samples)
@@ -240,7 +241,7 @@ def test_hybrid_soft_estimate_bounds_runaway_oversegmentation(
     assert len({segment.speaker_id for segment in segments}) <= 5
 
 
-# --- linkage глобальной кластеризации: порог→complete, форсаж→ward -----------
+# --- linkage глобальной кластеризации: порог→ward (по умолчанию), форсаж→ward --
 
 
 def _record_cluster_calls(
@@ -269,7 +270,26 @@ def _observations(count: int) -> list[tuple[int, str, np.ndarray]]:
     return [(0, f"s{i}", np.eye(count, dtype=np.float32)[i]) for i in range(count)]
 
 
-def test_assign_global_clusters_threshold_uses_complete_cosine(
+def test_assign_global_clusters_threshold_uses_ward_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _record_cluster_calls(monkeypatch)
+
+    hybrid_engine._assign_global_clusters(
+        _observations(3),
+        threshold=1.3,
+        num_speakers=None,
+        expected_speakers=None,
+        min_speakers=None,
+        max_speakers=None,
+    )
+
+    # Кластеризация по порогу по умолчанию — ward/euclidean (меньше хвостовых
+    # кластеров и лучшее распределение, чем complete/cosine).
+    assert calls == [{"n_clusters": None, "linkage": "ward", "metric": "euclidean"}]
+
+
+def test_assign_global_clusters_threshold_complete_cosine_when_requested(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = _record_cluster_calls(monkeypatch)
@@ -281,9 +301,10 @@ def test_assign_global_clusters_threshold_uses_complete_cosine(
         expected_speakers=None,
         min_speakers=None,
         max_speakers=None,
+        linkage="complete",
     )
 
-    # Кластеризация по порогу — complete/cosine (против chaining average).
+    # Явный ``linkage="complete"`` возвращает прежнее косинусное поведение.
     assert calls == [{"n_clusters": None, "linkage": "complete", "metric": "cosine"}]
 
 
@@ -319,9 +340,9 @@ def test_assign_global_clusters_soft_cap_uses_ward(
         max_speakers=None,
     )
 
-    # Первый проход — по порогу (complete/cosine) даёт 6 кластеров, мягкий
+    # Первый проход — по порогу (ward/euclidean) даёт 6 кластеров, мягкий
     # потолок 1+headroom(4)=5 доводит их до 5 через форсированный ward.
-    assert calls[0] == {"n_clusters": None, "linkage": "complete", "metric": "cosine"}
+    assert calls[0] == {"n_clusters": None, "linkage": "ward", "metric": "euclidean"}
     assert calls[1] == {"n_clusters": 5, "linkage": "ward", "metric": "euclidean"}
 
 
@@ -570,9 +591,36 @@ def test_hybrid_overload_split_can_be_disabled(monkeypatch: pytest.MonkeyPatch) 
     diarizer = HybridSpeakerDiarizer(
         embedder=_SequenceEmbedder([_A, _B, _C, _D]),
         overload_split=False,
+        min_speaker_seconds=1.0,
     )
 
     diarizer.diarize(Path("audio.wav"), waveform=samples)
 
     # Дробления нет — «nemo-speech» вызван один раз для единственного окна.
     assert calls["count"] == 1
+
+
+# --- эмбеддер enrollment у гибрида -------------------------------------------
+
+
+def test_hybrid_enrollment_engine_returns_configured_embedder() -> None:
+    embedder = _SequenceEmbedder([_A])
+
+    diarizer = HybridSpeakerDiarizer(embedder=embedder)
+
+    # Гибрид отдаёт свой (CAM++) эмбеддер в enrollment — образцы и кластеры
+    # сопоставляются в одном пространстве, а не разными моделями.
+    assert diarizer.enrollment_engine() is embedder
+
+
+def test_hybrid_enrollment_engine_none_when_model_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    diarizer = HybridSpeakerDiarizer(embedder=None)
+    monkeypatch.setattr(hybrid_engine.embedding_utils, "sherpa_available", lambda: True)
+    monkeypatch.setattr(
+        hybrid_engine.embedding_utils, "resolve_embedding_model", lambda *_a, **_k: None
+    )
+
+    # Нет модели — не падаем, отдаём None (enrollment откатится на дефолт).
+    assert diarizer.enrollment_engine() is None

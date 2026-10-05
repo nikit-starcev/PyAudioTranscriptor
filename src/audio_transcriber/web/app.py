@@ -425,6 +425,8 @@ class SettingsUpdate(BaseModel):
     diarization_hybrid_window_seconds: float | None = None
     diarization_hybrid_overlap_seconds: float | None = None
     diarization_hybrid_min_speaker_seconds: float | None = None
+    diarization_hybrid_linkage: str | None = None
+    diarization_hybrid_threshold: float | None = None
     gigaam_model: str | None = None
     gigaam_model_path: str | None = None
     gigaam_quantization: str | None = None

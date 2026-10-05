@@ -12,15 +12,16 @@
 3. Для каждого локального говорящего в окне собирается его речь; при
    достаточной длительности считается speaker-эмбеддинг (общий модуль
    :mod:`audio_transcriber.diarization.embeddings`, модель CAM++).
-4. Все эмбеддинги кластеризуются глобально (агломеративно, косинус,
-   **complete**-linkage) **по порогу**. ``complete`` (а не ``average``) выбран
-   против chaining: ``average`` через «мосты»-выбросы перемерживал кластеры
-   говорящих (крупнейший кластер раздувался до ~70% сегментов). Каждому
-   кластеру — глобальный ``SPEAKER_XX``. Явное ``num_speakers`` (пользователь
-   задал точно) кластеризует ровно в это число — там linkage ``ward``/euclidean
-   (лучшее распределение при фиксированном ``k``); дешёвая **оценка** N (нужна
-   движку ``auto`` для маршрутизации) — только мягкий ориентир и не форсирует
-   число кластеров, иначе недооценка N склеивала бы участников.
+4. Все эмбеддинги кластеризуются глобально (агломеративно) **по порогу**.
+   По умолчанию — ``ward``/euclidean на L2-нормированных векторах: на реальных
+   данных он даёт меньше хвостовых кластеров и лучшее распределение, чем
+   косинусный ``complete`` (TV к долям реплик протокола ≈0.12 против ≈0.19).
+   Каждому кластеру — глобальный ``SPEAKER_XX``. Явное ``num_speakers``
+   (пользователь задал точно) кластеризует ровно в это число — там linkage
+   ``ward``/euclidean (лучшее распределение при фиксированном ``k``); дешёвая
+   **оценка** N (нужна движку ``auto`` для маршрутизации) — только мягкий
+   ориентир и не форсирует число кластеров, иначе недооценка N склеивала бы
+   участников.
 5. Локальные сегменты перекладываются в глобальные ID и склеиваются;
    перекрытие окон учтено зонами владения (без дублей и пропусков).
 
@@ -51,6 +52,7 @@ import numpy as np
 
 from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ESTIMATE_MODEL,
+    DEFAULT_DIARIZATION_HYBRID_LINKAGE,
     DEFAULT_DIARIZATION_HYBRID_MAX_EMBEDDING_SECONDS,
     DEFAULT_DIARIZATION_HYBRID_MAX_SPLIT_DEPTH,
     DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS,
@@ -85,7 +87,11 @@ logger = logging.getLogger(__name__)
 #: 3 — кластеризация по порогу вместо форсирования числа кластеров по оценке N.
 #: 4 — linkage complete/cosine (порог) и ward/euclidean (форсированный N)
 #:     вместо average: average перемерживал кластеры через chaining.
-DIARIZATION_HYBRID_IMPL_VERSION = 4
+#: 5 — linkage по порогу переключён на ward/euclidean и отдельный euclidean-порог
+#:     (гибрид больше не переиспользует косинусный порог оценщика); порог
+#:     min_speaker_seconds 1.5 → 3.0. Замер: complete/0.50 → k≈16, топ ~48%,
+#:     TV≈0.19; ward/1.30 → k≈10, топ ~36%, TV≈0.12.
+DIARIZATION_HYBRID_IMPL_VERSION = 5
 
 #: Запас (в говорящих) к мягкой оценке числа говорящих при кластеризации.
 #: Оценка ``expected_speakers`` никогда не задаёт точное число кластеров: она
@@ -356,6 +362,7 @@ def _assign_global_clusters(
     expected_speakers: int | None,
     min_speakers: int | None,
     max_speakers: int | None,
+    linkage: str = DEFAULT_DIARIZATION_HYBRID_LINKAGE,
 ) -> np.ndarray:
     """Глобально кластеризует эмбеддинги локальных говорящих → метки.
 
@@ -373,16 +380,20 @@ def _assign_global_clusters(
     ``min_speakers``/``max_speakers`` — явные границы пользователя; применяются
     только при кластеризации по порогу и приоритетнее мягкой оценки.
 
-    Linkage тоже различается по источнику числа кластеров: кластеризация
-    **по порогу** идёт с ``complete``/cosine (против chaining ``average``),
-    а любой **форсированный** ``n_clusters`` (явный ``num_speakers``, а также
-    доводка до ``min/max``/мягкого потолка) — с ``ward``/euclidean (на этих
-    эмбеддингах он даёт лучшее распределение при фиксированном ``k``).
+    ``linkage`` задаёт метод связи **пороговой** ветки: по умолчанию ``ward``
+    (метрика ``euclidean`` на L2-нормированных векторах) — на реальных данных он
+    даёт наименьший TV и меньше хвостовых кластеров, чем ``complete``/cosine.
+    Любой **форсированный** ``n_clusters`` (явный ``num_speakers``, а также
+    доводка до ``min/max``/мягкого потолка) всегда идёт с ``ward``/euclidean —
+    при фиксированном ``k`` он даёт лучшее распределение. Чтобы вернуть прежнее
+    поведение (порог по косинусу), передайте ``linkage="complete"``.
     """
     matrix = np.stack([vector for _window, _speaker, vector in observations]).astype(np.float32)
     count = int(matrix.shape[0])
     if count <= 1:
         return np.zeros(count, dtype=int)
+
+    metric = "cosine" if linkage in {"complete", "average", "single"} else "euclidean"
 
     if num_speakers is not None:
         exact = max(1, min(int(num_speakers), count))
@@ -398,8 +409,8 @@ def _assign_global_clusters(
         matrix,
         threshold=threshold,
         n_clusters=None,
-        linkage="complete",
-        metric="cosine",
+        linkage=linkage,
+        metric=metric,
     )
     distinct = len(set(labels.tolist()))
 
@@ -459,7 +470,10 @@ class HybridSpeakerDiarizer:
     :param min_speaker_seconds: порог речи локального говорящего для эмбеддинга.
     :param max_embedding_seconds: максимум аудио говорящего для одного эмбеддинга.
     :param embedding_model: имя/путь ONNX-модели эмбеддингов (CAM++).
-    :param threshold: порог косинусного расстояния глобальной кластеризации.
+    :param threshold: порог расстояния глобальной кластеризации (для ``ward`` —
+        в единицах евклидова расстояния на L2-нормированных векторах).
+    :param linkage: метод связи пороговой ветки кластеризации (``ward`` по
+        умолчанию; ``complete`` — прежнее косинусное поведение).
     :param expected_speakers: **мягкая оценка** числа говорящих (обычно от
         оценщика для маршрутизации ``auto``). Не форсирует число кластеров: см.
         :func:`_assign_global_clusters`. Явное число задаётся аргументом
@@ -487,6 +501,7 @@ class HybridSpeakerDiarizer:
         embedding_model: str = DEFAULT_DIARIZATION_ESTIMATE_MODEL,
         embedding_model_dir: Path | None = None,
         threshold: float = DEFAULT_DIARIZATION_HYBRID_THRESHOLD,
+        linkage: str = DEFAULT_DIARIZATION_HYBRID_LINKAGE,
         expected_speakers: int | None = None,
         overload_split: bool = DEFAULT_DIARIZATION_HYBRID_OVERLOAD_SPLIT,
         subwindow_seconds: float = DEFAULT_DIARIZATION_HYBRID_SUBWINDOW_SECONDS,
@@ -506,6 +521,7 @@ class HybridSpeakerDiarizer:
         self._embedding_model = embedding_model
         self._embedding_model_dir = embedding_model_dir
         self._threshold = threshold
+        self._linkage = linkage
         self._expected_speakers = expected_speakers
         self._overload_split = overload_split
         self._subwindow_seconds = subwindow_seconds
@@ -546,6 +562,27 @@ class HybridSpeakerDiarizer:
             )
         self._embedder = embedding_utils.SpeakerEmbedder(model_path)
         return self._embedder
+
+    def enrollment_engine(self) -> object | None:
+        """Эмбеддер гибрида (CAM++) для enrollment; ``None`` при недоступности.
+
+        Enrollment сопоставляет образцы голоса и кластеры **в одном**
+        пространстве эмбеддингов. Гибрид кластеризует говорящих CAM++
+        (sherpa-onnx), поэтому для enrollment нужно использовать тот же
+        эмбеддер, а не pyannote-WeSpeaker: иначе «образец × кластер» сравниваются
+        разными моделями и уверенные совпадения теряются. Ошибка (нет
+        sherpa/model) не поднимается — вызывающий код откатывается на движок по
+        умолчанию (pyannote).
+        """
+        try:
+            return self._resolve_embedder()
+        except HybridDiarizationError as exc:
+            logger.warning(
+                "Гибрид: эмбеддер CAM++ недоступен для enrollment (%s) — "
+                "сопоставление пойдёт движком по умолчанию",
+                exc,
+            )
+            return None
 
     def _diarize_window(
         self, audio_path: Path, samples: np.ndarray, window: AnalysisWindow
@@ -763,6 +800,7 @@ class HybridSpeakerDiarizer:
             expected_speakers=self._expected_speakers,
             min_speakers=min_speakers,
             max_speakers=max_speakers,
+            linkage=self._linkage,
         )
         segments = self._stitch(units, unit_segments, observations, labels)
         self._overlaps = compute_overlap_regions(segments)

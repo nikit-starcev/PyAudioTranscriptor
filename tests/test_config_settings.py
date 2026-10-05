@@ -8,6 +8,7 @@ import pytest
 
 from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
+    DEFAULT_DIARIZATION_HYBRID_LINKAGE,
     DEFAULT_DIARIZATION_HYBRID_THRESHOLD,
 )
 from audio_transcriber.config.settings import AppConfig
@@ -845,8 +846,12 @@ def test_diarization_estimate_defaults(audio_file: Path) -> None:
     # записи (прежний average перемерживал: крупнейший кластер до 68–78%).
     assert config.diarization_estimate_threshold == DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD
     assert DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD == 0.50
-    # Порог гибрида по умолчанию следует за оценщиком (одна модель CAM++).
-    assert DEFAULT_DIARIZATION_HYBRID_THRESHOLD == DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD
+    # Порог гибрида — отдельная (евклидова) величина для linkage=ward и НЕ равен
+    # косинусному порогу оценщика.
+    assert config.diarization_hybrid_threshold == DEFAULT_DIARIZATION_HYBRID_THRESHOLD
+    assert DEFAULT_DIARIZATION_HYBRID_THRESHOLD == 1.30
+    assert config.diarization_hybrid_linkage == DEFAULT_DIARIZATION_HYBRID_LINKAGE
+    assert DEFAULT_DIARIZATION_HYBRID_LINKAGE == "ward"
     assert config.diarization_estimate_model.endswith(".onnx")
     assert config.diarization_route_max_speakers == 4
 
@@ -890,7 +895,9 @@ def test_diarization_hybrid_defaults(audio_file: Path) -> None:
     assert config.diarization_hybrid_enabled is True
     assert config.diarization_hybrid_window_seconds == 90.0
     assert config.diarization_hybrid_overlap_seconds == 2.0
-    assert config.diarization_hybrid_min_speaker_seconds == 1.5
+    assert config.diarization_hybrid_min_speaker_seconds == 3.0
+    assert config.diarization_hybrid_linkage == "ward"
+    assert config.diarization_hybrid_threshold == 1.30
     assert config.diarization_hybrid_overload_split is True
     assert config.diarization_hybrid_subwindow_seconds == 30.0
     assert config.diarization_hybrid_max_split_depth == 1
@@ -924,6 +931,21 @@ def test_diarization_hybrid_overlap_not_negative(audio_file: Path) -> None:
 def test_diarization_hybrid_min_speaker_must_be_positive(audio_file: Path) -> None:
     with pytest.raises(ConfigurationError):
         AppConfig(input_file=audio_file, diarization_hybrid_min_speaker_seconds=0.0)
+
+
+def test_diarization_hybrid_linkage_must_be_known(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, diarization_hybrid_linkage="banana")
+    # Регистр нормализуется.
+    config = AppConfig(input_file=audio_file, diarization_hybrid_linkage="WARD")
+    assert config.diarization_hybrid_linkage == "ward"
+
+
+def test_diarization_hybrid_threshold_range(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, diarization_hybrid_threshold=2.5)
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, diarization_hybrid_threshold=0.0)
 
 
 def test_diarization_hybrid_enabled_must_be_bool(audio_file: Path) -> None:

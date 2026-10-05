@@ -20,11 +20,13 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
     DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
     DEFAULT_DIARIZATION_HYBRID_ENABLED,
+    DEFAULT_DIARIZATION_HYBRID_LINKAGE,
     DEFAULT_DIARIZATION_HYBRID_MAX_SPLIT_DEPTH,
     DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS,
     DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS,
     DEFAULT_DIARIZATION_HYBRID_OVERLOAD_SPLIT,
     DEFAULT_DIARIZATION_HYBRID_SUBWINDOW_SECONDS,
+    DEFAULT_DIARIZATION_HYBRID_THRESHOLD,
     DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
@@ -410,6 +412,28 @@ def transcribe(
             "Минимальная суммарная речь локального говорящего в окне (секунды) "
             "для эмбеддинга. Короче — вектор ненадёжен. По умолчанию "
             f"{DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS}."
+        ),
+    ),
+    diarization_hybrid_linkage: str = typer.Option(
+        DEFAULT_DIARIZATION_HYBRID_LINKAGE,
+        "--diarization-hybrid-linkage",
+        envvar="DIARIZATION_HYBRID_LINKAGE",
+        help=(
+            "Linkage пороговой ветки кластеризации гибрида: ward (euclidean, по "
+            "умолчанию — лучшее распределение), complete или average (cosine). "
+            f"По умолчанию {DEFAULT_DIARIZATION_HYBRID_LINKAGE}."
+        ),
+    ),
+    diarization_hybrid_threshold: float = typer.Option(
+        DEFAULT_DIARIZATION_HYBRID_THRESHOLD,
+        "--diarization-hybrid-threshold",
+        envvar="DIARIZATION_HYBRID_THRESHOLD",
+        min=0.01,
+        max=1.99,
+        help=(
+            "Порог кластеризации гибрида. Для ward — в единицах евклидова "
+            "расстояния (0; 2), НЕ совпадает с порогом оценщика. "
+            f"По умолчанию {DEFAULT_DIARIZATION_HYBRID_THRESHOLD}."
         ),
     ),
     diarization_hybrid_overload_split: bool = typer.Option(
@@ -945,6 +969,8 @@ def transcribe(
             diarization_hybrid_window_seconds=diarization_hybrid_window_seconds,
             diarization_hybrid_overlap_seconds=diarization_hybrid_overlap_seconds,
             diarization_hybrid_min_speaker_seconds=diarization_hybrid_min_speaker_seconds,
+            diarization_hybrid_linkage=diarization_hybrid_linkage,
+            diarization_hybrid_threshold=diarization_hybrid_threshold,
             diarization_hybrid_overload_split=diarization_hybrid_overload_split,
             diarization_hybrid_subwindow_seconds=diarization_hybrid_subwindow_seconds,
             diarization_hybrid_max_split_depth=diarization_hybrid_max_split_depth,

@@ -233,12 +233,26 @@ class SpeakerEmbedder:
 
     Модель загружается лениво и переиспользуется для всех окон: загрузка ONNX
     не бесплатна, а гибридная диаризация вызывает эмбеддер десятки раз.
+
+    Класс также удовлетворяет контракту enrollment
+    (:class:`audio_transcriber.diarization.enrollment.SpeakerEmbeddingEngine`):
+    у него есть :attr:`window_seconds` и :meth:`embed`, поэтому гибрид может
+    отдать свой эмбеддер в enrollment напрямую — образцы и кластеры будут
+    сопоставляться в одном пространстве (CAM++), а не разными моделями.
     """
+
+    #: Рекомендуемая длина окна аудио для одного эмбеддинга (секунды).
+    DEFAULT_WINDOW_SECONDS = 5.0
 
     def __init__(self, model: Path, *, num_threads: int | None = None) -> None:
         self._model = Path(model)
         self._num_threads = num_threads
         self._extractor: object | None = None
+
+    @property
+    def window_seconds(self) -> float:
+        """Рекомендуемая длина окна аудио для одного эмбеддинга (секунды)."""
+        return self.DEFAULT_WINDOW_SECONDS
 
     def _load(self) -> object:
         if self._extractor is not None:

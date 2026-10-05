@@ -292,7 +292,8 @@ def create_diarizer(
             subwindow_seconds=config.diarization_hybrid_subwindow_seconds,
             max_split_depth=config.diarization_hybrid_max_split_depth,
             embedding_model=config.diarization_estimate_model,
-            threshold=config.diarization_estimate_threshold,
+            threshold=config.diarization_hybrid_threshold,
+            linkage=config.diarization_hybrid_linkage,
             # Мягкий ориентир передаём гибриду только когда число реально
             # оценено (``auto``). Явные ``num_speakers``/``min/max_speakers``
             # пользователь задаёт точно — они уходят в ``diarize`` из конвейера

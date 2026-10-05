@@ -65,6 +65,23 @@ def test_match_speakers_is_one_to_one() -> None:
     assert match_speakers(similarities, 0.6) == {"A": "X"}
 
 
+def test_match_speakers_allow_shared_names_is_many_to_one() -> None:
+    # При allow_shared_names одно имя может достаться нескольким кластерам —
+    # один реальный говорящий, раздробленный на фрагменты, называется целиком.
+    similarities = {"A": {"X": 0.95, "Y": 0.1}, "B": {"X": 0.9, "Y": 0.2}}
+
+    assert match_speakers(similarities, 0.6, allow_shared_names=True) == {
+        "A": "X",
+        "B": "X",
+    }
+
+
+def test_match_speakers_allow_shared_names_respects_threshold() -> None:
+    similarities = {"A": {"X": 0.95}, "B": {"X": 0.5}}
+
+    assert match_speakers(similarities, 0.6, allow_shared_names=True) == {"A": "X"}
+
+
 def test_average_embeddings_multiple_samples() -> None:
     averaged = average_embeddings([_unit(1, 0), _unit(0, 1)])
 
@@ -173,6 +190,46 @@ def test_assign_speaker_names_matches_by_voice(
     )
 
     assert mapping == {"SPEAKER_00": "Иван", "SPEAKER_01": "Мария"}
+
+
+def test_assign_speaker_names_shares_name_between_fragments(
+    tmp_path: Path, install_loader
+) -> None:
+    """Один голос, раздробленный на два кластера, называется целиком.
+
+    При мэтчинге «один-к-одному» имя досталось бы лишь одному фрагменту, а
+    крупнейший кластер того же человека остался бы «Спикер N». По умолчанию
+    имя могут разделить несколько кластеров (many-to-one) — это и поднимает
+    охват имён без ложных срабатываний (порог всё равно соблюдается).
+    """
+    install_loader(
+        {"ivan.wav": 0.11},
+        audio_blocks={(0.0, 3.0): 0.5, (10.0, 13.0): 0.7},
+    )
+    ivan = _segment(tmp_path / "ivan.wav")
+    audio = tmp_path / "call.wav"
+    audio.write_bytes(b"")
+    engine = _FakeEngine(
+        {
+            11: [0.99, 0.01, 0],
+            50: [0.98, 0.02, 0],
+            70: [0.96, 0.04, 0],
+        }
+    )
+    segments = [
+        SpeakerSegment(start=0.0, end=3.0, speaker_id="SPEAKER_00"),
+        SpeakerSegment(start=10.0, end=13.0, speaker_id="SPEAKER_01"),
+    ]
+
+    mapping = assign_speaker_names(
+        speaker_segments=segments,
+        references={"Иван": (ivan,)},
+        audio_path=audio,
+        min_similarity=0.6,
+        engine=engine,
+    )
+
+    assert mapping == {"SPEAKER_00": "Иван", "SPEAKER_01": "Иван"}
 
 
 def test_assign_speaker_names_averages_multiple_samples_per_name(

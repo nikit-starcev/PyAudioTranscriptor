@@ -13,6 +13,7 @@ import logging
 import os
 import threading
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 
@@ -357,7 +358,8 @@ def _diarization_cache_params(
         params["hybrid_overlap_seconds"] = config.diarization_hybrid_overlap_seconds
         params["hybrid_min_speaker_seconds"] = config.diarization_hybrid_min_speaker_seconds
         params["hybrid_embedding_model"] = config.diarization_estimate_model
-        params["hybrid_threshold"] = config.diarization_estimate_threshold
+        params["hybrid_threshold"] = config.diarization_hybrid_threshold
+        params["hybrid_linkage"] = config.diarization_hybrid_linkage
     return params
 
 
@@ -580,11 +582,23 @@ def run_pipeline(
         # Делаем это здесь, пока доступно аудио (денойзенный файл закрывается
         # в finally). Приоритет у enrollment-имён выше ``--speaker-name``.
         # К явным образцам добавляются файлы библиотеки ``voices_dir``.
-        # Enrollment использует собственный embedding-движок и не зависит от
-        # движка диаризации, поэтому выполняется при любом движке (pyannote,
-        # nemo-speech, hybrid), если есть образцы и говорящие.
+        # Модель эмбеддингов enrollment должна совпадать с моделью, которой
+        # кластеризовались говорящие: у гибрида это CAM++, поэтому гибрид отдаёт
+        # свой эмбеддер (``enrollment_engine``). Иначе «образец × кластер»
+        # сравнивались бы разными моделями (pyannote-WeSpeaker против CAM++) и
+        # уверенные совпадения терялись бы. Для остальных движков — движок
+        # enrollment по умолчанию (pyannote).
         references = config.resolved_speaker_references()
         if config.diarization_enabled and references and speaker_segments:
+            active_enrollment_engine = enrollment_engine
+            if active_enrollment_engine is None and isinstance(
+                active_diarizer, HybridSpeakerDiarizer
+            ):
+                resolved_engine = active_diarizer.enrollment_engine()
+                if resolved_engine is not None:
+                    active_enrollment_engine = cast(
+                        SpeakerEmbeddingEngine, resolved_engine
+                    )
             logger.info("Сопоставление говорящих с образцами голоса (enrollment)...")
             emit(ProgressEvent("diarization", "Сопоставление голосов", fraction=None))
             enrollment_names = assign_speaker_names(
@@ -594,7 +608,7 @@ def run_pipeline(
                 min_similarity=config.enrollment_min_similarity,
                 device=diarization_device,
                 local_model_path=config.pyannote_local_model,
-                engine=enrollment_engine,
+                engine=active_enrollment_engine,
                 waveform=shared_waveform.get() if shared_waveform is not None else None,
                 prepare=ReferencePrepareOptions(
                     enabled=config.reference_prepare,

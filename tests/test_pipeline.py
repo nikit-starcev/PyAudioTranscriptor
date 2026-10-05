@@ -484,6 +484,49 @@ def test_run_pipeline_decodes_audio_once_for_all_consumers(
     assert seen["samples"] is waveform
 
 
+def test_run_pipeline_passes_hybrid_embedder_to_enrollment(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Гибрид отдаёт enrollment свой CAM++-эмбеддер (одно пространство)."""
+    from audio_transcriber.diarization.hybrid_engine import HybridSpeakerDiarizer
+
+    reference = _reference_file(tmp_path)
+    embedder = object()
+    diarizer = HybridSpeakerDiarizer("cpu", embedder=embedder)
+    monkeypatch.setattr(
+        diarizer,
+        "diarize",
+        lambda *_a, **_k: [SpeakerSegment(start=0.0, end=3.0, speaker_id="SPEAKER_00")],
+    )
+    captured: dict[str, object] = {}
+
+    def fake_assign(**kwargs: object) -> dict[str, str]:
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr("audio_transcriber.pipeline.assign_speaker_names", fake_assign)
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+        denoise=False,
+        use_cache=False,
+        speaker_references={"Иван": (reference,)},
+        voices_dir=tmp_path / "no_voices",
+    )
+
+    run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=FakeRecognizer(),
+        diarizer=diarizer,
+        merger=OverlapSegmentMerger(),
+    )
+
+    # Enrollment получил именно эмбеддер гибрида, а не движок по умолчанию.
+    assert captured["engine"] is embedder
+
+
 def test_run_pipeline_skips_audio_decode_when_no_stage_needs_it(
     audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

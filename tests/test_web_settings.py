@@ -16,8 +16,10 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ESTIMATE_MODEL,
     DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
     DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
+    DEFAULT_DIARIZATION_HYBRID_LINKAGE,
     DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS,
     DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS,
+    DEFAULT_DIARIZATION_HYBRID_THRESHOLD,
     DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
     DEFAULT_GIGAAM_MODEL,
     DEFAULT_NEMO_SPEECH_MODEL,
@@ -648,6 +650,26 @@ def test_validate_settings_rejects_bad_route_max_speakers() -> None:
         validate_settings(settings)
 
 
+def test_validate_settings_rejects_bad_hybrid_linkage() -> None:
+    from audio_transcriber.web.settings import SettingsError, validate_settings
+
+    settings = default_settings({})
+    settings.diarization_hybrid_linkage = "banana"
+
+    with pytest.raises(SettingsError):
+        validate_settings(settings)
+
+
+def test_validate_settings_rejects_bad_hybrid_threshold() -> None:
+    from audio_transcriber.web.settings import SettingsError, validate_settings
+
+    settings = default_settings({})
+    settings.diarization_hybrid_threshold = 2.5
+
+    with pytest.raises(SettingsError):
+        validate_settings(settings)
+
+
 def test_build_job_config_maps_diarization_estimate(
     audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -688,6 +710,10 @@ def test_diarization_hybrid_settings_roundtrip() -> None:
     assert base.diarization_hybrid_min_speaker_seconds == pytest.approx(
         DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS
     )
+    assert base.diarization_hybrid_linkage == DEFAULT_DIARIZATION_HYBRID_LINKAGE
+    assert base.diarization_hybrid_threshold == pytest.approx(
+        DEFAULT_DIARIZATION_HYBRID_THRESHOLD
+    )
 
     merged = settings_from_mapping(
         {
@@ -695,6 +721,8 @@ def test_diarization_hybrid_settings_roundtrip() -> None:
             "diarization_hybrid_window_seconds": 60,
             "diarization_hybrid_overlap_seconds": "1.5",
             "diarization_hybrid_min_speaker_seconds": 2.0,
+            "diarization_hybrid_linkage": "COMPLETE",
+            "diarization_hybrid_threshold": "1.1",
         },
         base=base,
     )
@@ -703,12 +731,16 @@ def test_diarization_hybrid_settings_roundtrip() -> None:
     assert merged.diarization_hybrid_window_seconds == pytest.approx(60.0)
     assert merged.diarization_hybrid_overlap_seconds == pytest.approx(1.5)
     assert merged.diarization_hybrid_min_speaker_seconds == pytest.approx(2.0)
+    assert merged.diarization_hybrid_linkage == "complete"
+    assert merged.diarization_hybrid_threshold == pytest.approx(1.1)
 
     env = merged.env_overrides()
     assert env["DIARIZATION_HYBRID_ENABLED"] == "false"
     assert env["DIARIZATION_HYBRID_WINDOW_SECONDS"] == "60.0"
     assert env["DIARIZATION_HYBRID_OVERLAP_SECONDS"] == "1.5"
     assert env["DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS"] == "2.0"
+    assert env["DIARIZATION_HYBRID_LINKAGE"] == "complete"
+    assert env["DIARIZATION_HYBRID_THRESHOLD"] == "1.1"
 
 
 def test_build_job_config_maps_hybrid(

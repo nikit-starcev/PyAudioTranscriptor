@@ -21,8 +21,10 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
     DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
     DEFAULT_DIARIZATION_HYBRID_ENABLED,
+    DEFAULT_DIARIZATION_HYBRID_LINKAGE,
     DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS,
     DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS,
+    DEFAULT_DIARIZATION_HYBRID_THRESHOLD,
     DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
@@ -273,6 +275,12 @@ def build_job_config(
         diarization_hybrid_min_speaker_seconds=_as_float(
             defaults.get("DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS"),
             DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS,
+        ),
+        diarization_hybrid_linkage=defaults.get("DIARIZATION_HYBRID_LINKAGE", "").strip().casefold()
+        or DEFAULT_DIARIZATION_HYBRID_LINKAGE,
+        diarization_hybrid_threshold=_as_float(
+            defaults.get("DIARIZATION_HYBRID_THRESHOLD"),
+            DEFAULT_DIARIZATION_HYBRID_THRESHOLD,
         ),
         initial_prompt=defaults.get("INITIAL_PROMPT") or None,
         hotwords=defaults.get("HOTWORDS") or None,

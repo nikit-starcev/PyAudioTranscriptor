@@ -24,8 +24,10 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
     DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
     DEFAULT_DIARIZATION_HYBRID_ENABLED,
+    DEFAULT_DIARIZATION_HYBRID_LINKAGE,
     DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS,
     DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS,
+    DEFAULT_DIARIZATION_HYBRID_THRESHOLD,
     DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
     DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
     DEFAULT_NEMO_SPEECH_BINARY,
@@ -33,6 +35,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_NEMO_SPEECH_MODEL,
     DEFAULT_VOICES_DIR,
     VALID_DIARIZATION_ENGINES,
+    VALID_DIARIZATION_LINKAGES,
     VALID_LLM_PROVIDERS,
     VALID_NEMO_SPEECH_DEVICES,
 )
@@ -122,6 +125,10 @@ class WebSettings:
     diarization_hybrid_window_seconds: float = DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS
     diarization_hybrid_overlap_seconds: float = DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS
     diarization_hybrid_min_speaker_seconds: float = DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS
+    #: Linkage и порог пороговой ветки кластеризации гибрида (порог — в единицах
+    #: евклидова расстояния при linkage=ward, не путать с порогом оценщика).
+    diarization_hybrid_linkage: str = DEFAULT_DIARIZATION_HYBRID_LINKAGE
+    diarization_hybrid_threshold: float = DEFAULT_DIARIZATION_HYBRID_THRESHOLD
     #: GigaAM v3 (RU) через onnx-asr (бэкенд ``gigaam``): имя модели, локальный
     #: каталог снимка, квантизация (``int8``/пусто) и встроенный VAD. Пустое имя
     #: означает значение по умолчанию из ``config.defaults``.
@@ -180,6 +187,8 @@ class WebSettings:
             "DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS": str(
                 self.diarization_hybrid_min_speaker_seconds
             ),
+            "DIARIZATION_HYBRID_LINKAGE": self.diarization_hybrid_linkage,
+            "DIARIZATION_HYBRID_THRESHOLD": str(self.diarization_hybrid_threshold),
             "GIGAAM_MODEL": self.gigaam_model,
             "GIGAAM_MODEL_PATH": self.gigaam_model_path,
             "GIGAAM_QUANTIZATION": self.gigaam_quantization,
@@ -266,6 +275,12 @@ def default_settings(defaults: Mapping[str, str] | None = None) -> WebSettings:
         diarization_hybrid_min_speaker_seconds=_as_float(
             source.get("DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS"),
             DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS,
+        ),
+        diarization_hybrid_linkage=source.get("DIARIZATION_HYBRID_LINKAGE", "").strip().casefold()
+        or DEFAULT_DIARIZATION_HYBRID_LINKAGE,
+        diarization_hybrid_threshold=_as_float(
+            source.get("DIARIZATION_HYBRID_THRESHOLD"),
+            DEFAULT_DIARIZATION_HYBRID_THRESHOLD,
         ),
         gigaam_model=source.get("GIGAAM_MODEL", "").strip()
         or config_defaults.DEFAULT_GIGAAM_MODEL,
@@ -376,6 +391,12 @@ def settings_from_mapping(
             "diarization_hybrid_min_speaker_seconds",
             current.diarization_hybrid_min_speaker_seconds,
         ),
+        diarization_hybrid_linkage=pick_nonempty(
+            "diarization_hybrid_linkage", current.diarization_hybrid_linkage
+        ).casefold(),
+        diarization_hybrid_threshold=pick_float(
+            "diarization_hybrid_threshold", current.diarization_hybrid_threshold
+        ),
         gigaam_model=pick_str("gigaam_model", current.gigaam_model),
         gigaam_model_path=pick_str("gigaam_model_path", current.gigaam_model_path),
         gigaam_quantization=pick_str("gigaam_quantization", current.gigaam_quantization),
@@ -467,6 +488,15 @@ def validate_settings(settings: WebSettings) -> None:
     if settings.diarization_hybrid_min_speaker_seconds <= 0.0:
         raise SettingsError(
             "DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS должно быть положительным числом"
+        )
+    if settings.diarization_hybrid_linkage not in VALID_DIARIZATION_LINKAGES:
+        raise SettingsError(
+            "DIARIZATION_HYBRID_LINKAGE должно быть одним из "
+            f"{', '.join(VALID_DIARIZATION_LINKAGES)}"
+        )
+    if not (0.0 < settings.diarization_hybrid_threshold < 2.0):
+        raise SettingsError(
+            "DIARIZATION_HYBRID_THRESHOLD должно быть числом в диапазоне (0; 2)"
         )
 
     if settings.llm_base_url and not _is_http_url(settings.llm_base_url):

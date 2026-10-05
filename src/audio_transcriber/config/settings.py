@@ -27,11 +27,13 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
     DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
     DEFAULT_DIARIZATION_HYBRID_ENABLED,
+    DEFAULT_DIARIZATION_HYBRID_LINKAGE,
     DEFAULT_DIARIZATION_HYBRID_MAX_SPLIT_DEPTH,
     DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS,
     DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS,
     DEFAULT_DIARIZATION_HYBRID_OVERLOAD_SPLIT,
     DEFAULT_DIARIZATION_HYBRID_SUBWINDOW_SECONDS,
+    DEFAULT_DIARIZATION_HYBRID_THRESHOLD,
     DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
@@ -55,6 +57,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_VOICES_DIR,
     NEMO_SPEECH_MAX_SPEAKERS,
     VALID_DIARIZATION_ENGINES,
+    VALID_DIARIZATION_LINKAGES,
     VALID_LLM_PROVIDERS,
     VALID_NEMO_SPEECH_DEVICES,
 )
@@ -150,6 +153,12 @@ class AppConfig:
     diarization_hybrid_window_seconds: float = DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS
     diarization_hybrid_overlap_seconds: float = DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS
     diarization_hybrid_min_speaker_seconds: float = DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS
+    # Linkage и порог пороговой ветки глобальной кластеризации гибрида.
+    # ``ward`` (euclidean на L2-нормированных векторах) — лучшее распределение,
+    # чем ``complete``/cosine. Порог — в единицах ЕВКЛИДОВА расстояния и НЕ
+    # совпадает с косинусным ``diarization_estimate_threshold`` оценщика.
+    diarization_hybrid_linkage: str = DEFAULT_DIARIZATION_HYBRID_LINKAGE
+    diarization_hybrid_threshold: float = DEFAULT_DIARIZATION_HYBRID_THRESHOLD
     # Переобработка «перегруженных» окон гибрида мелкими окнами (#68).
     diarization_hybrid_overload_split: bool = DEFAULT_DIARIZATION_HYBRID_OVERLOAD_SPLIT
     diarization_hybrid_subwindow_seconds: float = DEFAULT_DIARIZATION_HYBRID_SUBWINDOW_SECONDS
@@ -668,6 +677,25 @@ class AppConfig:
         if isinstance(depth, bool) or not isinstance(depth, int) or depth < 0:
             raise ConfigurationError(
                 "DIARIZATION_HYBRID_MAX_SPLIT_DEPTH должно быть целым числом >= 0"
+            )
+
+        linkage = (self.diarization_hybrid_linkage or "").strip().casefold()
+        if linkage not in VALID_DIARIZATION_LINKAGES:
+            raise ConfigurationError(
+                f"DIARIZATION_HYBRID_LINKAGE должно быть одним из "
+                f"{', '.join(sorted(VALID_DIARIZATION_LINKAGES))} (получено "
+                f"{self.diarization_hybrid_linkage!r})"
+            )
+        self.diarization_hybrid_linkage = linkage
+
+        hybrid_threshold = self.diarization_hybrid_threshold
+        if (
+            isinstance(hybrid_threshold, bool)
+            or not isinstance(hybrid_threshold, (int, float))
+            or not (0.0 < hybrid_threshold < 2.0)
+        ):
+            raise ConfigurationError(
+                "DIARIZATION_HYBRID_THRESHOLD должно быть числом в диапазоне (0; 2)"
             )
 
     def _validate_llm_provider(self) -> None:
