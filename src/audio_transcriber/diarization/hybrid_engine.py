@@ -13,11 +13,14 @@
    достаточной длительности считается speaker-эмбеддинг (общий модуль
    :mod:`audio_transcriber.diarization.embeddings`, модель CAM++).
 4. Все эмбеддинги кластеризуются глобально (агломеративно, косинус,
-   average-linkage) **по порогу**. Каждому кластеру — глобальный ``SPEAKER_XX``.
-   Явное ``num_speakers`` (пользователь задал точно) кластеризует ровно в это
-   число; дешёвая **оценка** N (нужна движку ``auto`` для маршрутизации) —
-   только мягкий ориентир и не форсирует число кластеров, иначе недооценка N
-   склеивала бы участников.
+   **complete**-linkage) **по порогу**. ``complete`` (а не ``average``) выбран
+   против chaining: ``average`` через «мосты»-выбросы перемерживал кластеры
+   говорящих (крупнейший кластер раздувался до ~70% сегментов). Каждому
+   кластеру — глобальный ``SPEAKER_XX``. Явное ``num_speakers`` (пользователь
+   задал точно) кластеризует ровно в это число — там linkage ``ward``/euclidean
+   (лучшее распределение при фиксированном ``k``); дешёвая **оценка** N (нужна
+   движку ``auto`` для маршрутизации) — только мягкий ориентир и не форсирует
+   число кластеров, иначе недооценка N склеивала бы участников.
 5. Локальные сегменты перекладываются в глобальные ID и склеиваются;
    перекрытие окон учтено зонами владения (без дублей и пропусков).
 
@@ -80,7 +83,9 @@ logger = logging.getLogger(__name__)
 #: Версия алгоритма гибрида. Изменение окон/склейки/кластеризации меняет
 #: результат при тех же входах — участвует в ключе кэша диаризации.
 #: 3 — кластеризация по порогу вместо форсирования числа кластеров по оценке N.
-DIARIZATION_HYBRID_IMPL_VERSION = 3
+#: 4 — linkage complete/cosine (порог) и ward/euclidean (форсированный N)
+#:     вместо average: average перемерживал кластеры через chaining.
+DIARIZATION_HYBRID_IMPL_VERSION = 4
 
 #: Запас (в говорящих) к мягкой оценке числа говорящих при кластеризации.
 #: Оценка ``expected_speakers`` никогда не задаёт точное число кластеров: она
@@ -367,6 +372,12 @@ def _assign_global_clusters(
 
     ``min_speakers``/``max_speakers`` — явные границы пользователя; применяются
     только при кластеризации по порогу и приоритетнее мягкой оценки.
+
+    Linkage тоже различается по источнику числа кластеров: кластеризация
+    **по порогу** идёт с ``complete``/cosine (против chaining ``average``),
+    а любой **форсированный** ``n_clusters`` (явный ``num_speakers``, а также
+    доводка до ``min/max``/мягкого потолка) — с ``ward``/euclidean (на этих
+    эмбеддингах он даёт лучшее распределение при фиксированном ``k``).
     """
     matrix = np.stack([vector for _window, _speaker, vector in observations]).astype(np.float32)
     count = int(matrix.shape[0])
@@ -376,10 +387,20 @@ def _assign_global_clusters(
     if num_speakers is not None:
         exact = max(1, min(int(num_speakers), count))
         return embedding_utils.cluster_embeddings(
-            matrix, threshold=threshold, n_clusters=exact
+            matrix,
+            threshold=threshold,
+            n_clusters=exact,
+            linkage="ward",
+            metric="euclidean",
         )
 
-    labels = embedding_utils.cluster_embeddings(matrix, threshold=threshold, n_clusters=None)
+    labels = embedding_utils.cluster_embeddings(
+        matrix,
+        threshold=threshold,
+        n_clusters=None,
+        linkage="complete",
+        metric="cosine",
+    )
     distinct = len(set(labels.tolist()))
 
     target: int | None = None
@@ -393,7 +414,11 @@ def _assign_global_clusters(
             target = soft_cap
     if target is not None and target != distinct:
         labels = embedding_utils.cluster_embeddings(
-            matrix, threshold=threshold, n_clusters=target
+            matrix,
+            threshold=threshold,
+            n_clusters=target,
+            linkage="ward",
+            metric="euclidean",
         )
     return labels
 

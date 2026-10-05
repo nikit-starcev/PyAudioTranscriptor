@@ -240,6 +240,92 @@ def test_hybrid_soft_estimate_bounds_runaway_oversegmentation(
     assert len({segment.speaker_id for segment in segments}) <= 5
 
 
+# --- linkage глобальной кластеризации: порог→complete, форсаж→ward -----------
+
+
+def _record_cluster_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[dict[str, object]]:
+    """Заменяет ``cluster_embeddings`` записью аргументов (метки = arange)."""
+    calls: list[dict[str, object]] = []
+
+    def recorder(
+        matrix: np.ndarray,
+        *,
+        threshold: float,
+        n_clusters: int | None = None,
+        linkage: str = "complete",
+        metric: str = "cosine",
+    ) -> np.ndarray:
+        del threshold
+        calls.append({"n_clusters": n_clusters, "linkage": linkage, "metric": metric})
+        return np.arange(matrix.shape[0], dtype=int)
+
+    monkeypatch.setattr(hybrid_engine.embedding_utils, "cluster_embeddings", recorder)
+    return calls
+
+
+def _observations(count: int) -> list[tuple[int, str, np.ndarray]]:
+    return [(0, f"s{i}", np.eye(count, dtype=np.float32)[i]) for i in range(count)]
+
+
+def test_assign_global_clusters_threshold_uses_complete_cosine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _record_cluster_calls(monkeypatch)
+
+    hybrid_engine._assign_global_clusters(
+        _observations(3),
+        threshold=0.5,
+        num_speakers=None,
+        expected_speakers=None,
+        min_speakers=None,
+        max_speakers=None,
+    )
+
+    # Кластеризация по порогу — complete/cosine (против chaining average).
+    assert calls == [{"n_clusters": None, "linkage": "complete", "metric": "cosine"}]
+
+
+def test_assign_global_clusters_explicit_num_speakers_uses_ward(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _record_cluster_calls(monkeypatch)
+
+    hybrid_engine._assign_global_clusters(
+        _observations(3),
+        threshold=0.5,
+        num_speakers=2,
+        expected_speakers=None,
+        min_speakers=None,
+        max_speakers=None,
+    )
+
+    # Форсированное число кластеров (явное num_speakers) — ward/euclidean.
+    assert calls == [{"n_clusters": 2, "linkage": "ward", "metric": "euclidean"}]
+
+
+def test_assign_global_clusters_soft_cap_uses_ward(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _record_cluster_calls(monkeypatch)
+
+    hybrid_engine._assign_global_clusters(
+        _observations(6),
+        threshold=0.5,
+        num_speakers=None,
+        expected_speakers=1,
+        min_speakers=None,
+        max_speakers=None,
+    )
+
+    # Первый проход — по порогу (complete/cosine) даёт 6 кластеров, мягкий
+    # потолок 1+headroom(4)=5 доводит их до 5 через форсированный ward.
+    assert calls[0] == {"n_clusters": None, "linkage": "complete", "metric": "cosine"}
+    assert calls[1] == {"n_clusters": 5, "linkage": "ward", "metric": "euclidean"}
+
+
+
 def test_hybrid_window_overlap_produces_no_duplicates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

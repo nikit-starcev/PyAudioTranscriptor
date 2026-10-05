@@ -13,7 +13,8 @@ L2-нормированные эмбеддинги голоса, по котор
 * :class:`SpeakerEmbedder` — обёртка над ``SpeakerEmbeddingExtractor`` с
   ленивой загрузкой модели (одна модель — много окон);
 * :func:`cluster_embeddings` — агломеративная кластеризация по косинусному
-  расстоянию (average-linkage), возвращающая метки кластеров.
+  расстоянию (``complete``-linkage по умолчанию — против chaining/перемержа
+  кластеров, см. docstring функции), возвращающая метки кластеров.
 
 Любая ошибка не «роняет» вызывающий код: потребитель сам решает, как
 деградировать (оценщик возвращает ``None``, гибрид — понятную ошибку).
@@ -285,14 +286,28 @@ def cluster_embeddings(
     *,
     threshold: float,
     n_clusters: int | None = None,
+    linkage: str = "complete",
+    metric: str = "cosine",
 ) -> np.ndarray:
-    """Агломеративная кластеризация эмбеддингов по косинусному расстоянию.
+    """Агломеративная кластеризация эмбеддингов.
 
     :param embeddings: матрица ``(N, D)`` (обычно L2-нормированных) векторов.
-    :param threshold: порог косинусного расстояния (используется, если
-        ``n_clusters`` не задан).
+    :param threshold: порог расстояния (используется, если ``n_clusters``
+        не задан).
     :param n_clusters: точное число кластеров — «ориентир»; если задано и
         допустимо (``1..N``), используется вместо порога.
+    :param linkage: метод связи. По умолчанию ``"complete"``: он сравнивает
+        **максимальное** расстояние между кластерами и потому не выстраивает
+        «цепочки» (chaining) из близких соседей — именно chaining
+        ``average``-linkage перемерживал кластеры говорящих (кластер, растущий
+        через мостики-выбросы, вбирал соседей). Для форсированного
+        ``n_clusters`` (явное число говорящих) вызывающий код задаёт
+        ``"ward"`` — на реальных эмбеддингах CAM++ он даёт лучшее распределение
+        при фиксированном ``k``.
+    :param metric: метрика расстояния: ``"cosine"`` (по умолчанию; на
+        L2-нормированных векторах расстояние = ``1 - cos``) либо
+        ``"euclidean"`` (в паре с ``linkage="ward"``, который определён только
+        для евклидовой метрики).
     :return: массив меток кластеров длины ``N``.
     """
     from sklearn.cluster import AgglomerativeClustering
@@ -302,28 +317,29 @@ def cluster_embeddings(
     if count <= 1:
         return np.zeros(count, dtype=int)
 
-    distance = 1.0 - matrix @ matrix.T
-    np.fill_diagonal(distance, 0.0)
-    distance = np.clip(distance, 0.0, 2.0)
+    # L2-нормировка: для косинуса 1 - <unit_i, unit_j>, а ward/euclidean тоже
+    # считается на единичных векторах (так же, как в diag_hybrid и боевом коде).
+    unit = matrix / np.clip(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-12, None)
+    params: dict[str, object]
+    if metric == "cosine":
+        data = np.clip(1.0 - unit @ unit.T, 0.0, 2.0)
+        np.fill_diagonal(data, 0.0)
+        params = {"metric": "precomputed", "linkage": linkage}
+    else:  # euclidean (для ward)
+        data = unit
+        params = {"metric": "euclidean", "linkage": linkage}
 
     if n_clusters is not None and 1 <= int(n_clusters) < count:
-        model = AgglomerativeClustering(
-            n_clusters=int(n_clusters),
-            metric="precomputed",
-            linkage="average",
-        )
+        model = AgglomerativeClustering(n_clusters=int(n_clusters), **params)
     else:
         model = AgglomerativeClustering(
-            n_clusters=None,
-            distance_threshold=float(threshold),
-            metric="precomputed",
-            linkage="average",
+            n_clusters=None, distance_threshold=float(threshold), **params
         )
-    return np.asarray(model.fit_predict(distance), dtype=int)
+    return np.asarray(model.fit_predict(data), dtype=int)
 
 
 def count_clusters(embeddings: np.ndarray, *, threshold: float) -> int:
-    """Число кластеров эмбеддингов (агломеративная кластеризация, косинус)."""
+    """Число кластеров эмбеддингов (агломеративная кластеризация, complete/cosine)."""
     matrix = np.asarray(embeddings, dtype=np.float32)
     if matrix.shape[0] <= 1:
         return max(int(matrix.shape[0]), 1)

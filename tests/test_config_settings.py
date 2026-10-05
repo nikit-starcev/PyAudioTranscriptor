@@ -841,9 +841,10 @@ def test_diarization_estimate_defaults(audio_file: Path) -> None:
 
     assert config.diarization_estimate_enabled is True
     assert config.diarization_estimate_seconds == 30.0
-    # 0.55: на реальной записи оценщик даёт ~8 говорящих (0.7 недооценивал → 5).
+    # 0.50: под complete+cosine оценщик даёт k≈14 / топ-кластер ≈31% на реальной
+    # записи (прежний average перемерживал: крупнейший кластер до 68–78%).
     assert config.diarization_estimate_threshold == DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD
-    assert DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD == 0.55
+    assert DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD == 0.50
     # Порог гибрида по умолчанию следует за оценщиком (одна модель CAM++).
     assert DEFAULT_DIARIZATION_HYBRID_THRESHOLD == DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD
     assert config.diarization_estimate_model.endswith(".onnx")

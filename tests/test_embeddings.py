@@ -84,6 +84,56 @@ def test_cluster_embeddings_n_clusters_hint() -> None:
     assert len(set(labels.tolist())) == 2
 
 
+def test_cluster_embeddings_complete_avoids_chain_merging() -> None:
+    """average-linkage «сцепляет» цепочку, complete — нет (против chaining)."""
+    # Четыре точки единичной окружности с шагом 10°: соседи очень близки
+    # (cos-расстояние ≈0.015), но концы цепочки далеки (0°↔30° ≈0.134).
+    angles = np.deg2rad([0.0, 10.0, 20.0, 30.0])
+    matrix = np.stack(
+        [np.array([np.cos(a), np.sin(a)], dtype=np.float32) for a in angles]
+    )
+
+    chained = embeddings.cluster_embeddings(
+        matrix, threshold=0.08, linkage="average", metric="cosine"
+    )
+    kept = embeddings.cluster_embeddings(
+        matrix, threshold=0.08, linkage="complete", metric="cosine"
+    )
+
+    # average через «мостики»-соседей стягивает всю цепочку в один кластер…
+    assert len(set(chained.tolist())) == 1
+    # …а complete (по максимальному расстоянию между кластерами) не даёт
+    # цепочке схлопнуться: цепочка рвётся на две половины.
+    assert len(set(kept.tolist())) == 2
+
+
+def test_cluster_embeddings_defaults_to_complete_cosine() -> None:
+    """Без явного linkage/metric работает complete/cosine (против chaining)."""
+    angles = np.deg2rad([0.0, 10.0, 20.0, 30.0])
+    matrix = np.stack(
+        [np.array([np.cos(a), np.sin(a)], dtype=np.float32) for a in angles]
+    )
+
+    default = embeddings.cluster_embeddings(matrix, threshold=0.08)
+    explicit = embeddings.cluster_embeddings(
+        matrix, threshold=0.08, linkage="complete", metric="cosine"
+    )
+
+    assert default.tolist() == explicit.tolist()
+    assert len(set(default.tolist())) == 2
+
+
+def test_cluster_embeddings_euclidean_ward_n_clusters() -> None:
+    """ward/euclidean собирает ровно заданное число кластеров."""
+    matrix = np.eye(4, dtype=np.float32)
+
+    labels = embeddings.cluster_embeddings(
+        matrix, threshold=0.7, n_clusters=3, linkage="ward", metric="euclidean"
+    )
+
+    assert len(set(labels.tolist())) == 3
+
+
 def test_cluster_embeddings_single_is_one() -> None:
     labels = embeddings.cluster_embeddings(
         np.array([[1.0, 0.0]], dtype=np.float32), threshold=0.7
