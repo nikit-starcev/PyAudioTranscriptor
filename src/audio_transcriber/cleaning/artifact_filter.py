@@ -23,7 +23,8 @@ whisper.cpp после фикса потери кусков речи выдаё�
   серией из двух и более слов;
 * шаблонные галлюцинации Whisper (субтитровые заглушки/концовки вроде
   «Продолжение следует», «Добро пожаловать в Казахстан», «Редактор субтитров
-  …») — по спискам :data:`HALLUCINATION_PHRASES` и
+  …», а также подписи сервисов расшифровки — «Transcription by CastingWords»,
+  «Subtitles by …») — по спискам :data:`HALLUCINATION_PHRASES` и
   :data:`HALLUCINATION_PREFIXES`;
 * «совсем пустые» длинные реплики по эвристике :data:`SPARSE_LONG_SECONDS` /
   :data:`SPARSE_MAX_WORDS` / :data:`SPARSE_MAX_CHARS` (спорные случаи
@@ -143,6 +144,17 @@ HALLUCINATION_PHRASES: frozenset[str] = frozenset(
         "thank you for watching",
         "subscribe to my channel",
         "please subscribe",
+        # Подписи сервисов расшифровки, встречающиеся в обучающих данных Whisper.
+        # Значения нормализованы (пунктуация выброшена: «rev.com» → «rev com»),
+        # совпадение — по целой реплике.
+        "transcription by castingwords",
+        "castingwords",
+        "rev com",
+        "otter ai",
+        "sonix",
+        "temi",
+        "veed io",
+        "descript",
     }
 )
 
@@ -160,6 +172,8 @@ HALLUCINATION_PREFIXES: tuple[str, ...] = (
     "subtitles by",
     "subtitles created by",
     "translated by",
+    "transcribed by",
+    "transcription by",
     "amara.org",
 )
 HALLUCINATION_PREFIX_MAX_WORDS = 12

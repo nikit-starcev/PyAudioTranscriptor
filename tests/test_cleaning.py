@@ -235,11 +235,63 @@ def test_hallucination_matching_is_case_and_punctuation_insensitive() -> None:
     assert cleaner.clean([_entry("ПРОДОЛЖЕНИЕ, СЛЕДУЕТ...")]) == []
 
 
+def test_service_signature_hallucinations_are_removed() -> None:
+    cleaner = ArtifactCleaner()
+    entries = [
+        _entry("Transcription by CastingWords"),
+        _entry("transcription by castingwords."),
+        _entry("TRANSCRIPTION BY CASTINGWORDS!"),
+        _entry("CastingWords"),
+        _entry("Transcribed by Ivan Petrov"),
+        _entry("Rev.com"),
+        _entry("Otter.ai"),
+        _entry("Sonix"),
+        _entry("Temi"),
+        _entry("Veed.io"),
+        _entry("Descript"),
+        _entry("Subtitles by Maria"),
+    ]
+
+    assert cleaner.clean(entries) == []
+
+
+def test_real_castingwords_entry_from_results_is_removed() -> None:
+    cleaner = ArtifactCleaner()
+    # Точная реплика из web-data/results/315eb42855a64b1882f1478ee0f068e4.json:
+    # 30 с, 3 слова, без говорящего — подпись сервиса, а не речь.
+    entry = _entry("Transcription by CastingWords", start=2697.14, end=2727.12)
+
+    assert cleaner.clean([entry]) == []
+
+
+def test_prefix_match_respects_max_words() -> None:
+    cleaner = ArtifactCleaner()
+    # 13 слов, начинается с «transcription by» — длиннее лимита, не вырезается.
+    entry = _entry(
+        "transcription by the team was reviewed and approved by the client "
+        "and then archived for future reference"
+    )
+
+    assert cleaner.clean([entry]) == [entry]
+
+
 def test_real_phrase_mentioning_subtitles_not_at_start_is_kept() -> None:
     cleaner = ArtifactCleaner()
     entry = _entry("Обсудили, как делаются субтитры")
 
     assert cleaner.clean([entry]) == [entry]
+
+
+def test_legitimate_transcription_and_casting_phrases_are_kept() -> None:
+    cleaner = ArtifactCleaner()
+    entries = [
+        _entry("The transcription by the service was accurate"),
+        _entry("Мы обсудили качество транскрибации"),
+        _entry("Casting the net took all morning"),
+        _entry("Кастинг прошёл удачно"),
+    ]
+
+    assert cleaner.clean(entries) == entries
 
 
 # --- эвристика «мало текста на длинном интервале» ----------------------------
