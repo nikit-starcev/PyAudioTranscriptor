@@ -76,6 +76,9 @@ class WebSettings:
     llm_summary: bool = True
     denoise: bool = True
     mark_overlap: bool = True
+    #: Сводить кластеры с одинаковым уверенным именем в одного говорящего
+    #: (enrollment many-to-one). Безымянные «Спикер N» не сливаются.
+    merge_same_name_speakers: bool = True
     normalize_text: bool = True
     clean_artifacts: bool = True
     #: Автоисправление опечаток (стадия ``correction``, ``pymorphy3``): правит
@@ -152,6 +155,7 @@ class WebSettings:
             "LLM_SUMMARY": _format_bool(self.llm_summary),
             "DENOISE": _format_bool(self.denoise),
             "MARK_OVERLAP": _format_bool(self.mark_overlap),
+            "MERGE_SAME_NAME_SPEAKERS": _format_bool(self.merge_same_name_speakers),
             "NORMALIZE_TEXT": _format_bool(self.normalize_text),
             "CLEAN_ARTIFACTS": _format_bool(self.clean_artifacts),
             "ENABLE_CORRECTION": _format_bool(self.enable_correction),
@@ -218,6 +222,9 @@ def default_settings(defaults: Mapping[str, str] | None = None) -> WebSettings:
         llm_summary=_as_bool(source.get("LLM_SUMMARY"), default=True),
         denoise=_as_bool(source.get("DENOISE"), default=True),
         mark_overlap=_as_bool(source.get("MARK_OVERLAP"), default=True),
+        merge_same_name_speakers=_as_bool(
+            source.get("MERGE_SAME_NAME_SPEAKERS"), default=True
+        ),
         normalize_text=_as_bool(source.get("NORMALIZE_TEXT"), default=True),
         clean_artifacts=_as_bool(source.get("CLEAN_ARTIFACTS"), default=True),
         enable_correction=_as_bool(source.get("ENABLE_CORRECTION")),
@@ -343,6 +350,9 @@ def settings_from_mapping(
         llm_summary=pick_bool("llm_summary", current.llm_summary),
         denoise=pick_bool("denoise", current.denoise),
         mark_overlap=pick_bool("mark_overlap", current.mark_overlap),
+        merge_same_name_speakers=pick_bool(
+            "merge_same_name_speakers", current.merge_same_name_speakers
+        ),
         normalize_text=pick_bool("normalize_text", current.normalize_text),
         clean_artifacts=pick_bool("clean_artifacts", current.clean_artifacts),
         enable_correction=pick_bool("enable_correction", current.enable_correction),

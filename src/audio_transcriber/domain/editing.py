@@ -214,6 +214,29 @@ def rename_speaker(
     return replace(result, speakers=speakers, entries=entries)
 
 
+def merge_speaker_lists(
+    entries: list[TranscriptEntry],
+    speakers: list[Speaker],
+    source_id: str,
+    target_id: str,
+) -> tuple[list[TranscriptEntry], list[Speaker]]:
+    """Сливает говорящего ``source_id`` в ``target_id`` на уровне списков.
+
+    Низкоуровневая основа :func:`merge_speakers`: все реплики источника
+    (включая дополнительных участников наложения) переназначаются целевому,
+    источник удаляется из списка. Если цели нет или идентификаторы совпадают,
+    входные списки возвращаются без изменений. Нужна конвейеру, где реплики и
+    говорящие ещё не собраны в :class:`TranscriptionResult`.
+    """
+
+    target = next((speaker for speaker in speakers if speaker.id == target_id), None)
+    if target is None or source_id == target_id:
+        return entries, speakers
+    new_speakers = [speaker for speaker in speakers if speaker.id != source_id]
+    new_entries = _remap_speaker(entries, source_id, target)
+    return new_entries, new_speakers
+
+
 def merge_speakers(
     result: TranscriptionResult, source_id: str, target_id: str
 ) -> TranscriptionResult:
@@ -223,11 +246,9 @@ def merge_speakers(
     удаляется из списка. Если целевого говорящего нет, результат не меняется.
     """
 
-    target = next((speaker for speaker in result.speakers if speaker.id == target_id), None)
-    if target is None or source_id == target_id:
-        return result
-    speakers = [speaker for speaker in result.speakers if speaker.id != source_id]
-    entries = _remap_speaker(result.entries, source_id, target)
+    entries, speakers = merge_speaker_lists(
+        result.entries, result.speakers, source_id, target_id
+    )
     return replace(result, speakers=speakers, entries=entries)
 
 

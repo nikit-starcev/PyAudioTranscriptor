@@ -28,6 +28,7 @@ from audio_transcriber.diarization.voices import (
 )
 from audio_transcriber.domain.editing import merge_speakers, rename_speaker
 from audio_transcriber.domain.models import SpeakerSegment, TranscriptionResult
+from audio_transcriber.merging.same_name import merge_result_same_name_speakers
 from audio_transcriber.tui.formatting import _format_size
 from audio_transcriber.tui.widgets import PlayerPanel
 
@@ -573,6 +574,9 @@ class SpeakerEditorScreen(ModalScreen[TranscriptionResult | None]):
         severity: Literal["information", "warning"]
         for speaker_id, name in mapping.items():
             self._result = rename_speaker(self._result, speaker_id, name)
+        # Мэтчинг many-to-one даёт одно имя нескольким кластерам: сворачиваем
+        # их в одного говорящего, как и конвейер/веб-слой.
+        self._result = merge_result_same_name_speakers(self._result)
         if mapping:
             self.reload()
             applied = ", ".join(f"{speaker_id} → {name}" for speaker_id, name in mapping.items())

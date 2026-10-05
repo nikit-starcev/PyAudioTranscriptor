@@ -205,6 +205,11 @@ class AppConfig:
     # Требует обычной (не эксклюзивной) разметки pyannote; иначе мягко
     # пропускается без пометок и без падения.
     mark_overlap: bool = True
+    # Сводить кластеры, получившие одно и то же уверенное имя (enrollment
+    # many-to-one, ручное переименование/``--speaker-name``), в одного
+    # говорящего. Безымянные («Спикер N») не сливаются; совпадение имён —
+    # точное. По умолчанию включено.
+    merge_same_name_speakers: bool = True
     # Постадийный кэш дорогих этапов (шумоподавление, распознавание, диаризация).
     # При повторном запуске на том же файле с теми же параметрами стадии не
     # пересчитываются — это и ускоряет прогоны, и даёт возобновление после сбоя.
@@ -362,6 +367,11 @@ class AppConfig:
 
         if not isinstance(self.mark_overlap, bool):
             raise ConfigurationError("MARK_OVERLAP должно быть true или false")
+
+        if not isinstance(self.merge_same_name_speakers, bool):
+            raise ConfigurationError(
+                "MERGE_SAME_NAME_SPEAKERS должно быть true или false"
+            )
 
         if not isinstance(self.use_cache, bool):
             raise ConfigurationError("USE_CACHE должно быть true или false")

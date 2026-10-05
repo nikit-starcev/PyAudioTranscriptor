@@ -30,6 +30,10 @@ from audio_transcriber.domain.models import (
     TranscriptEntry,
     TranscriptionResult,
 )
+from audio_transcriber.merging.same_name import (
+    merge_result_same_name_speakers,
+    same_name_merge_pairs,
+)
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.utils.text import sanitize_filename
 from audio_transcriber.web.results import serialize_result
@@ -123,12 +127,19 @@ def apply_speaker_changes(
     for source_id, target_id in merges:
         result = merge_speakers(result, source_id, target_id)
 
+    # Автослияние кластеров с одинаковым итоговым именем (#13): enrollment
+    # много-к-одному даёт одно имя нескольким кластерам. Пары считаем после
+    # переименований/ручных слияний, чтобы сливать уже итоговые имена; образцы
+    # источников переносятся/удаляются тем же механизмом, что и у #40/#41.
+    auto_merges = same_name_merge_pairs(result.speakers)
+    result = merge_result_same_name_speakers(result)
+
     displays = {speaker.id: speaker.display_name for speaker in result.speakers}
     updated_samples: dict[str, str] = {
         key: value for key, value in samples.items() if isinstance(value, str)
     }
     _sync_renamed_files(updated_samples, renames, data_dir)
-    _sync_merged_files(updated_samples, merges, displays, data_dir)
+    _sync_merged_files(updated_samples, [*merges, *auto_merges], displays, data_dir)
 
     return _reserialize(payload, result, updated_samples)
 
@@ -401,11 +412,19 @@ def _sync_merged_files(
         relative = samples.pop(source_id, None)
         if not relative:
             continue
-        path = _resolve_sample(relative, data_dir)
-        if target_id in samples:
+        target_relative = samples.get(target_id)
+        if target_relative is not None:
             # У целевого говорящего уже есть свой образец — лишний удаляем.
-            _delete_file(path)
+            # Но если источник ссылается на тот же файл (дублирующееся
+            # отображение в старом результате), удалять нельзя: пропал бы
+            # образец самого целевого говорящего.
+            source_path = _resolve_sample(relative, data_dir)
+            target_path = _resolve_sample(target_relative, data_dir)
+            if source_path is not None and source_path == target_path:
+                continue
+            _delete_file(source_path)
             continue
+        path = _resolve_sample(relative, data_dir)
         if path is None or not path.is_file():
             continue
         stem = sanitize_filename(displays.get(target_id, target_id))

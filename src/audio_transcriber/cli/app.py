@@ -544,6 +544,15 @@ def transcribe(
             "недоступности данных о перекрытиях пометок не будет."
         ),
     ),
+    merge_same_name_speakers: bool = typer.Option(
+        True,
+        "--merge-same-names/--no-merge-same-names",
+        help=(
+            "Сводить кластеры диаризации с одинаковым уверенным именем "
+            "(enrollment/--speaker-name) в одного говорящего. Безымянные "
+            "«Спикер N» не сливаются. По умолчанию включено."
+        ),
+    ),
     cache: bool = typer.Option(
         True,
         "--cache/--no-cache",
@@ -983,6 +992,7 @@ def transcribe(
             normalize_text=normalize_text,
             denoise=denoise,
             mark_overlap=mark_overlap,
+            merge_same_name_speakers=merge_same_name_speakers,
             use_cache=cache,
             cache_dir=cache_dir,
             notifications=notifications,

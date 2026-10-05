@@ -291,6 +291,9 @@ def build_job_config(
         normalize_text=_as_bool(defaults.get("NORMALIZE_TEXT"), default=True),
         denoise=_as_bool(defaults.get("DENOISE"), default=True),
         mark_overlap=_as_bool(defaults.get("MARK_OVERLAP"), default=True),
+        merge_same_name_speakers=_as_bool(
+            defaults.get("MERGE_SAME_NAME_SPEAKERS"), default=True
+        ),
         use_cache=_as_bool(defaults.get("USE_CACHE"), default=True),
         cache_dir=data_dir / "cache",
         notifications=_as_bool(defaults.get("NOTIFICATIONS"), default=True),
