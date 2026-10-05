@@ -6,6 +6,21 @@
 
 ## Сделано (недавнее)
 
+- ✅ **CLI наследует `config.env`; pyannote офлайн и фейл-фаст** (#76):
+  команда `transcribe` без флагов берёт значения по умолчанию из `config.env`
+  (как веб через `build_job_config`), а CLI-флаги — только явный override:
+  `cli/env_config.py` собирает kwargs `AppConfig` из `config.env`, а
+  `_explicit_overrides` переносит только реально указанные флаги (через
+  `ctx.get_parameter_source`). В логе чистого прогона (`--no-cache`):
+  `Бэкенд распознавания: whisper-cpp`, движок `nemo-speech` (Vulkan) по оценке
+  N≈2 — `PYANNOTE_LOCAL_MODEL` и `NEMO_SPEECH_*` больше не перебиваются
+  дефолтами. `diarization/pyannote_engine.py`: при заданном локальном пути —
+  загрузка офлайн (`HF_HUB_OFFLINE`), отсутствующий путь — понятная ошибка без
+  похода в сеть; без локальной модели — ограниченный таймаут HF (15 с),
+  401/сбой падает быстро с подсказкой про токен/локальную копию. Тесты:
+  `test_cli.py` (слияние config.env и override флагами) +
+  `test_pyannote_engine.py` (офлайн-загрузка, локальный файл, фейл-фаст 401).
+
 - ✅ **Автоустановка опциональных пакетов из мастера** (#66): реестр-allowlist
   (`web/deps.py`: `gigaam`→`onnx-asr[cpu,hub]`, `denoise`→`deepfilternet`),
   эндпоинты `GET /api/deps`, `POST /api/deps/{key}/install` (202, одна установка
@@ -293,13 +308,6 @@
   автослияние по имени (`edf9a53`). Остаточное: дробление Артема (CAM++) — не критично.
 
 ## Важно
-
-- **CLI не наследует `config.env` + зависание pyannote на gated-модели.** (#76)
-  (а) CLI-дефолты опций перебивают `config.env`: `ASR_BACKEND` (faster-whisper вместо whisper-cpp), `NEMO_SPEECH_BINARY`
-  (→ hybrid недоступен → auto ушёл на pyannote), `PYANNOTE_LOCAL_MODEL`. Нужно: CLI берёт значения из config.env,
-  флаги — только явный override (как веб через `build_job_config`). (б) pyannote при отсутствии локального пути/токена
-  долбит HF за gated `config.yaml` → 401 → зависание (CLOSE-WAIT, 45+ мин); при заданном локальном пути не ходить в HF,
-  при 401 — быстрый понятный фейл. Связано с чистым прогоном для #13.
 
 - **Некорректное время (таймкоды) в расшифровке.** (#14)
   В стенограмме времена реплик не соответствуют реальному положению в аудио

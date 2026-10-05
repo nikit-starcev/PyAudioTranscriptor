@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,64 @@ from audio_transcriber.utils.exceptions import DiarizationError
 logger = logging.getLogger(__name__)
 
 DEFAULT_PIPELINE = "pyannote/speaker-diarization-community-1"
+
+#: Таймаут сетевого обращения к Hugging Face (секунды) при загрузке модели без
+#: локальной копии. Ограничивает ожидание на 401/недоступности: иначе клиент
+#: hf_hub_download может надолго «зависнуть» на ретраях (CLOSE-WAIT).
+DEFAULT_HF_TIMEOUT_SECONDS = 15
+
+
+def _import_pipeline_class() -> Any:
+    """Импортирует ``pyannote.audio.Pipeline`` (отдельная точка для тестов)."""
+    from pyannote.audio import Pipeline
+
+    return Pipeline
+
+
+@contextmanager
+def _huggingface_offline() -> Iterator[None]:
+    """Переводит huggingface_hub в offline-режим на время блока.
+
+    При заданной локальной копии модели обращаться в сеть за подмоделями
+    нельзя: если чего-то не хватает локально, ошибка будет быстрой и понятной,
+    а не зависанием на ретраях gated-репозитория. Константа читается
+    huggingface_hub при каждом запросе, поэтому подмена действует сразу.
+    """
+    try:
+        import huggingface_hub.constants as hf_constants
+    except Exception:  # noqa: BLE001 — huggingface_hub может отсутствовать
+        yield
+        return
+    previous = hf_constants.HF_HUB_OFFLINE
+    hf_constants.HF_HUB_OFFLINE = True
+    try:
+        yield
+    finally:
+        hf_constants.HF_HUB_OFFLINE = previous
+
+
+@contextmanager
+def _huggingface_bounded_timeout(seconds: int) -> Iterator[None]:
+    """Ограничивает сетевые таймауты HF, чтобы 401/сбой падали быстро.
+
+    ``hf_hub_download`` читает эти константы при каждом вызове, поэтому
+    подмена модульных значений действует на текущую загрузку. Ретраи на
+    сетевых ошибках остаются, но каждый запрос ограничен ``seconds`` секундами.
+    """
+    try:
+        import huggingface_hub.constants as hf_constants
+    except Exception:  # noqa: BLE001 — huggingface_hub может отсутствовать
+        yield
+        return
+    previous_etag = hf_constants.HF_HUB_ETAG_TIMEOUT
+    previous_download = hf_constants.HF_HUB_DOWNLOAD_TIMEOUT
+    hf_constants.HF_HUB_ETAG_TIMEOUT = seconds
+    hf_constants.HF_HUB_DOWNLOAD_TIMEOUT = seconds
+    try:
+        yield
+    finally:
+        hf_constants.HF_HUB_ETAG_TIMEOUT = previous_etag
+        hf_constants.HF_HUB_DOWNLOAD_TIMEOUT = previous_download
 
 
 class PyannoteSpeakerDiarizer:
@@ -96,36 +156,61 @@ class PyannoteSpeakerDiarizer:
             return
         logger.debug("Гиперпараметры диаризации применены: %s", params)
 
+    def _local_checkpoint(self) -> str | None:
+        """Путь к локальной копии модели.
+
+        ``None`` — локальная копия не задана (загрузка с Hugging Face). Если
+        путь задан, но не существует, — быстрый понятный фейл вместо
+        молчаливого похода в сеть за gated-моделью.
+        """
+        if self._local_model_path is None:
+            return None
+        if not self._local_model_path.exists():
+            raise DiarizationError(
+                f"Локальная модель диаризации не найдена: {self._local_model_path}. "
+                "Проверьте путь PYANNOTE_LOCAL_MODEL/--pyannote-local-model."
+            )
+        return str(self._local_model_path)
+
     def _load_pipeline(self) -> Any:
         if self._pipeline is not None:
             return self._pipeline
 
         import torch
-        from pyannote.audio import Pipeline
+
+        pipeline_cls = _import_pipeline_class()
+        local_checkpoint = self._local_checkpoint()
 
         try:
-            if self._local_model_path is not None and self._local_model_path.is_dir():
+            if local_checkpoint is not None:
                 # Локальная копия модели: грузится напрямую с диска, без
-                # обращения к Hugging Face (токен и сеть не нужны).
-                logger.debug(
-                    "Загрузка локальной модели диаризации из '%s'",
-                    self._local_model_path,
-                )
-                pipeline = Pipeline.from_pretrained(self._local_model_path)
+                # обращения к Hugging Face (токен и сеть не нужны). Offline-режим
+                # гарантирует, что и подмодели не уйдут в сеть.
+                logger.debug("Загрузка локальной модели диаризации из '%s'", local_checkpoint)
+                with _huggingface_offline():
+                    pipeline = pipeline_cls.from_pretrained(local_checkpoint)
             else:
+                # Без локальной копии загрузка идёт с Hugging Face. Ограничиваем
+                # сетевые таймауты, чтобы 401/недоступность падали за секунды,
+                # а не зависали на долгих ретраях.
                 logger.debug("Загрузка модели диаризации '%s'", self._pipeline_name)
-                pipeline = Pipeline.from_pretrained(self._pipeline_name, token=self._hf_token)
+                with _huggingface_bounded_timeout(DEFAULT_HF_TIMEOUT_SECONDS):
+                    pipeline = pipeline_cls.from_pretrained(
+                        self._pipeline_name, token=self._hf_token
+                    )
         except Exception as exc:
-            if self._local_model_path is not None and self._local_model_path.is_dir():
+            if local_checkpoint is not None:
                 raise DiarizationError(
                     f"Не удалось загрузить локальную модель диаризации "
-                    f"'{self._local_model_path}': {exc}"
+                    f"'{local_checkpoint}': {exc}"
                 ) from exc
             raise DiarizationError(
                 f"Не удалось загрузить модель диаризации '{self._pipeline_name}'. "
-                "Убедитесь, что вы приняли условия использования модели на "
-                "huggingface.co и указали действующий токен доступа "
-                f"(--hf-token или переменная окружения HF_TOKEN). Исходная ошибка: {exc}"
+                "Если модель «gated», примите её условия на huggingface.co и укажите "
+                "действующий токен (--hf-token или переменная окружения HF_TOKEN) — "
+                "либо задайте локальную копию модели "
+                "(--pyannote-local-model / PYANNOTE_LOCAL_MODEL) для работы офлайн. "
+                f"Исходная ошибка: {exc}"
             ) from exc
 
         if pipeline is None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -13,6 +14,7 @@ from audio_transcriber.cleaning.repetition_filter import (
     DEFAULT_REPEAT_MIN_WORDS,
     DEFAULT_REPEAT_SIMILARITY,
 )
+from audio_transcriber.cli.env_config import as_bool, collect_env_kwargs
 from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ENGINE,
     DEFAULT_DIARIZATION_ESTIMATE_ENABLED,
@@ -56,6 +58,7 @@ from audio_transcriber.correction.defaults import (
 from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
 from audio_transcriber.llm.client import DEFAULT_CONTEXT_SIZE as DEFAULT_LLM_CONTEXT_SIZE
 from audio_transcriber.pipeline import run_pipeline
+from audio_transcriber.utils.config_env import load_config_env
 from audio_transcriber.utils.device import resolve_device
 from audio_transcriber.utils.exceptions import AudioTranscriberError
 from audio_transcriber.utils.glossary_paths import normalize_glossary_paths_tuple
@@ -104,8 +107,97 @@ def main(
     """AudioTranscriptor — локальная транскрибация разговоров с разметкой говорящих."""
 
 
+#: Соответствие имени CLI-опции имени поля :class:`AppConfig`, если они
+#: различаются. Для остальных опций имя поля совпадает с именем параметра.
+_PARAM_TO_FIELD: dict[str, str] = {
+    "model": "model_name",
+    "export_format": "export_formats",
+    "diarization": "diarization_enabled",
+    "min_duration_off": "diarization_min_duration_off",
+    "clustering_threshold": "diarization_clustering_threshold",
+    "clustering_fb": "diarization_clustering_fb",
+    "speaker_name": "speaker_names",
+    "speaker_reference": "speaker_references",
+    "speaker_samples": "export_speaker_samples",
+    "diarization_estimate": "diarization_estimate_enabled",
+    "diarization_hybrid": "diarization_hybrid_enabled",
+    "cache": "use_cache",
+    "llm": "llm_enabled",
+    "llm_context": "llm_context_size",
+    "glossary": "glossary_path",
+    "protocol": "protocol_auto",
+}
+
+#: Параметры, которые не переносятся в :class:`AppConfig` напрямую и
+#: обрабатываются отдельно (ввод/вывод, логирование, hotwords, очистка кэша).
+_NON_FIELD_PARAMS = frozenset(
+    {"input_file", "output_dir", "verbose", "hotwords", "clear_cache"}
+)
+
+
+def _is_explicit(ctx: typer.Context, name: str) -> bool:
+    """Пользователь явно задал опцию командной строки (или через envvar)?
+
+    Значения из ``config.env`` опциям не передаются: их подставляет
+    :func:`collect_env_kwargs`. Поэтому «явным» считаем всё, кроме дефолта.
+    Источник сравниваем по имени: Typer использует собственный форк click, и
+    ``ParameterSource`` из обычного ``click`` с ним не совпадает.
+    """
+    source = ctx.get_parameter_source(name)
+    return source is not None and source.name not in {"DEFAULT", "DEFAULT_MAP"}
+
+
+def _explicit_overrides(
+    ctx: typer.Context, values: Mapping[str, object]
+) -> dict[str, object]:
+    """Явно заданные CLI-опции в виде kwargs для :class:`AppConfig`.
+
+    Только поля, для которых пользователь указал флаг (или envvar), —
+    остальные придут из ``config.env``. ``values`` — уже приведённые значения
+    параметров (``locals()`` внутри команды: Typer хранит в ``ctx.params``
+    сырые строки, а сконвертированные передаёт в callback).
+    """
+    overrides: dict[str, object] = {}
+    for name in ctx.params:
+        if name in _NON_FIELD_PARAMS or not _is_explicit(ctx, name):
+            continue
+        field = _PARAM_TO_FIELD.get(name, name)
+        value = values[name]
+        if name == "export_format":
+            overrides[field] = tuple(dict.fromkeys(value))  # type: ignore[call-overload]
+        elif name == "speaker_name":
+            overrides[field] = AppConfig.parse_speaker_names(value)  # type: ignore[arg-type]
+        elif name == "speaker_reference":
+            overrides[field] = AppConfig.parse_speaker_references(value)  # type: ignore[arg-type]
+        elif name == "glossary":
+            overrides[field] = normalize_glossary_paths_tuple(value)  # type: ignore[arg-type]
+        else:
+            overrides[field] = value
+    return overrides
+
+
+def _resolve_output_dir(
+    default: Path, ctx: typer.Context, env_defaults: dict[str, str]
+) -> Path:
+    """Каталог результатов: явный ``--output-dir``, иначе ``OUTPUT_DIR``, иначе дефолт."""
+    if _is_explicit(ctx, "output_dir"):
+        return default
+    raw = (env_defaults.get("OUTPUT_DIR") or "").strip()
+    return Path(raw) if raw else default
+
+
+def _resolve_verbose(
+    default: bool, ctx: typer.Context, env_defaults: dict[str, str]
+) -> bool:
+    """Подробное логирование: явный ``--verbose``, иначе ``VERBOSE`` из config.env."""
+    if _is_explicit(ctx, "verbose"):
+        return default
+    return as_bool(env_defaults.get("VERBOSE"), default)
+
+
 @app.command()
 def transcribe(
+    ctx: typer.Context,
     input_file: Path = typer.Argument(
         ...,
         exists=True,
@@ -928,118 +1020,56 @@ def transcribe(
         help="Подробный режим логирования (уровень DEBUG).",
     ),
 ) -> None:
-    """Распознать речь в аудиозаписи и экспортировать стенограмму с разметкой говорящих."""
+    """Распознать речь в аудиозаписи и экспортировать стенограмму с разметкой говорящих.
 
-    log_file = setup_logging(verbose=verbose, log_dir=output_dir / "logs")
+    Значения по умолчанию берутся из ``config.env`` (как в веб-интерфейсе и TUI);
+    явно указанный флаг перебивает соответствующую настройку из файла.
+    """
+
+    # Значения по умолчанию берём из config.env (единый источник настроек, как
+    # у веба), а CLI-флаги применяем как явный override — только когда заданы
+    # (issue #76). Без флагов поведение CLI совпадает с config.env.
+    _, env_defaults = load_config_env()
+    resolved_output_dir = _resolve_output_dir(output_dir, ctx, env_defaults)
+    resolved_verbose = _resolve_verbose(verbose, ctx, env_defaults)
+    # Уведомления могут понадобиться и до сборки AppConfig (ошибка конфигурации).
+    resolved_notifications = (
+        notifications
+        if _is_explicit(ctx, "notifications")
+        else as_bool(env_defaults.get("NOTIFICATIONS"), True)
+    )
+
+    log_file = setup_logging(
+        verbose=resolved_verbose, log_dir=resolved_output_dir / "logs"
+    )
     if log_file is not None:
         logger.info("Подробные логи сохраняются в файл: %s", log_file)
 
     try:
-        if hotwords:
-            hotwords, dropped_terms = build_hotwords(hotwords)
+        config_kwargs = collect_env_kwargs(
+            env_defaults,
+            input_file=input_file,
+            output_dir=resolved_output_dir,
+        )
+        config_kwargs.update(_explicit_overrides(ctx, locals()))
+        config_kwargs["verbose"] = resolved_verbose
+
+        # hotwords обрабатываются отдельно (обрезка по лимиту токенов): берём
+        # явный флаг, иначе HOTWORDS из config.env, иначе ничего.
+        if _is_explicit(ctx, "hotwords"):
+            raw_hotwords = hotwords
+        else:
+            raw_hotwords = (env_defaults.get("HOTWORDS") or "").strip() or None
+        if raw_hotwords:
+            raw_hotwords, dropped_terms = build_hotwords(raw_hotwords)
             if dropped_terms:
                 logger.warning(
                     "Не поместилось в лимит hotwords ASR и не будет учтено: %s.",
                     ", ".join(dropped_terms),
                 )
+        config_kwargs["hotwords"] = raw_hotwords
 
-        config = AppConfig(
-            input_file=input_file,
-            output_dir=output_dir,
-            model_name=model,
-            language=language,
-            device=device,
-            export_formats=tuple(dict.fromkeys(export_format)),
-            num_speakers=num_speakers,
-            min_speakers=min_speakers,
-            max_speakers=max_speakers,
-            diarization_min_duration_off=min_duration_off,
-            diarization_clustering_threshold=clustering_threshold,
-            diarization_clustering_fb=clustering_fb,
-            diarization_enabled=diarization,
-            speaker_names=AppConfig.parse_speaker_names(speaker_name),
-            speaker_references=AppConfig.parse_speaker_references(speaker_reference),
-            enrollment_min_similarity=enrollment_min_similarity,
-            voices_dir=voices_dir,
-            export_speaker_samples=speaker_samples,
-            hf_token=hf_token,
-            pyannote_local_model=pyannote_local_model,
-            diarization_engine=diarization_engine,
-            nemo_speech_binary=nemo_speech_binary,
-            nemo_speech_lib_path=nemo_speech_lib_path,
-            nemo_speech_model=nemo_speech_model,
-            nemo_speech_device=nemo_speech_device,
-            diarization_estimate_enabled=diarization_estimate,
-            diarization_estimate_seconds=diarization_estimate_seconds,
-            diarization_estimate_threshold=diarization_estimate_threshold,
-            diarization_estimate_model=diarization_estimate_model,
-            diarization_route_max_speakers=diarization_route_max_speakers,
-            diarization_hybrid_enabled=diarization_hybrid,
-            diarization_hybrid_window_seconds=diarization_hybrid_window_seconds,
-            diarization_hybrid_overlap_seconds=diarization_hybrid_overlap_seconds,
-            diarization_hybrid_min_speaker_seconds=diarization_hybrid_min_speaker_seconds,
-            diarization_hybrid_linkage=diarization_hybrid_linkage,
-            diarization_hybrid_threshold=diarization_hybrid_threshold,
-            diarization_hybrid_overload_split=diarization_hybrid_overload_split,
-            diarization_hybrid_subwindow_seconds=diarization_hybrid_subwindow_seconds,
-            diarization_hybrid_max_split_depth=diarization_hybrid_max_split_depth,
-            initial_prompt=initial_prompt,
-            hotwords=hotwords,
-            clean_artifacts=clean_artifacts,
-            collapse_repeats=collapse_repeats,
-            repeat_min_words=repeat_min_words,
-            repeat_similarity=repeat_similarity,
-            normalize_text=normalize_text,
-            denoise=denoise,
-            mark_overlap=mark_overlap,
-            merge_same_name_speakers=merge_same_name_speakers,
-            use_cache=cache,
-            cache_dir=cache_dir,
-            notifications=notifications,
-            timeline=timeline,
-            low_confidence_threshold=low_confidence_threshold,
-            enable_correction=enable_correction,
-            correction_min_word_length=correction_min_word_length,
-            correction_min_similarity=correction_min_similarity,
-            correction_max_candidates=correction_max_candidates,
-            verbose=verbose,
-            asr_backend=asr_backend,
-            whisper_cpp_model=whisper_cpp_model,
-            whisper_cpp_binary=whisper_cpp_binary,
-            whisper_cpp_lib_path=whisper_cpp_lib_path,
-            whisper_cpp_threads=whisper_cpp_threads,
-            gigaam_model=gigaam_model,
-            gigaam_model_path=gigaam_model_path,
-            gigaam_quantization=gigaam_quantization,
-            gigaam_vad=gigaam_vad,
-            hybrid_asr=hybrid_asr,
-            hybrid_fallback_backend=hybrid_fallback_backend,
-            hybrid_low_logprob_threshold=hybrid_low_logprob_threshold,
-            hybrid_no_speech_threshold=hybrid_no_speech_threshold,
-            hybrid_silence_rms_threshold=hybrid_silence_rms_threshold,
-            hybrid_min_segment_seconds=hybrid_min_segment_seconds,
-            hybrid_context_seconds=hybrid_context_seconds,
-            llm_enabled=llm,
-            llm_provider=llm_provider,
-            llm_base_url=llm_base_url,
-            llm_model_name=llm_model_name,
-            llm_api_key=llm_api_key,
-            llm_model=llm_model,
-            llm_binary=llm_binary,
-            llm_lib_path=llm_lib_path,
-            llm_gpu=llm_gpu,
-            llm_context_size=llm_context,
-            llm_request_timeout=llm_request_timeout,
-            llm_suggest_terms=llm_suggest_terms,
-            llm_extract_names=llm_extract_names,
-            llm_summary=llm_summary,
-            llm_prompt_extra=llm_prompt_extra,
-            llm_prompt_file=llm_prompt_file,
-            glossary_path=normalize_glossary_paths_tuple(glossary),
-            glossary_db=glossary_db,
-            glossary_enabled=glossary_enabled,
-            protocol_auto=protocol,
-        )
+        config = AppConfig(**config_kwargs)  # type: ignore[arg-type]
         config.ensure_output_dir()
         if clear_cache:
             from audio_transcriber.cache.store import StageCache
@@ -1208,12 +1238,12 @@ def transcribe(
         raise typer.Exit(code=130) from None
     except AudioTranscriberError as exc:
         logger.error(str(exc))
-        if notifications:
+        if resolved_notifications:
             notify("Транскрибация не удалась", f"{input_file.name}: {exc}")
         raise typer.Exit(code=1) from exc
 
     logger.info("Готово: %d реплик(и), %d говорящих", len(result.entries), len(result.speakers))
-    if notifications:
+    if resolved_notifications:
         notify(
             "Транскрибация завершена",
             f"{config.input_file.name}: {len(result.entries)} реплик(и), "

@@ -11,11 +11,34 @@ from audio_transcriber import __version__
 from audio_transcriber.cli import app as app_module
 from audio_transcriber.cli.app import app
 from audio_transcriber.config.settings import AppConfig
-from audio_transcriber.domain.enums import Device
+from audio_transcriber.domain.enums import AsrBackend, Device
 from audio_transcriber.domain.models import Speaker, TranscriptEntry, TranscriptionResult
 from audio_transcriber.utils.exceptions import AudioTranscriberError
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def isolate_config_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Изолирует CLI-тесты от личного ``config.env`` разработчика.
+
+    Боевой CLI по умолчанию читает ``config.env`` (issue #76). Чтобы результат
+    тестов не зависел от личного файла, по умолчанию подсовываем пустое
+    окружение; тесты, проверяющие слияние, задают его через ``config_env``.
+    """
+    monkeypatch.setattr(app_module, "load_config_env", lambda *_args, **_kwargs: (None, {}))
+
+
+@pytest.fixture
+def config_env(monkeypatch: pytest.MonkeyPatch):
+    """Задаёт содержимое ``config.env``, которое увидит CLI в тесте."""
+
+    def _install(defaults: dict[str, str]) -> None:
+        monkeypatch.setattr(
+            app_module, "load_config_env", lambda *_args, **_kwargs: (None, dict(defaults))
+        )
+
+    return _install
 
 
 @pytest.fixture(autouse=True)
@@ -1077,3 +1100,172 @@ def test_transcribe_default_protocol_writes_files(
 
     assert result.exit_code == 0
     assert (output_dir / f"{audio_file.stem}.txt").is_file()
+
+
+# --- Issue #76: CLI наследует config.env, флаги — явный override ------------
+
+
+def test_cli_takes_asr_backend_from_config_env(
+    audio_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config_env,
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+    wcp_model = tmp_path / "ggml-large-v3-turbo.bin"
+    config_env({"ASR_BACKEND": "whisper-cpp", "WHISPER_CPP_MODEL": str(wcp_model)})
+
+    result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 0
+    config = captured["config"]
+    assert config.asr_backend is AsrBackend.WHISPER_CPP
+    assert config.whisper_cpp_model == wcp_model
+    assert "Бэкенд распознавания: whisper-cpp" in result.stdout
+
+
+def test_cli_flag_overrides_config_env(
+    audio_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config_env,
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+    config_env(
+        {
+            "ASR_BACKEND": "whisper-cpp",
+            "WHISPER_CPP_MODEL": str(tmp_path / "ggml.bin"),
+            "DENOISE": "false",
+        }
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "transcribe",
+            str(audio_file),
+            "-o",
+            str(tmp_path / "out"),
+            "--asr-backend",
+            "faster-whisper",
+            "--denoise",
+        ],
+    )
+
+    assert result.exit_code == 0
+    config = captured["config"]
+    # Явные флаги перебивают config.env.
+    assert config.asr_backend is AsrBackend.FASTER_WHISPER
+    assert config.denoise is True
+
+
+def test_cli_nemo_speech_and_pyannote_from_config_env(
+    audio_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config_env,
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+    pyannote_local = tmp_path / "pyannote-models" / "speaker-diarization-community-1"
+    config_env(
+        {
+            "DIARIZATION_ENGINE": "auto",
+            "NEMO_SPEECH_BINARY": "/opt/nemo-speech/bin/nemo-speech",
+            "NEMO_SPEECH_DEVICE": "vulkan",
+            "PYANNOTE_LOCAL_MODEL": str(pyannote_local),
+            "DEVICE": "cpu",
+        }
+    )
+
+    result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 0
+    config = captured["config"]
+    assert config.nemo_speech_binary == "/opt/nemo-speech/bin/nemo-speech"
+    assert config.nemo_speech_device == "vulkan"
+    assert config.pyannote_local_model == pyannote_local
+    assert config.device is Device.CPU
+    # В логе конфигурации видно GPU-движок, а не pyannote.
+    assert "устройство vulkan" in result.stdout
+
+
+def test_cli_bool_defaults_follow_config_env(
+    audio_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config_env,
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+    config_env(
+        {
+            "DENOISE": "false",
+            "MERGE_SAME_NAME_SPEAKERS": "false",
+            "CLEAN_ARTIFACTS": "false",
+            "MARK_OVERLAP": "false",
+        }
+    )
+
+    result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 0
+    config = captured["config"]
+    assert config.denoise is False
+    assert config.merge_same_name_speakers is False
+    assert config.clean_artifacts is False
+    assert config.mark_overlap is False
+
+
+def test_cli_llm_settings_from_config_env(
+    audio_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config_env,
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+    config_env(
+        {
+            "LLM_ENABLED": "true",
+            "LLM_PROVIDER": "llama",
+            "LLM_MODEL": str(tmp_path / "qwen.gguf"),
+            "LLM_CONTEXT": "2048",
+            "LLM_REQUEST_TIMEOUT": "42",
+            "LLM_EXTRACT_NAMES": "true",
+        }
+    )
+
+    result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 0
+    config = captured["config"]
+    assert config.llm_enabled is True
+    assert config.llm_model == tmp_path / "qwen.gguf"
+    assert config.llm_context_size == 2048
+    assert config.llm_request_timeout == pytest.approx(42.0)
+    assert config.llm_extract_names is True
+
+
+def test_cli_hotwords_from_config_env(
+    audio_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config_env,
+) -> None:
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+    config_env({"HOTWORDS": "юрист Смирнова"})
+
+    result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 0
+    assert captured["config"].hotwords == "юрист Смирнова"
