@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from audio_transcriber.config.defaults import (
+    DEFAULT_DEEP_FILTER_BINARY,
     DEFAULT_DIARIZATION_ENGINE,
     DEFAULT_DIARIZATION_ESTIMATE_ENABLED,
     DEFAULT_DIARIZATION_ESTIMATE_MODEL,
@@ -290,6 +291,8 @@ def build_job_config(
         repeat_similarity=_as_float(defaults.get("REPEAT_SIMILARITY"), 0.9),
         normalize_text=_as_bool(defaults.get("NORMALIZE_TEXT"), default=True),
         denoise=_as_bool(defaults.get("DENOISE"), default=True),
+        deep_filter_binary=defaults.get("DEEP_FILTER_BINARY", "").strip()
+        or DEFAULT_DEEP_FILTER_BINARY,
         mark_overlap=_as_bool(defaults.get("MARK_OVERLAP"), default=True),
         merge_same_name_speakers=_as_bool(
             defaults.get("MERGE_SAME_NAME_SPEAKERS"), default=True

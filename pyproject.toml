@@ -23,18 +23,11 @@ dependencies = [
 [project.scripts]
 audio-transcriber = "audio_transcriber.cli.app:app"
 
-# Необязательный этап шумоподавления (DeepFilterNet). Пакет собирает libDF на
-# Rust и объявлен с numpy<2; в основном окружении используется numpy 2.x, а
-# для Python 3.14 колёс под numpy 1.26 нет. Поэтому extras — ориентир для
-# Python < 3.14, а на 3.14 пакет ставится вручную без зависимостей (см. README,
-# раздел «Шумоподавление (денойз)»):
-#   uv pip install --python .venv/bin/python --no-deps \
-#       deepfilternet deepfilterlib appdirs loguru
-# Если пакет не установлен, этап денойза мягко пропускается.
+# Необязательные extras. Шумоподавление (денойз) больше не является Python-extra:
+# этап выполняется внешним Rust-CLI ``deep-filter`` (DeepFilterNet v0.5.6+),
+# который ставится отдельно (см. README, раздел «Шумоподавление (денойз)»).
+# Если бинарник недоступен, этап денойза мягко пропускается.
 [project.optional-dependencies]
-denoise = [
-    "deepfilternet>=0.5.6 ; python_version < '3.14'",
-]
 # GigaAM v3 (RU) через onnx-asr/ONNX Runtime — без torch (#46).
 # Ставится отдельно: uv pip install --python .venv/bin/python 'onnx-asr[cpu,hub]'.
 # Модель скачивается с Hugging Face при первом запуске (extra ``hub``).

@@ -73,7 +73,8 @@
   `test_pyannote_engine.py` (офлайн-загрузка, локальный файл, фейл-фаст 401).
 
 - ✅ **Автоустановка опциональных пакетов из мастера** (#66): реестр-allowlist
-  (`web/deps.py`: `gigaam`→`onnx-asr[cpu,hub]`, `denoise`→`deepfilternet`),
+  (`web/deps.py`: `gigaam`→`onnx-asr[cpu,hub]`, `sherpa`→`sherpa-onnx`;
+  пункт `denoise` убран в #50 — денойз ставится внешним бинарником `deep-filter`),
   эндпоинты `GET /api/deps`, `POST /api/deps/{key}/install` (202, одна установка
   за раз, 409/404) и SSE `GET /api/deps/events` (`seq`/`id` + `Last-Event-ID`).
   Установщик предпочитает `uv` (`shutil.which`/`~/.local/bin`), иначе
@@ -477,10 +478,17 @@
   **автоскачивание моделей** при первом запуске.
   Зачем: сейчас Python 3.14 + uv + бинарники/модели + DeepFilterNet из исходников — высокий порог.
   Как (по итогам разведки): Python 3.14 **не** блокер (cp314-колёса есть), блокер — **DeepFilterNet**
-  (`numpy<2`, `DeepFilterLib` ≤cp311) → шаг 0: Rust-CLI `deep-filter` вместо пакета; затем зафиксировать
-  Python `>=3.12,<3.15` (приоритет 3.12/3.13), **Docker** (Linux/Vulkan; GPU только на Linux),
-  portable-бандл (uv+PyInstaller one-dir; ⚠️ pyannote→torchcodec+shared FFmpeg), позже инсталляторы.
-  Intel Mac не поддерживать. Автозагрузчик уже есть основа (`web/models.py`).
+  (`numpy<2`, `DeepFilterLib` ≤cp311).
+  ✅ **Шаг 0 — сделано:** Python-пакет `deepfilternet` убран; денойз идёт внешним Rust-CLI
+  **`deep-filter`** (DeepFilterNet v0.5.6+, настройка `DEEP_FILTER_BINARY`, фолбэк `shutil.which`).
+  Linux x86_64 — статическая `*-x86_64-unknown-linux-musl` сборка; модель встроена в бинарник
+  (скачивание весов не нужно). Обработка чанками (30 с, crossfade) → пик ~0.2–0.3 ГБ/час.
+  В `pyproject.toml` extra `denoise` удалён, `uv.lock` без `--no-deps`-костыля; `doctor` проверяет
+  бинарник `deep-filter`; веб-пункт пакетной установки денойза убран (ставится вручную).
+  Осталось: зафиксировать Python `>=3.12,<3.15` (приоритет 3.12/3.13), **Docker** (Linux/Vulkan;
+  GPU только на Linux), portable-бандл (uv+PyInstaller one-dir; ⚠️ pyannote→torchcodec+shared
+  FFmpeg), позже инсталляторы. **Intel Mac не поддерживается.** Автозагрузчик уже есть основа
+  (`web/models.py`).
   Ориентиры: Buzz (PyInstaller/.dmg/Flatpak/Snap/AppImage), Ollama/GPT4All/LM Studio. Сложность: средняя/высокая; зависит от #23.
 
 - **Экспорт VTT/Markdown/PDF + подсветка слов.** (#53)

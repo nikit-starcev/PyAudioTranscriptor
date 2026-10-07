@@ -120,6 +120,19 @@ def test_settings_notifications_toggle_persists(client: TestClient) -> None:
     assert client.get("/api/settings").json()["notifications"] is False
 
 
+def test_settings_deep_filter_binary_persists(client: TestClient) -> None:
+    """#50: путь к бинарнику deep-filter настраивается в вебе."""
+    assert client.get("/api/settings").json()["deep_filter_binary"] == "deep-filter"
+
+    response = client.put(
+        "/api/settings", json={"deep_filter_binary": "/opt/deep-filter"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["deep_filter_binary"] == "/opt/deep-filter"
+    assert client.get("/api/settings").json()["deep_filter_binary"] == "/opt/deep-filter"
+
+
 def test_settings_word_timestamps_toggle_persists(client: TestClient) -> None:
     """#45: тумблер пословных таймстемпов по умолчанию включён и сохраняется."""
     assert client.get("/api/settings").json()["word_timestamps"] is True

@@ -1,60 +1,63 @@
-"""Шумоподавление на DeepFilterNet (https://github.com/Rikorose/DeepFilterNet).
+"""Шумоподавление через внешний Rust-CLI ``deep-filter`` (DeepFilterNet).
 
-DeepFilterNet — нейросетевой подавитель шума, работающий на полнодиапазонном
-аудио **48 кГц** моно. Конвейер распознавания и диаризации использует
-**16 кГц**, поэтому полный цикл такой: декодировать вход (PyAV) → шумоподавление
-на 48 кГц → ресемплинг в 16 кГц → временный WAV, который отдаётся как ASR,
-так и диаризации (временные метки обоих движков согласованы).
+DeepFilterNet распространяется как Python-пакет ``deepfilternet``/``DeepFilterLib``,
+у которого нет колёс для Python > 3.11 и который тянет ``numpy<2``. Чтобы не
+ломать резолв зависимостей проекта (Python 3.14, numpy 2.x), денойз выполняется
+готовым бинарником ``deep-filter`` из релизов DeepFilterNet (v0.5.6+).
 
-Обработка **потоковая**: файл не грузится целиком в 48 кГц (это ~691 МБ на
-час). Аудио декодируется кадрами, наполняет буфер, и по достижении
-``chunk_seconds`` (по умолчанию 30 с) чанк прогоняется через модель. Соседние
-чанки перекрываются на ``overlap_seconds`` (по умолчанию 0.5 с) и склеиваются
-crossfade-overlap-add: без щелчков, пропусков и дублирования сэмплов. В памяти
-живут только текущий чанк, хвост перекрытия и итоговый 16-кГц waveform.
-Ресемплинг 48 → 16 кГц выполняется одним постоянным ``AudioResampler``,
-которому чанки подаются последовательно, а в конце сбрасывается буфер — так
-фильтр сохраняет непрерывность на стыках.
+``deep-filter`` — обычное CLI: ``deep-filter -D <вход.wav> -o <каталог>``. Флаг
+``-D`` (``--compensate-delay``) обязателен: без него выход сдвинут на задержку
+STFT/модели (~30 мс). Бинарник работает на полнодиапазонном аудио **48 кГц** моно;
+конвейер распознавания и диаризации использует **16 кГц**, поэтому полный цикл
+такой: декодировать вход (PyAV) → шумоподавление на 48 кГц → ресемплинг в 16 кГц
+→ временный WAV, который отдаётся как ASR, так и диаризации (временные метки
+обоих движков согласованы).
 
-``df.enhance`` в начале каждого вызова сбрасывает состояние модели
-(``model.reset_h0()``), поэтому чанки обрабатываются независимо и корректно.
+Модель у бинарника встроена: никаких ``torch``/``numpy`` и скачивания весов не
+требуется — инференс полностью локальный и офлайн.
 
-Компонент спроектирован для мягкой деградации: если DeepFilterNet не
-установлен, модель не загружается или аудио не декодируется, этап
-пропускается с предупреждением в лог, а конвейер получает исходный файл.
-Это критично: шумоподавление включено по умолчанию.
+Обработка **потоковая и чанковая**. CLI загружает переданный ему файл целиком,
+поэтому на часовой записи пик памяти превысил бы 1 ГБ. Чтобы этого не
+допустить, вход режется на чанки по ``chunk_seconds`` (по умолчанию 30 с),
+каждый чанк отдаётся ``deep-filter`` отдельным процессом, а результат
+склеивается crossfade-overlap-add. Соседние чанки перекрываются на
+``overlap_seconds`` (по умолчанию 0.5 с): без щелчков, пропусков и дублирования
+сэмплов. В Python-памяти живут только текущий чанк, хвост перекрытия и итоговый
+16-кГц waveform. Каждый вызов CLI загружает модель встроенную (~57 МБ RSS) и
+обрабатывает ровно один чанк, поэтому память не растёт с длиной записи.
 
-Модель DeepFilterNet при первом запуске скачивается в кэш
-(``~/.cache/DeepFilterNet``). Дальше инференс полностью локальный и офлайн.
-В этом окружении ``deepfilternet`` ставится вручную (сборка libDF требует
-Rust), см. README.
+Компонент спроектирован для мягкой деградации: если бинарник не найден,
+аудио не декодируется или процесс упал, этап пропускается с предупреждением в
+лог, а конвейер получает исходный файл. Это критично: шумоподавление включено
+по умолчанию.
 """
 
 from __future__ import annotations
 
 import logging
-import os
-import sys
+import shutil
+import subprocess
 import tempfile
-import types
 import wave
 from collections import deque
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import av
 import numpy as np
 
+from audio_transcriber.config.defaults import DEFAULT_DEEP_FILTER_BINARY
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.utils.audio import (
     SAMPLE_RATE,
     WaveformAccumulator,
     encode_pcm16,
     estimate_sample_count,
+    write_wav,
 )
 from audio_transcriber.utils.exceptions import AudioFileError
+from audio_transcriber.utils.subprocess_registry import register_process, terminate_process
 
 logger = logging.getLogger(__name__)
 
@@ -62,104 +65,85 @@ logger = logging.getLogger(__name__)
 DF_SAMPLE_RATE = 48000
 
 #: Длительность чанка денойза по умолчанию (секунды). Определяет пиковую память
-#: стадии: 30 с при 48 кГц float32 — это ~5.5 МБ на буфер.
+#: стадии: 30 с при 48 кГц float32 — это ~5.5 МБ на буфер. Ровно один чанк
+#: живёт в памяти Python и подаётся внешнему ``deep-filter``.
 DEFAULT_CHUNK_SECONDS = 30.0
 
 #: Длина перекрытия соседних чанков по умолчанию (секунды). Нужна для
 #: кроссфейда на стыках; должна быть меньше половины чанка.
 DEFAULT_OVERLAP_SECONDS = 0.5
 
-# DeepFilterNet читает свои опции конфигурации из переменных окружения
-# (``df.config`` использует ``os.environ[option.upper()]``). Переменные из
-# ``config.env`` (например ``MODEL`` — это модель whisper) при экспорте через
-# run.sh попадают в окружение и ломают загрузку DeepFilterNet ("No module named
-# 'df.large-v3-turbo'"). На время инициализации убираем такие имена.
-_COLLIDING_ENV_VARS = (
-    "MODEL",
-    "DEVICE",
-    "LANGUAGE",
-    "EPOCH",
-    "SR",
-    "LOG_LEVEL",
-    "POST_FILTER",
-    "MASK_ONLY",
-)
+#: Версия реализации денойза. Входит в ключ кэша: переход с Python-пакета
+#: ``deepfilternet`` на Rust-CLI меняет результат при тех же параметрах, поэтому
+#: старый кэш должен пересчитаться ровно один раз.
+DENOISE_IMPL_VERSION = 2
+
+#: Чанки короче этого числа сэмплов (0.1 с) не отправляются в CLI: модели нужен
+#: минимальный контекст STFT, а «хвост» записи такой длиной на слух неразличим.
+MIN_ENHANCE_SAMPLES = DF_SAMPLE_RATE // 10
+
+#: Допустимое укорочение выхода ``deep-filter -D``. С флагом ``-D`` CLI отдаёт
+#: выровненный сигнал без задержки STFT/модели (~30 мс на 48 кГц), то есть на
+#: эту задержку короче входа. Недостающие сэмплы добиваются нулями: они лежат в
+#: зоне перекрытия чанков (0.5 с) и полностью замещаются головой следующего
+#: чанка при crossfade. 0.1 с — с запасом.
+MAX_DELAY_SAMPLES = DF_SAMPLE_RATE // 10
+
+#: Таймаут одного запуска ``deep-filter`` (секунды). Чанк ограничен по длине,
+#: поэтому щедрый предел защищает от зависания, не мешая штатной работе.
+DEFAULT_DEEP_FILTER_TIMEOUT = 600.0
 
 
-@contextmanager
-def _sanitized_env() -> Iterator[None]:
-    """Временно убирает из окружения переменные, конфликтующие с настройками DeepFilterNet."""
+def _resolve_binary(binary: str) -> str | None:
+    """Возвращает путь к ``deep-filter`` или ``None``, если он недоступен.
 
-    saved = {name: os.environ.pop(name) for name in _COLLIDING_ENV_VARS if name in os.environ}
+    Принимает как имя в ``PATH``, так и явный путь к файлу. Пустая строка —
+    «не задано» — трактуется как ``None`` (мягкий пропуск денойза).
+    """
+
+    raw = (binary or "").strip()
+    if not raw:
+        return None
+    candidate = Path(raw).expanduser()
     try:
-        yield
-    finally:
-        os.environ.update(saved)
-
-# Загруженная модель кэшируется на уровне модуля: при обработке очереди файлов
-# (TUI) она переиспользуется, а не грузится заново на каждый файл.
-_MODEL_CACHE: tuple[Any, Any] | None = None
-_MODEL_FAILED = False
+        if candidate.is_file():
+            return str(candidate)
+    except OSError:
+        pass
+    return shutil.which(raw)
 
 
-def _install_torchaudio_backend_shim() -> None:
-    """Добавляет совместимость DeepFilterNet с torchaudio >= 2.9.
+def _read_pcm16_wav(path: Path, *, expected_rate: int = DF_SAMPLE_RATE) -> np.ndarray:
+    """Читает моно PCM16 WAV как float32 в диапазоне ``[-1, 1)``.
 
-    ``df.io`` импортирует ``AudioMetaData`` из ``torchaudio.backend.common``,
-    который был удалён в новых torchaudio. Этот тип используется только в
-    аннотациях, поэтому достаточно зарегистрировать заглушку до импорта ``df``.
-    Ничего в site-packages не меняется.
+    ``deep-filter`` пишет 16-битный PCM WAV с той же частотой, что у входа
+    (48 кГц). Читаем его напрямую модулем ``wave`` (без ресемплера), чтобы
+    побитово восстановить сэмплы.
     """
 
     try:
-        import torchaudio.backend.common  # noqa: F401
-    except ModuleNotFoundError:
-        backend = types.ModuleType("torchaudio.backend")
-        common = types.ModuleType("torchaudio.backend.common")
-        setattr(common, "AudioMetaData", type("AudioMetaData", (), {}))  # noqa: B010
-        setattr(backend, "common", common)  # noqa: B010
-        sys.modules.setdefault("torchaudio.backend", backend)
-        sys.modules.setdefault("torchaudio.backend.common", common)
+        with wave.open(str(path), "rb") as wf:
+            channels = wf.getnchannels()
+            width = wf.getsampwidth()
+            rate = wf.getframerate()
+            frames = wf.readframes(wf.getnframes())
+    except (OSError, wave.Error) as exc:
+        raise AudioFileError(f"Не удалось прочитать выход deep-filter {path}: {exc}") from exc
 
-
-def _load_deepfilter() -> tuple[Any, Any] | None:
-    """Импортирует DeepFilterNet и загружает модель; ``None`` — движок недоступен."""
-
-    try:
-        _install_torchaudio_backend_shim()
-        from df import init_df
-
-        with _sanitized_env():
-            model, df_state, _ = init_df(log_level="WARNING")
-    except Exception as exc:  # noqa: BLE001 — любая ошибка ведёт к мягкому пропуску
-        logger.warning(
-            "DeepFilterNet недоступен — шумоподавление будет пропущено "
-            "(проверьте установку: см. README, раздел про денойз): %s",
-            exc,
+    if width != 2:
+        raise AudioFileError(
+            f"deep-filter вернул WAV с {width * 8}-битным форматом вместо 16-битного"
         )
-        return None
+    if rate != expected_rate:
+        raise AudioFileError(
+            f"deep-filter вернул WAV {rate} Гц вместо {expected_rate} Гц"
+        )
 
-    logger.info("Модель DeepFilterNet загружена (частота %d Гц)", DF_SAMPLE_RATE)
-    return model, df_state
-
-
-def _ensure_model() -> tuple[Any, Any] | None:
-    """Возвращает закэшированную модель, загружая её при первом обращении."""
-
-    global _MODEL_CACHE, _MODEL_FAILED
-
-    if _MODEL_CACHE is not None:
-        return _MODEL_CACHE
-    if _MODEL_FAILED:
-        return None
-
-    loaded = _load_deepfilter()
-    if loaded is None:
-        # Не пытаемся грузить модель снова на каждый файл очереди.
-        _MODEL_FAILED = True
-        return None
-    _MODEL_CACHE = loaded
-    return _MODEL_CACHE
+    data = np.frombuffer(frames, dtype="<i2").astype(np.float32)
+    if channels > 1:
+        # Моно — ожидаемый случай; на всякий случай усредняем каналы.
+        data = data.reshape(-1, channels).mean(axis=1)
+    return data / 32768.0
 
 
 class _SampleQueue:
@@ -233,12 +217,12 @@ def _iter_decoded_frames(container: Any, stream: Any) -> Iterator[np.ndarray]:
 
 
 def _require_length(enhanced: np.ndarray, expected: int) -> np.ndarray:
-    """Проверяет, что модель вернула столько же сэмплов, сколько получила."""
+    """Проверяет, что движок вернул столько же сэмплов, сколько получил."""
 
     result = np.asarray(enhanced, dtype=np.float32).reshape(-1)
     if result.shape[0] != expected:
         raise ValueError(
-            f"DeepFilterNet вернул {result.shape[0]} сэмплов вместо {expected}"
+            f"deep-filter вернул {result.shape[0]} сэмплов вместо {expected}"
         )
     return result
 
@@ -318,11 +302,13 @@ def _iter_resolved_48k(
 
 
 class DeepFilterDenoiser:
-    """Шумоподавление через DeepFilterNet с мягкой деградацией.
+    """Шумоподавление через внешний CLI ``deep-filter`` с мягкой деградацией.
 
-    Создаёт временные WAV в собственном каталоге, который освобождается в
-    :meth:`close` (также поддерживается контекстный менеджер).
+    Создаёт временные WAV (чанки и итог) в собственном каталоге, который
+    освобождается в :meth:`close` (также поддерживается контекстный менеджер).
 
+    :param binary: имя бинарника в ``PATH`` или путь к нему. Значение по
+        умолчанию — ``DEEP_FILTER_BINARY`` (``deep-filter``).
     :param on_progress: приёмник событий прогресса (мягко необязателен).
         Атрибут публичный — :class:`~audio_transcriber.cache.denoiser.
         CachingDenoiser` прокидывает в него колбэк конвейера.
@@ -331,9 +317,11 @@ class DeepFilterDenoiser:
     def __init__(
         self,
         *,
+        binary: str = DEFAULT_DEEP_FILTER_BINARY,
         output_sample_rate: int = SAMPLE_RATE,
         chunk_seconds: float = DEFAULT_CHUNK_SECONDS,
         overlap_seconds: float = DEFAULT_OVERLAP_SECONDS,
+        timeout: float | None = DEFAULT_DEEP_FILTER_TIMEOUT,
         on_progress: ProgressCallback | None = None,
     ) -> None:
         if output_sample_rate <= 0:
@@ -342,6 +330,8 @@ class DeepFilterDenoiser:
             raise ValueError("chunk_seconds должен быть положительным")
         if overlap_seconds < 0:
             raise ValueError("overlap_seconds не может быть отрицательным")
+        if timeout is not None and timeout <= 0:
+            raise ValueError("timeout должен быть положительным или None")
 
         #: Исходные параметры конвейера (секунды/Гц) — нужны ключу кэша
         #: шумоподавления, чтобы смена чанкинга/частоты сбрасывала старый
@@ -356,7 +346,10 @@ class DeepFilterDenoiser:
             raise ValueError("overlap_seconds должен быть не больше половины chunk_seconds")
 
         self._output_sample_rate = output_sample_rate
+        self._binary_setting = (binary or "").strip()
+        self._timeout = float(timeout) if timeout is not None else None
         self._tmpdir: tempfile.TemporaryDirectory[str] | None = None
+        self._chunk_counter = 0
         #: Декодированный waveform последнего успешного ``denoise`` (частота
         #: конвейера). Нужен, чтобы диаризация переиспользовала уже декодированное
         #: аудио и не читала временный WAV повторно.
@@ -381,6 +374,16 @@ class DeepFilterDenoiser:
         return self._output_sample_rate
 
     @property
+    def binary(self) -> str:
+        """Настроенный бинарник ``deep-filter`` — параметр ключа кэша."""
+        return self._binary_setting
+
+    @property
+    def impl_version(self) -> int:
+        """Версия реализации денойза — параметр ключа кэша."""
+        return DENOISE_IMPL_VERSION
+
+    @property
     def last_waveform(self) -> np.ndarray | None:
         """Моно waveform 16 кГц последнего успешного :meth:`denoise` или ``None``.
 
@@ -394,11 +397,22 @@ class DeepFilterDenoiser:
     def denoise(self, input_path: Path) -> Path:
         """Возвращает путь к очищенному аудио 16 кГц моно WAV.
 
-        При любой проблеме (движок недоступен, файл не декодируется, сбой
-        инференса) возвращает ``input_path`` без исключения.
+        При любой проблеме (бинарник недоступен, файл не декодируется, сбой
+        процесса) возвращает ``input_path`` без исключения.
         """
 
         self._last_waveform = None
+
+        binary = _resolve_binary(self._binary_setting)
+        if binary is None:
+            logger.warning(
+                "deep-filter не найден (%s) — шумоподавление будет пропущено. "
+                "Задайте DEEP_FILTER_BINARY или установите бинарник deep-filter "
+                "(см. README, раздел про денойз).",
+                self._binary_setting or "<не задан>",
+            )
+            return input_path
+
         try:
             container = av.open(str(input_path))
         except Exception as exc:  # noqa: BLE001 — любая ошибка ведёт к мягкому пропуску
@@ -414,15 +428,8 @@ class DeepFilterDenoiser:
                 )
                 return input_path
 
-            # Модель грузим только для валидного аудио: битый файл не должен
-            # утаскивать за собой загрузку DeepFilterNet.
-            model_and_state = _ensure_model()
-            if model_and_state is None:
-                return input_path
-
-            model, df_state = model_and_state
             try:
-                return self._denoise_stream(container, stream, input_path, model, df_state)
+                return self._denoise_stream(container, stream, input_path, binary)
             except Exception as exc:  # noqa: BLE001 — не роняем конвейер из-за денойза
                 logger.warning("Шумоподавление не удалось для %s: %s", input_path.name, exc)
                 return input_path
@@ -444,25 +451,102 @@ class DeepFilterDenoiser:
     def __exit__(self, *_exc: object) -> None:
         self.close()
 
-    def _enhance(self, waveform: np.ndarray, model: Any, df_state: Any) -> np.ndarray:
-        """Прогоняет 48 кГц waveform через модель; возвращает 48 кГц float32."""
+    def _ensure_tmpdir(self) -> Path:
+        """Возвращает каталог временных файлов, создавая его при необходимости."""
+        if self._tmpdir is None:
+            self._tmpdir = tempfile.TemporaryDirectory(prefix="audio-transcriber-denoise-")
+        return Path(self._tmpdir.name)
 
-        import torch
-        from df import enhance
+    def _enhance(self, waveform: np.ndarray, binary: str) -> np.ndarray:
+        """Прогоняет один 48-кГц чанк через внешний ``deep-filter``.
 
-        contiguous = np.ascontiguousarray(waveform, dtype=np.float32)
-        tensor = torch.from_numpy(contiguous).unsqueeze(0)
-        with torch.no_grad(), _sanitized_env():
-            enhanced = enhance(model, df_state, tensor)
-        return enhanced.squeeze(0).detach().cpu().numpy()
+        Чанк пишется во временный WAV, рядом создаётся каталог вывода, а
+        результат читается обратно как 48-кГц float32. Возвращает ровно столько
+        же сэмплов, сколько получил на вход.
+        """
+
+        samples = np.ascontiguousarray(waveform, dtype=np.float32).reshape(-1)
+        if samples.shape[0] < MIN_ENHANCE_SAMPLES:
+            # Слишком короткий «хвост»: не гоняем модель, отдаём как есть.
+            return samples.copy()
+
+        tmpdir = self._ensure_tmpdir()
+        index = self._chunk_counter
+        self._chunk_counter += 1
+        input_wav = tmpdir / f"in-{index:06d}.wav"
+        output_dir = tmpdir / f"out-{index:06d}"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        write_wav(input_wav, samples, sample_rate=DF_SAMPLE_RATE)
+        self._run_deep_filter(binary, input_wav, output_dir)
+
+        output_wav = output_dir / input_wav.name
+        if not output_wav.is_file():
+            raise AudioFileError(
+                f"deep-filter не создал выходной файл {output_wav.name}"
+            )
+        enhanced = _read_pcm16_wav(output_wav)
+        expected = samples.shape[0]
+        if enhanced.shape[0] != expected:
+            # ``-D`` убирает задержку, поэтому выход короче входа на её величину.
+            deficit = expected - enhanced.shape[0]
+            if 0 < deficit <= MAX_DELAY_SAMPLES:
+                enhanced = np.concatenate(
+                    [enhanced, np.zeros(deficit, dtype=np.float32)]
+                )
+            else:
+                raise ValueError(
+                    f"deep-filter вернул {enhanced.shape[0]} сэмплов вместо {expected}"
+                )
+        return enhanced
+
+    def _run_deep_filter(self, binary: str, input_wav: Path, output_dir: Path) -> None:
+        """Запускает ``deep-filter -D <вход> -o <каталог>`` и проверяет код возврата.
+
+        ``-D`` (``--compensate-delay``) обязателен: без него CLI сдвигает выход
+        на задержку STFT/модели (~30 мс), и временные метки ASR/диаризации уехали
+        бы относительно исходной записи.
+        """
+
+        command = [binary, "-D", str(input_wav), "-o", str(output_dir)]
+        logger.debug("Запуск deep-filter: %s", " ".join(command))
+        try:
+            proc = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except FileNotFoundError as exc:
+            raise AudioFileError(f"Бинарник deep-filter не найден: {binary}") from exc
+
+        # Регистрируем процесс в общем реестре: при SIGINT/SIGTERM/отмене он не
+        # останется висеть.
+        register_process(proc)
+        try:
+            try:
+                _stdout, stderr = proc.communicate(timeout=self._timeout)
+            except subprocess.TimeoutExpired:
+                terminate_process(proc)
+                raise AudioFileError(
+                    f"deep-filter не завершился за {self._timeout:g} с"
+                ) from None
+        finally:
+            terminate_process(proc)
+
+        if proc.returncode != 0:
+            detail = (stderr or "").strip()[-2000:]
+            message = f"deep-filter завершился с кодом {proc.returncode}"
+            if detail:
+                message = f"{message}: {detail}"
+            raise AudioFileError(message)
 
     def _denoise_stream(
         self,
         container: Any,
         stream: Any,
         input_path: Path,
-        model: Any,
-        df_state: Any,
+        binary: str,
     ) -> Path:
         """Потоково обрабатывает открытый контейнер и пишет временный WAV."""
 
@@ -479,7 +563,7 @@ class DeepFilterDenoiser:
         )
 
         def enhance(segment: np.ndarray) -> np.ndarray:
-            return self._enhance(segment, model, df_state)
+            return self._enhance(segment, binary)
 
         resolved = _iter_resolved_48k(
             _iter_decoded_frames(container, stream),
@@ -513,9 +597,7 @@ class DeepFilterDenoiser:
     def _prepare_temp_path(self, input_path: Path) -> Path:
         """Создаёт (при необходимости) временный каталог и путь к результату."""
 
-        if self._tmpdir is None:
-            self._tmpdir = tempfile.TemporaryDirectory(prefix="audio-transcriber-denoise-")
-        return Path(self._tmpdir.name) / f"{input_path.stem}.denoised.wav"
+        return self._ensure_tmpdir() / f"{input_path.stem}.denoised.wav"
 
     def _write_temp_stream(
         self,

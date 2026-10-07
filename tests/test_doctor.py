@@ -80,14 +80,17 @@ def test_missing_critical_dependency_is_reported(
 def test_optional_dependency_missing_is_not_critical(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(doctor, "_module_available", lambda name: name != "df")
+    _patch_modules(monkeypatch)
+    monkeypatch.setattr(doctor, "_binary_available", lambda _binary: False)
     _patch_writable(monkeypatch)
 
     checks = doctor.run_doctor(None, _base_env(tmp_path))
 
-    deepfilter = _find(checks, "dep:df")
-    assert not deepfilter.ok
-    assert not deepfilter.critical
+    deep_filter = _find(checks, "bin:deep-filter")
+    assert not deep_filter.ok
+    assert not deep_filter.critical
+    # Денойз — мягкая деградация: подсказка и ссылка на релизы DeepFilterNet.
+    assert deep_filter.links == (doctor.LINK_DEEP_FILTER,)
 
 
 def test_sherpa_dependency_listed_and_optional_for_auto_estimate(

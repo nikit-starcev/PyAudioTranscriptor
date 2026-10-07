@@ -536,7 +536,11 @@ def run_pipeline(
     # Шумоподавление идёт первым: и распознавание, и диаризация должны видеть
     # один и тот же очищенный файл, иначе временные метки разъедутся.
     denoiser = denoiser or (
-        DeepFilterDenoiser(on_progress=emit) if config.denoise else None
+        DeepFilterDenoiser(
+            binary=config.deep_filter_binary, on_progress=emit
+        )
+        if config.denoise
+        else None
     )
     if denoiser is not None and config.use_cache:
         denoiser = CachingDenoiser(

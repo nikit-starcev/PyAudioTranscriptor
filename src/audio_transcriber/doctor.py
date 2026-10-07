@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from audio_transcriber.config.defaults import (
+    DEFAULT_DEEP_FILTER_BINARY,
     DEFAULT_DIARIZATION_ENGINE,
     DEFAULT_NEMO_SPEECH_BINARY,
     DEFAULT_NEMO_SPEECH_DEVICE,
@@ -64,6 +65,7 @@ LINK_PYANNOTE_MODEL = "https://huggingface.co/pyannote/speaker-diarization-commu
 LINK_HF_TOKENS = "https://huggingface.co/settings/tokens"
 LINK_NEMO_SPEECH = "https://github.com/nvidia/nemo-speech.cpp"
 LINK_SHERPA_ONNX = "https://github.com/k2-fsa/sherpa-onnx"
+LINK_DEEP_FILTER = "https://github.com/Rikorose/DeepFilterNet/releases"
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,7 +305,6 @@ def _dependencies(env: Mapping[str, str]) -> list[tuple[str, str, bool]]:
         ("torch", "torch", pyannote_needed),
         ("textual", "textual (TUI)", False),
         ("pymorphy3", "pymorphy3 (автоисправление)", correction),
-        ("df", "deepfilternet (денойз)", False),
     ]
     if diarization and (estimate_enabled or (hybrid_enabled and engine == "hybrid")):
         checks.append(
@@ -393,6 +394,30 @@ def _check_binaries(env: Mapping[str, str]) -> list[DoctorCheck]:
                 detail="не требуется (LLM выключена)",
             )
         )
+
+    # Денойз (#50): внешний Rust-CLI ``deep-filter`` вместо Python-пакета
+    # deepfilternet. Проверка не критична: без бинарника этап мягко пропускается.
+    deep_filter = (
+        env.get("DEEP_FILTER_BINARY", DEFAULT_DEEP_FILTER_BINARY).strip()
+        or DEFAULT_DEEP_FILTER_BINARY
+    )
+    deep_filter_available = _binary_available(deep_filter)
+    checks.append(
+        DoctorCheck(
+            key="bin:deep-filter",
+            label="Бинарник deep-filter (денойз)",
+            ok=deep_filter_available,
+            critical=False,
+            detail=deep_filter,
+            hint=(
+                ""
+                if deep_filter_available
+                else "Задайте DEEP_FILTER_BINARY или установите deep-filter "
+                "(см. README, раздел про денойз)."
+            ),
+            links=() if deep_filter_available else (LINK_DEEP_FILTER,),
+        )
+    )
     return checks
 
 

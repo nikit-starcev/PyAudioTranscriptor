@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from audio_transcriber.config.defaults import (
+    DEFAULT_DEEP_FILTER_BINARY,
     DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
     DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
     DEFAULT_DIARIZATION_HYBRID_MAX_SPLIT_DEPTH,
@@ -405,6 +406,11 @@ def collect_env_kwargs(
         ))
     if has("DENOISE"):
         put("denoise", as_bool(val("DENOISE"), default=True))
+    if has("DEEP_FILTER_BINARY"):
+        put(
+            "deep_filter_binary",
+            val("DEEP_FILTER_BINARY").strip() or DEFAULT_DEEP_FILTER_BINARY,
+        )
     if has("USE_CACHE"):
         put("use_cache", as_bool(val("USE_CACHE"), default=True))
     if has("CACHE_DIR"):

@@ -16,6 +16,7 @@ from audio_transcriber.cleaning.repetition_filter import (
 )
 from audio_transcriber.cli.env_config import as_bool, collect_env_kwargs
 from audio_transcriber.config.defaults import (
+    DEFAULT_DEEP_FILTER_BINARY,
     DEFAULT_DIARIZATION_ENGINE,
     DEFAULT_DIARIZATION_ESTIMATE_ENABLED,
     DEFAULT_DIARIZATION_ESTIMATE_MODEL,
@@ -588,8 +589,17 @@ def transcribe(
         "--denoise/--no-denoise",
         help=(
             "Шумоподавление (DeepFilterNet) перед распознаванием и диаризацией. "
-            "По умолчанию включено; при отсутствии DeepFilterNet этап "
+            "По умолчанию включено; при отсутствии бинарника deep-filter этап "
             "пропускается без ошибки."
+        ),
+    ),
+    deep_filter_binary: str = typer.Option(
+        DEFAULT_DEEP_FILTER_BINARY,
+        "--deep-filter-binary",
+        envvar="DEEP_FILTER_BINARY",
+        help=(
+            "Путь или имя бинарника deep-filter (Rust-CLI DeepFilterNet) для "
+            f"денойза. По умолчанию {DEFAULT_DEEP_FILTER_BINARY} (ищется в PATH)."
         ),
     ),
     collapse_repeats: bool = typer.Option(

@@ -392,6 +392,7 @@ class SettingsUpdate(BaseModel):
     llm_enabled: bool | None = None
     llm_summary: bool | None = None
     denoise: bool | None = None
+    deep_filter_binary: str | None = None
     mark_overlap: bool | None = None
     normalize_text: bool | None = None
     clean_artifacts: bool | None = None

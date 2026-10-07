@@ -91,6 +91,17 @@ def test_denoise_must_be_boolean(audio_file: Path) -> None:
         AppConfig(input_file=audio_file, denoise="yes")  # type: ignore[arg-type]
 
 
+def test_deep_filter_binary_defaults_and_can_be_overridden(audio_file: Path) -> None:
+    assert AppConfig(input_file=audio_file).deep_filter_binary == "deep-filter"
+    config = AppConfig(input_file=audio_file, deep_filter_binary=" /opt/deep-filter ")
+    assert config.deep_filter_binary == "/opt/deep-filter"
+
+
+def test_deep_filter_binary_must_be_nonempty(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, deep_filter_binary="   ")
+
+
 def test_quality_features_defaults(audio_file: Path) -> None:
     config = AppConfig(input_file=audio_file)
 

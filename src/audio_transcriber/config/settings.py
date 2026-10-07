@@ -21,6 +21,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_CONTEXT_SIZE as DEFAULT_LLM_CONTEXT_SIZE,
 )
 from audio_transcriber.config.defaults import (
+    DEFAULT_DEEP_FILTER_BINARY,
     DEFAULT_DIARIZATION_ENGINE,
     DEFAULT_DIARIZATION_ESTIMATE_ENABLED,
     DEFAULT_DIARIZATION_ESTIMATE_MODEL,
@@ -201,6 +202,10 @@ class AppConfig:
     # Шумоподавление (DeepFilterNet) перед распознаванием и диаризацией.
     # При отсутствии движка этап мягко пропускается с предупреждением в лог.
     denoise: bool = True
+    # Путь/имя внешнего Rust-CLI ``deep-filter`` (DeepFilterNet >= 0.5.6).
+    # Пустое значение — ошибка конфигурации; при недоступном бинарнике стадия
+    # денойза мягко пропускается.
+    deep_filter_binary: str = DEFAULT_DEEP_FILTER_BINARY
     # Помечать реплики, попавшие в зоны наложения речи (говорят >= 2 человек).
     # Требует обычной (не эксклюзивной) разметки pyannote; иначе мягко
     # пропускается без пометок и без падения.
@@ -356,6 +361,13 @@ class AppConfig:
 
         if not isinstance(self.denoise, bool):
             raise ConfigurationError("DENOISE должно быть true или false")
+
+        if (
+            not isinstance(self.deep_filter_binary, str)
+            or not self.deep_filter_binary.strip()
+        ):
+            raise ConfigurationError("DEEP_FILTER_BINARY должно быть непустой строкой")
+        self.deep_filter_binary = self.deep_filter_binary.strip()
 
         if not isinstance(self.collapse_repeats, bool):
             raise ConfigurationError("COLLAPSE_REPEATS должно быть true или false")

@@ -87,12 +87,22 @@ class CachingDenoiser:
         """Параметры денойзера, влияющие на результат (движок + чанкинг/частота).
 
         Без них смена ``chunk_seconds``/``overlap_seconds``/
-        ``output_sample_rate`` переиспользовала бы старый очищенный WAV (#83).
-        Параметры читаются через ``getattr``: произвольный ``DenoiserProtocol``
-        может их не иметь — тогда в ключ входит только имя класса движка.
+        ``output_sample_rate``/бинарника/версии реализации переиспользовала бы
+        старый очищенный WAV (#83, #50). Параметры читаются через ``getattr``:
+        произвольный ``DenoiserProtocol`` может их не иметь — тогда в ключ
+        входит только имя класса движка.
         """
         params: dict[str, object] = {"engine": type(self._inner).__name__}
-        for name in ("chunk_seconds", "overlap_seconds", "output_sample_rate"):
+        for name in (
+            "chunk_seconds",
+            "overlap_seconds",
+            "output_sample_rate",
+            # Внешний бинарник и версия реализации: переход с Python-пакета
+            # ``deepfilternet`` на CLI ``deep-filter`` (или смена бинарника)
+            # меняет результат при тех же параметрах (#50).
+            "binary",
+            "impl_version",
+        ):
             value = getattr(self._inner, name, None)
             if value is not None:
                 params[name] = value

@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 from audio_transcriber.config import defaults as config_defaults
 from audio_transcriber.config.defaults import (
+    DEFAULT_DEEP_FILTER_BINARY,
     DEFAULT_DIARIZATION_ENGINE,
     DEFAULT_DIARIZATION_ESTIMATE_ENABLED,
     DEFAULT_DIARIZATION_ESTIMATE_MODEL,
@@ -75,6 +76,8 @@ class WebSettings:
     llm_enabled: bool = False
     llm_summary: bool = True
     denoise: bool = True
+    #: Путь/имя внешнего Rust-CLI ``deep-filter`` (DeepFilterNet) для денойза.
+    deep_filter_binary: str = DEFAULT_DEEP_FILTER_BINARY
     mark_overlap: bool = True
     #: Сводить кластеры с одинаковым уверенным именем в одного говорящего
     #: (enrollment many-to-one). Безымянные «Спикер N» не сливаются.
@@ -157,6 +160,7 @@ class WebSettings:
             "LLM_ENABLED": _format_bool(self.llm_enabled),
             "LLM_SUMMARY": _format_bool(self.llm_summary),
             "DENOISE": _format_bool(self.denoise),
+            "DEEP_FILTER_BINARY": self.deep_filter_binary,
             "MARK_OVERLAP": _format_bool(self.mark_overlap),
             "MERGE_SAME_NAME_SPEAKERS": _format_bool(self.merge_same_name_speakers),
             "NORMALIZE_TEXT": _format_bool(self.normalize_text),
@@ -225,6 +229,8 @@ def default_settings(defaults: Mapping[str, str] | None = None) -> WebSettings:
         llm_enabled=_as_bool(source.get("LLM_ENABLED")),
         llm_summary=_as_bool(source.get("LLM_SUMMARY"), default=True),
         denoise=_as_bool(source.get("DENOISE"), default=True),
+        deep_filter_binary=source.get("DEEP_FILTER_BINARY", "").strip()
+        or DEFAULT_DEEP_FILTER_BINARY,
         mark_overlap=_as_bool(source.get("MARK_OVERLAP"), default=True),
         merge_same_name_speakers=_as_bool(
             source.get("MERGE_SAME_NAME_SPEAKERS"), default=True
@@ -354,6 +360,9 @@ def settings_from_mapping(
         llm_enabled=pick_bool("llm_enabled", current.llm_enabled),
         llm_summary=pick_bool("llm_summary", current.llm_summary),
         denoise=pick_bool("denoise", current.denoise),
+        deep_filter_binary=pick_nonempty(
+            "deep_filter_binary", current.deep_filter_binary
+        ),
         mark_overlap=pick_bool("mark_overlap", current.mark_overlap),
         merge_same_name_speakers=pick_bool(
             "merge_same_name_speakers", current.merge_same_name_speakers
@@ -468,6 +477,10 @@ def validate_settings(settings: WebSettings) -> None:
     settings.nemo_speech_binary = settings.nemo_speech_binary.strip() or DEFAULT_NEMO_SPEECH_BINARY
     settings.nemo_speech_model = settings.nemo_speech_model.strip() or DEFAULT_NEMO_SPEECH_MODEL
     settings.nemo_speech_lib_path = settings.nemo_speech_lib_path.strip()
+
+    settings.deep_filter_binary = (
+        settings.deep_filter_binary.strip() or DEFAULT_DEEP_FILTER_BINARY
+    )
 
     if not isinstance(settings.word_timestamps, bool):
         raise SettingsError("WORD_TIMESTAMPS должно быть true или false")

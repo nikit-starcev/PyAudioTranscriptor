@@ -61,12 +61,12 @@ def _sample_checks() -> list[DoctorCheck]:
             detail="текущая 3.14.7",
         ),
         DoctorCheck(
-            key="dep:df",
-            label="Зависимость: deepfilternet (денойз)",
+            key="bin:deep-filter",
+            label="Бинарник deep-filter (денойз)",
             ok=False,
             critical=False,
-            detail="не найдена",
-            hint="Необязательно; функция будет недоступна.",
+            detail="не найден",
+            hint="Задайте DEEP_FILTER_BINARY.",
         ),
         DoctorCheck(
             key="hf_token",
@@ -88,10 +88,10 @@ def test_doctor_report_shape_and_summary(client: TestClient, monkeypatch: pytest
     assert set(payload) == {"checks", "summary"}
     assert payload["summary"] == {"ok": 1, "warn": 1, "fail": 1, "critical_failures": 1}
     by_id = {check["id"]: check for check in payload["checks"]}
-    assert set(by_id) == {"python", "dep:df", "hf_token"}
+    assert set(by_id) == {"python", "bin:deep-filter", "hf_token"}
     assert by_id["python"]["status"] == "ok"
-    assert by_id["dep:df"]["status"] == "warn"
-    assert by_id["dep:df"]["critical"] is False
+    assert by_id["bin:deep-filter"]["status"] == "warn"
+    assert by_id["bin:deep-filter"]["critical"] is False
     assert by_id["hf_token"]["status"] == "fail"
     assert by_id["hf_token"]["critical"] is True
     assert by_id["hf_token"]["links"] == ["https://huggingface.co/settings/tokens"]

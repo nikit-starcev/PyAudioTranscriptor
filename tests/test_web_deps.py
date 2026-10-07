@@ -88,7 +88,7 @@ def client(web_paths: WebPaths, runner: FakeRunner) -> Iterator[TestClient]:
 def test_registry_is_nonempty_and_unique() -> None:
     keys = [spec.key for spec in web_deps.DEPENDENCIES]
     assert len(keys) == len(set(keys))
-    assert {"gigaam", "denoise"} <= set(keys)
+    assert {"gigaam", "sherpa"} <= set(keys)
     for spec in web_deps.DEPENDENCIES:
         assert spec.spec
         assert spec.module
@@ -260,7 +260,7 @@ def test_install_twice_conflicts(web_paths: WebPaths) -> None:
         second = test_client.post("/api/deps/gigaam/install")
         assert second.status_code == 409
         # Вторая установка (даже другого пакета) тоже конфликтует: одна за раз.
-        assert test_client.post("/api/deps/denoise/install").status_code == 409
+        assert test_client.post("/api/deps/sherpa/install").status_code == 409
         block.set()
         test_client.app.state.dependency_installer.wait(5)  # type: ignore[attr-defined]
 

@@ -93,14 +93,6 @@ DEPENDENCIES: tuple[DependencySpec, ...] = (
         needed_for="Бэкенд распознавания GigaAM",
     ),
     DependencySpec(
-        key="denoise",
-        spec="deepfilternet",
-        label="Пакет deepfilternet (денойз)",
-        module="df",
-        check_id="dep:df",
-        needed_for="Шумоподавление (денойз)",
-    ),
-    DependencySpec(
         key="sherpa",
         spec="sherpa-onnx",
         label="Пакет sherpa-onnx (оценка числа говорящих)",
