@@ -151,10 +151,11 @@ def test_binary_requirements_include_onnx_asr_for_gigaam() -> None:
     assert gigaam["spec"] == "onnx-asr[cpu,hub]"
     assert "installable" in gigaam
 
-    # Бинарные пункты не сломаны: у них check_id по-прежнему не задан вручную.
+    # Бинарные пункты: check_id берётся из единого реестра assets (#98).
     whisper = web_setup.binary_requirements(WebSettings(asr_backend="whisper-cpp"))
     assert [item["key"] for item in whisper] == ["whisper-cli", "sherpa-onnx"]
-    assert "check_id" not in whisper[0]
+    assert whisper[0]["check_id"] == "bin:whisper-cli"
+    assert whisper[0]["kind"] == "binary"
 
 
 def test_setup_steps_gigaam_check_package_and_model() -> None:

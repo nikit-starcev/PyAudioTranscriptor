@@ -355,7 +355,7 @@ def _check_binaries(env: Mapping[str, str]) -> list[DoctorCheck]:
                 ok=available,
                 critical=True,
                 detail=f"{binary or 'не задан'}{lib_note}",
-                hint="" if available else "Задайте WHISPER_CPP_BINARY/--whisper-cpp-binary.",
+                hint="" if available else "Скачайте кнопкой в мастере или задайте WHISPER_CPP_BINARY/--whisper-cpp-binary.",
                 links=() if available else (LINK_WHISPER_CPP,),
             )
         )
@@ -380,7 +380,7 @@ def _check_binaries(env: Mapping[str, str]) -> list[DoctorCheck]:
                 ok=available,
                 critical=True,
                 detail=binary or "не задан",
-                hint="" if available else "Задайте LLM_BINARY/--llm-binary.",
+                hint="" if available else "Скачайте кнопкой в мастере или задайте LLM_BINARY/--llm-binary.",
                 links=() if available else (LINK_LLAMA_CPP,),
             )
         )
@@ -412,8 +412,8 @@ def _check_binaries(env: Mapping[str, str]) -> list[DoctorCheck]:
             hint=(
                 ""
                 if deep_filter_available
-                else "Задайте DEEP_FILTER_BINARY или установите deep-filter "
-                "(см. README, раздел про денойз)."
+                else "Скачайте кнопкой в мастере (DeepFilterNet v0.5.6) или задайте "
+                "DEEP_FILTER_BINARY."
             ),
             links=() if deep_filter_available else (LINK_DEEP_FILTER,),
         )
@@ -488,7 +488,8 @@ def _check_nemo_speech(env: Mapping[str, str]) -> list[DoctorCheck]:
             hint=(
                 ""
                 if available or not explicit
-                else "Задайте NEMO_SPEECH_BINARY/--nemo-speech-binary."
+                else "Соберите nemo-speech (автоскачивание недоступно) и задайте "
+                "NEMO_SPEECH_BINARY/--nemo-speech-binary."
             ),
         )
     ]

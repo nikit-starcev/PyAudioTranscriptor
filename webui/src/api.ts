@@ -454,12 +454,74 @@ export type BinaryRequirement = {
   status: 'ok' | 'fail'
   instructions: string
   links: string[]
+  /** Ключ ресурса в едином реестре внешних ресурсов (#98). */
+  asset_key?: string
+  /** Вид ресурса: pip-пакет или скачиваемый бинарник. */
+  kind?: 'pip' | 'binary'
+  /** Есть ли готовый артефакт под текущую ОС/архитектуру (бинарники). */
+  downloadable?: boolean
+  /** Платформа выбранного артефакта. */
+  platform?: string
+  /** Описание скачиваемого артефакта (размер, вариант, хеш). */
+  artifact?: AssetArtifact | null
+  /** Ключ настройки пути бинарника (``WHISPER_CPP_BINARY`` и т.п.). */
+  setting_key?: string
+  /** Ключ настройки каталога библиотек. */
+  lib_setting_key?: string
+  /** Текущий путь бинарника из настроек. */
+  installed_path?: string
+  optional?: boolean
   /** Ключ в реестре устанавливаемых пакетов (#66) — если это пакет, а не бинарник. */
   dep_key?: string
   /** Spec установки из allowlist (для пакетов). */
   spec?: string
   /** Есть ли установщик (uv/pip), чтобы показать кнопку «Установить». */
   installable?: boolean
+}
+
+/** Один разрешённый артефакт (URL + sha256) под ОС/архитектуру. */
+export type AssetArtifact = {
+  os: string
+  arch: string
+  url: string
+  sha256: string
+  size: number
+  archive: string
+  variant: string
+}
+
+/** Элемент единого реестра внешних ресурсов (#98). */
+export type AssetInfo = {
+  key: string
+  label: string
+  kind: 'pip' | 'binary'
+  needed_for: string
+  check_id: string
+  optional: boolean
+  note: string
+  status: DependencyStatus
+  message: string
+  error: string | null
+  bytes_done: number
+  total: number
+  fraction: number | null
+  installed: boolean
+  downloadable: boolean
+  path: string
+  platform: string
+  artifact: AssetArtifact | null
+  settings_field: string
+  lib_settings_field: string
+  env_key: string
+  lib_env_key: string
+  spec: string
+  module: string
+}
+
+export type AssetsResponse = {
+  assets: AssetInfo[]
+  installer: string | null
+  bin_dir: string
 }
 
 /** Статус фоновой установки опционального пакета (#66). */
@@ -486,7 +548,7 @@ export type DepsResponse = {
   installer: string | null
 }
 
-/** Событие SSE установки пакета (``/api/deps/events``). */
+/** Событие SSE установки пакета/бинарника (``/api/assets/events``). */
 export type DependencyEvent = {
   /** Монотонный номер события (SSE `id`) — защита от повторов истории. */
   seq?: number
@@ -494,6 +556,36 @@ export type DependencyEvent = {
   status: DependencyStatus
   message: string
   error: string | null
+  bytes_done?: number
+  total?: number
+  fraction?: number | null
+  path?: string
+}
+
+/** Сводка готовности: что установлено и чего не хватает (#98). */
+export type ReadinessItem = {
+  id?: string
+  key?: string
+  label?: string
+  title?: string
+  present?: boolean
+  installed?: boolean
+  available?: boolean
+  needed?: boolean
+  size?: number
+  expected_size?: number
+  installed_path?: string
+  path?: string
+  platform?: string
+}
+
+export type ReadinessSummary = {
+  models: ReadinessItem[]
+  dependencies: ReadinessItem[]
+  binaries: ReadinessItem[]
+  missing_models: string[]
+  missing_dependencies: string[]
+  missing_binaries: string[]
 }
 
 export type SetupPlan = {
@@ -502,6 +594,7 @@ export type SetupPlan = {
   required_models: string[]
   missing_models: string[]
   binaries: BinaryRequirement[]
+  readiness?: ReadinessSummary
   hf_token: { required: boolean; set: boolean }
   summary: Record<string, number>
 }

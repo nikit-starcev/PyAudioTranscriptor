@@ -50,6 +50,11 @@ class WebPaths:
         return self.models_dir_override or (self.data_dir / "models")
 
     @property
+    def bin_dir(self) -> Path:
+        """Каталог автоустановленных внешних бинарников (#98)."""
+        return self.data_dir / "bin"
+
+    @property
     def jobs_db(self) -> Path:
         """SQLite-база задач."""
         return self.data_dir / "jobs.db"
@@ -93,5 +98,6 @@ class WebPaths:
             self.samples_dir,
             self.cache_dir,
             self.models_dir,
+            self.bin_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)

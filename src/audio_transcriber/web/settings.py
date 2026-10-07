@@ -102,8 +102,13 @@ class WebSettings:
     #: Пути к локальным моделям и бинарникам (совпадают с ключами ``config.env``).
     whisper_cpp_model: str = ""
     whisper_cpp_binary: str = "whisper-cli"
+    #: Каталог библиотек whisper.cpp (Linux — ``LD_LIBRARY_PATH``). Заполняется
+    #: кнопкой автоустановки бинарника (#98) или вручную.
+    whisper_cpp_lib_path: str = ""
     llm_model: str = ""
     llm_binary: str = "llama-server"
+    #: Каталог библиотек llama.cpp (нужен для ``llama-server``).
+    llm_lib_path: str = ""
     #: Провайдер LLM (``llama`` — локальный, ``openai`` — внешний API).
     llm_provider: str = "llama"
     #: Базовый URL и имя модели внешнего OpenAI-совместимого API.
@@ -173,8 +178,10 @@ class WebSettings:
             "DEVICE": self.device,
             "WHISPER_CPP_MODEL": self.whisper_cpp_model,
             "WHISPER_CPP_BINARY": self.whisper_cpp_binary,
+            "WHISPER_CPP_LIB_PATH": self.whisper_cpp_lib_path,
             "LLM_MODEL": self.llm_model,
             "LLM_BINARY": self.llm_binary,
+            "LLM_LIB_PATH": self.llm_lib_path,
             "LLM_PROVIDER": self.llm_provider,
             "LLM_BASE_URL": self.llm_base_url,
             "LLM_MODEL_NAME": self.llm_model_name,
@@ -245,8 +252,10 @@ def default_settings(defaults: Mapping[str, str] | None = None) -> WebSettings:
         device=source.get("DEVICE", "").strip() or "auto",
         whisper_cpp_model=source.get("WHISPER_CPP_MODEL", "").strip(),
         whisper_cpp_binary=source.get("WHISPER_CPP_BINARY", "").strip() or "whisper-cli",
+        whisper_cpp_lib_path=source.get("WHISPER_CPP_LIB_PATH", "").strip(),
         llm_model=source.get("LLM_MODEL", "").strip(),
         llm_binary=source.get("LLM_BINARY", "").strip() or "llama-server",
+        llm_lib_path=source.get("LLM_LIB_PATH", "").strip(),
         llm_provider=source.get("LLM_PROVIDER", "").strip().casefold() or "llama",
         llm_base_url=source.get("LLM_BASE_URL", "").strip(),
         llm_model_name=source.get("LLM_MODEL_NAME", "").strip(),
@@ -377,8 +386,10 @@ def settings_from_mapping(
         device=pick_nonempty("device", current.device),
         whisper_cpp_model=pick_str("whisper_cpp_model", current.whisper_cpp_model),
         whisper_cpp_binary=pick_nonempty("whisper_cpp_binary", current.whisper_cpp_binary),
+        whisper_cpp_lib_path=pick_str("whisper_cpp_lib_path", current.whisper_cpp_lib_path),
         llm_model=pick_str("llm_model", current.llm_model),
         llm_binary=pick_nonempty("llm_binary", current.llm_binary),
+        llm_lib_path=pick_str("llm_lib_path", current.llm_lib_path),
         llm_provider=pick_nonempty("llm_provider", current.llm_provider),
         llm_base_url=pick_str("llm_base_url", current.llm_base_url),
         llm_model_name=pick_str("llm_model_name", current.llm_model_name),
@@ -541,7 +552,9 @@ def validate_settings(settings: WebSettings) -> None:
         ("glossary_db", settings.glossary_db),
         ("voices_dir", settings.voices_dir),
         ("whisper_cpp_model", settings.whisper_cpp_model),
+        ("whisper_cpp_lib_path", settings.whisper_cpp_lib_path),
         ("llm_model", settings.llm_model),
+        ("llm_lib_path", settings.llm_lib_path),
         ("pyannote_local_model", settings.pyannote_local_model),
         ("gigaam_model_path", settings.gigaam_model_path),
         ("nemo_speech_binary", settings.nemo_speech_binary),

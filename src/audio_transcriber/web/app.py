@@ -66,7 +66,7 @@ from audio_transcriber.diarization.voices import (
     save_speaker_sample,
     unique_sample_path,
 )
-from audio_transcriber.domain.enums import ExportFormat
+from audio_transcriber.domain.enums import AsrBackend, ExportFormat
 from audio_transcriber.export.factory import create_exporter
 from audio_transcriber.llm.client import probe_openai_server
 from audio_transcriber.protocol import ProtocolArtifacts, generate_protocol
@@ -75,6 +75,7 @@ from audio_transcriber.utils.audio import load_waveform, write_wav
 from audio_transcriber.utils.env import binary_available
 from audio_transcriber.utils.playback import amplitude_envelope, read_duration
 from audio_transcriber.utils.text import sanitize_filename
+from audio_transcriber.web import assets as assets_registry
 from audio_transcriber.web import deps as deps_registry
 from audio_transcriber.web.actions import (
     ACTION_CORRECTION,
@@ -86,6 +87,15 @@ from audio_transcriber.web.actions import (
     sanitize_action_id,
 )
 from audio_transcriber.web.asr_device import describe_asr_device
+from audio_transcriber.web.assets import (
+    KIND_BINARY,
+    KIND_PIP,
+    BinaryInstaller,
+    FetchFn,
+    asset_payload,
+    find_asset,
+    resolve_artifact,
+)
 from audio_transcriber.web.config import (
     build_job_config,
     env_defaults,
@@ -467,6 +477,7 @@ def create_app(
     voices_dir: Path | None = None,
     downloader: Downloader | None = None,
     dep_install_runner: InstallRunner | None = None,
+    asset_downloader: FetchFn | None = None,
     nemo_pull_runner: PullRunner | None = None,
     nemo_poll_interval: float | None = 0.5,
     heartbeat: float = 15.0,
@@ -506,6 +517,16 @@ def create_app(
     dependency_installer = DependencyInstaller(
         bus=deps_bus,
         runner=dep_install_runner,
+        on_success=doctor_cache.invalidate,
+    )
+    # Автоустановка внешних бинарников (#98): скачивание по allowlist, проверка
+    # sha256, распаковка в ``web-data/bin`` и автопрописывание путей. Прогресс —
+    # в ту же шину, что и pip-пакеты (``/api/assets/events`` / ``/api/deps/events``).
+    binary_installer = BinaryInstaller(
+        bus=deps_bus,
+        bin_root=resolved_paths.bin_dir,
+        settings_store=settings_store,
+        fetch=asset_downloader,
         on_success=doctor_cache.invalidate,
     )
     # Скачивание модели Sortformer для nemo-speech (кнопка в «Диаризации»):
@@ -595,6 +616,7 @@ def create_app(
     app.state.doctor_cache = doctor_cache
     app.state.dependency_installer = dependency_installer
     app.state.deps_bus = deps_bus
+    app.state.binary_installer = binary_installer
     app.state.nemo_downloader = nemo_downloader
     app.state.nemo_bus = nemo_bus
     router = APIRouter(prefix="/api")
@@ -617,6 +639,7 @@ def create_app(
         doctor_cache=doctor_cache,
         dependency_installer=dependency_installer,
         deps_bus=deps_bus,
+        binary_installer=binary_installer,
         nemo_downloader=nemo_downloader,
         nemo_bus=nemo_bus,
     )
@@ -659,6 +682,7 @@ def register_api(
     doctor_cache: DoctorReportCache,
     dependency_installer: DependencyInstaller,
     deps_bus: DownloadBus,
+    binary_installer: BinaryInstaller,
     nemo_downloader: NemoSpeechModelDownloader,
     nemo_bus: DownloadBus,
 ) -> None:
@@ -1020,6 +1044,121 @@ def register_api(
         last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
     ) -> StreamingResponse:
         """SSE-поток прогресса установки: история (с учётом ``Last-Event-ID``), затем эфир."""
+        after: int | None = None
+        if last_event_id:
+            try:
+                after = int(last_event_id)
+            except ValueError:
+                after = None
+
+        async def stream() -> AsyncIterator[str]:
+            for event in deps_bus.history(after=after):
+                yield _sse(event)
+            async for update in deps_bus.subscribe():
+                yield ": ping\n\n" if update is None else _sse(update)
+
+        return StreamingResponse(
+            stream(), media_type="text/event-stream", headers=dict(SSE_HEADERS)
+        )
+
+    def _prefer_vulkan() -> bool:
+        """Vulkan-вариант бинарников выбирается на ветке AMD/Vulkan (whisper-cpp)."""
+        return settings_store.load().asr_backend == AsrBackend.WHISPER_CPP.value
+
+    def _asset_payloads() -> list[dict[str, object]]:
+        settings = settings_store.load()
+        prefer_vulkan = _prefer_vulkan()
+        items: list[dict[str, object]] = []
+        for asset in assets_registry.ASSETS:
+            if asset.kind == KIND_BINARY:
+                state = binary_installer.state(asset.key)
+                items.append(
+                    asset_payload(
+                        asset,
+                        bin_root=paths.bin_dir,
+                        settings=settings,
+                        status=state.status,
+                        message=state.message,
+                        error=state.error,
+                        bytes_done=state.bytes_done,
+                        total=state.total,
+                        fraction=state.fraction if state.status != "idle" else None,
+                        prefer_vulkan=prefer_vulkan,
+                    )
+                )
+                continue
+            dep_state = dependency_installer.state(asset.key)
+            items.append(
+                asset_payload(
+                    asset,
+                    bin_root=paths.bin_dir,
+                    settings=settings,
+                    status=dep_state.status,
+                    message=dep_state.message,
+                    error=dep_state.error,
+                )
+            )
+        return items
+    @router.get("/assets")
+    def list_assets() -> dict[str, object]:
+        """Единый реестр внешних ресурсов (#98): пакеты и бинарники."""
+        return {
+            "assets": _asset_payloads(),
+            "installer": deps_registry.installer_name(),
+            "bin_dir": str(paths.bin_dir),
+        }
+
+    @router.post("/assets/{key}/install", status_code=202)
+    def install_asset(key: str) -> dict[str, object]:
+        """Ставит внешний ресурс из allowlist (прогресс — ``/api/assets/events``)."""
+        asset = find_asset(key)
+        if asset is None:
+            raise HTTPException(status_code=404, detail="Неизвестный внешний ресурс")
+        running = dependency_installer.is_running() or binary_installer.is_running()
+        if asset.kind == KIND_PIP:
+            spec = deps_registry.find_dependency(asset.key)
+            if spec is None:
+                raise HTTPException(status_code=404, detail="Неизвестная зависимость")
+            if not deps_registry.installer_available():
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Не найден установщик (uv/pip). Установите uv "
+                        "(https://docs.astral.sh/uv/) или модуль pip."
+                    ),
+                )
+            if running:
+                raise HTTPException(status_code=409, detail="Установка уже выполняется")
+            try:
+                started = dependency_installer.start(spec.key, spec.spec)
+            except InstallerUnavailable as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if not started:
+                raise HTTPException(status_code=409, detail="Установка уже выполняется")
+            return {"key": asset.key, "kind": KIND_PIP, "status": "running"}
+
+        artifact = resolve_artifact(asset, prefer_vulkan=_prefer_vulkan())
+        if artifact is None:
+            raise HTTPException(
+                status_code=400,
+                detail=asset.manual_hint or "Для вашей ОС/архитектуры нет готового артефакта.",
+            )
+        if running:
+            raise HTTPException(status_code=409, detail="Установка уже выполняется")
+        if not binary_installer.start(asset, artifact):
+            raise HTTPException(status_code=409, detail="Установка уже выполняется")
+        return {
+            "key": asset.key,
+            "kind": KIND_BINARY,
+            "status": "running",
+            "artifact": artifact.as_dict(),
+        }
+
+    @router.get("/assets/events")
+    async def assets_events(
+        last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
+    ) -> StreamingResponse:
+        """SSE-поток установки внешних ресурсов (общая шина с ``/api/deps``)."""
         after: int | None = None
         if last_event_id:
             try:

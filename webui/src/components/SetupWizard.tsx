@@ -8,6 +8,7 @@ import {
   type DoctorReport,
   type HfCheckResult,
   type ModelsResponse,
+  type ReadinessItem,
   type SetupPlan,
   type WebSettings,
 } from '../api'
@@ -23,6 +24,71 @@ type Props = {
 }
 
 const STEP_ORDER = ['hardware', 'hf_token', 'models', 'binaries', 'readiness']
+
+function formatSize(size?: number): string {
+  if (!size || size <= 0) return ''
+  const units = ['Б', 'КБ', 'МБ', 'ГБ']
+  let value = size
+  let index = 0
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024
+    index += 1
+  }
+  return index === 0 ? `${Math.round(value)} ${units[index]}` : `${value.toFixed(1)} ${units[index]}`
+}
+
+function readinessOk(item: ReadinessItem): boolean {
+  return Boolean(item.present ?? item.installed ?? item.available)
+}
+
+function readinessLabel(item: ReadinessItem): string {
+  return item.title ?? item.label ?? item.id ?? item.key ?? ''
+}
+
+/** Строка сводки готовности с иконкой, размером и путём. */
+function ReadinessGroup({
+  title,
+  items,
+  missing,
+}: {
+  title: string
+  items: ReadinessItem[]
+  missing: string[]
+}) {
+  if (items.length === 0) return null
+  return (
+    <div className="rounded-md border border-slate-200 p-2 dark:border-slate-800">
+      <p className="mb-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+        {title}
+        {missing.length > 0 ? ` — не хватает: ${missing.length}` : ' — всё на месте'}
+      </p>
+      <ul className="space-y-0.5">
+        {items.map((item, idx) => {
+          const ok = readinessOk(item)
+          const path = item.installed_path || item.path || ''
+          const size = item.expected_size || item.size || 0
+          return (
+            <li
+              key={item.id ?? item.key ?? idx}
+              className="flex flex-wrap items-baseline gap-x-2 text-xs text-slate-600 dark:text-slate-300"
+            >
+              <span className={ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>
+                {ok ? '✓' : '✗'}
+              </span>
+              <span>{readinessLabel(item)}</span>
+              {size > 0 && <span className="text-slate-400 dark:text-slate-500">~{formatSize(size)}</span>}
+              {path && ok && (
+                <span className="truncate font-mono text-[10px] text-slate-400 dark:text-slate-500" title={path}>
+                  {path}
+                </span>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
 
 function hfStyle(status: HfCheckResult['status']): string {
   if (status === 'ok') return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300'
@@ -440,6 +506,28 @@ function SetupWizard({ open, onClose, report, onRecheck, onChanged }: Props) {
                     </div>
                   ) : (
                     <p className="text-sm text-slate-400 dark:text-slate-500">Отчёт недоступен.</p>
+                  )}
+                  {plan.readiness && (
+                    <div className="space-y-2 text-sm">
+                      <p className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                        Что установлено
+                      </p>
+                      <ReadinessGroup
+                        title="Модели"
+                        items={plan.readiness.models}
+                        missing={plan.readiness.missing_models}
+                      />
+                      <ReadinessGroup
+                        title="Пакеты"
+                        items={plan.readiness.dependencies}
+                        missing={plan.readiness.missing_dependencies}
+                      />
+                      <ReadinessGroup
+                        title="Бинарники"
+                        items={plan.readiness.binaries}
+                        missing={plan.readiness.missing_binaries}
+                      />
+                    </div>
                   )}
                   <button
                     type="button"
