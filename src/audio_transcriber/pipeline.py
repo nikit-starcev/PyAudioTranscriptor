@@ -43,7 +43,7 @@ from audio_transcriber.diarization.enrollment import (
     SpeakerEmbeddingEngine,
     assign_speaker_names,
 )
-from audio_transcriber.diarization.factory import create_diarizer
+from audio_transcriber.diarization.factory import HYBRID_ENGINE, create_diarizer
 from audio_transcriber.diarization.hybrid_engine import (
     DIARIZATION_HYBRID_IMPL_VERSION,
     HybridSpeakerDiarizer,
@@ -383,16 +383,38 @@ def _asr_cache_params(
     return params
 
 
+def _may_resolve_to_hybrid(config: AppConfig) -> bool:
+    """Может ли маршрутизация диаризации выбрать гибридный движок.
+
+    Нужно, чтобы лениво резолвить движок на попадании в кэш только тогда,
+    когда его CAM++-эмбеддер действительно может понадобиться для enrollment
+    (явный ``hybrid`` либо ``auto`` с включённым гибридом).
+    """
+    engine = (config.diarization_engine or "").strip().casefold()
+    return engine == HYBRID_ENGINE or (
+        engine == "auto" and config.diarization_hybrid_enabled
+    )
+
+
 def _diarization_cache_params(
     config: AppConfig,
     device: Device,
-    diarizer: SpeakerDiarizer,
     *,
     denoise_signature: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    """Релевантные параметры стадии диаризации для ключа кэша."""
+    """Релевантные параметры стадии диаризации для ключа кэша.
+
+    Функция намеренно **не зависит** от уже созданного движка: ключ считается
+    до его инициализации, чтобы попадание в кэш не запускало дорогой оценщик
+    числа говорящих и не грузило модель (#91). Вместо класса движка в ключ
+    входит конфигурация, из которой движок выбирается детерминированно
+    (включая параметры маршрутизации ``auto`` и оценщика), — её смена
+    сбрасывает кэш; параметры гибрида учитываются, только если маршрутизация
+    может выбрать ``hybrid`` (явно или через ``auto``), чтобы их изменение не
+    инвалидировало кэш фиксированных pyannote/nemo-speech.
+    """
+    engine = (config.diarization_engine or "").strip().casefold()
     params: dict[str, object] = {
-        "engine": type(diarizer).__name__,
         "device": device.value,
         # Выбранный движок и его параметры: смена nemo-speech -> pyannote (или
         # модели/устройства nemo) меняет результат при тех же входных данных.
@@ -433,10 +455,11 @@ def _diarization_cache_params(
     if denoise_signature is not None:
         # Факт и параметры денойза, а не настройка ``config.denoise`` (#83).
         params["denoise"] = denoise_signature
-    if isinstance(diarizer, HybridSpeakerDiarizer):
+    if engine in ("auto", HYBRID_ENGINE):
         # Параметры гибрида (окна/порог/модель эмбеддингов) меняют результат при
-        # том же входе, поэтому входят в ключ только для гибридного движка —
-        # иначе каждый апгрейд инвалидировал бы кэш и остальных движков.
+        # том же входе, поэтому входят в ключ только тогда, когда маршрутизация
+        # действительно может выбрать hybrid — иначе каждый апгрейд
+        # инвалидировал бы кэш и остальных движков.
         params["hybrid_impl_version"] = DIARIZATION_HYBRID_IMPL_VERSION
         params["hybrid_window_seconds"] = config.diarization_hybrid_window_seconds
         params["hybrid_overlap_seconds"] = config.diarization_hybrid_overlap_seconds
@@ -625,22 +648,18 @@ def run_pipeline(
             Device.CPU if config.asr_backend is AsrBackend.WHISPER_CPP else device
         )
         _ensure_not_cancelled(cancel_event, "перед диаризацией")
+        # ``active_diarizer`` создаётся лениво: на попадании в кэш дорогая
+        # инициализация (оценщик числа говорящих + загрузка модели) не нужна.
+        active_diarizer: SpeakerDiarizer | None = diarizer
         if config.diarization_enabled:
-            # ``audio_path`` нужен режиму ``auto``: дешёвый оценщик числа
-            # говорящих выбирает nemo-speech (<= лимита) или pyannote (#64).
-            active_diarizer = diarizer or create_diarizer(
-                config,
-                diarization_device,
-                audio_path=audio_path,
-                on_progress=emit,
-            )
+            # Ключ строится из конфигурации (без движка), поэтому проверка кэша
+            # идёт **до** инициализации движка (#91).
             dia_key = cache.key(
                 "diarization",
                 config.input_file,
                 _diarization_cache_params(
                     config,
                     diarization_device,
-                    active_diarizer,
                     denoise_signature=denoise_signature,
                 ),
             )
@@ -661,6 +680,14 @@ def run_pipeline(
             else:
                 logger.info("Кэш диаризации: промах — определение говорящих...")
                 emit(ProgressEvent("diarization", "Определение говорящих", fraction=None))
+                # ``audio_path`` нужен режиму ``auto``: дешёвый оценщик числа
+                # говорящих выбирает nemo-speech (<= лимита) или pyannote (#64).
+                active_diarizer = diarizer or create_diarizer(
+                    config,
+                    diarization_device,
+                    audio_path=audio_path,
+                    on_progress=emit,
+                )
                 try:
                     speaker_segments = active_diarizer.diarize(
                         audio_path,
@@ -704,10 +731,26 @@ def run_pipeline(
         references = config.resolved_speaker_references()
         if config.diarization_enabled and references and speaker_segments:
             active_enrollment_engine = enrollment_engine
-            if active_enrollment_engine is None and isinstance(
-                active_diarizer, HybridSpeakerDiarizer
+            diarizer_for_enrollment = active_diarizer
+            if (
+                active_enrollment_engine is None
+                and diarizer_for_enrollment is None
+                and _may_resolve_to_hybrid(config)
             ):
-                resolved_engine = active_diarizer.enrollment_engine()
+                # Попадание в кэш: движок не создавался, чтобы не гонять
+                # оценщик. Гибриду для enrollment нужен его CAM++-эмбеддер —
+                # ради этого (и только здесь) резолвим движок лениво.
+                diarizer_for_enrollment = create_diarizer(
+                    config,
+                    diarization_device,
+                    audio_path=audio_path,
+                    on_progress=emit,
+                )
+                active_diarizer = diarizer_for_enrollment
+            if active_enrollment_engine is None and isinstance(
+                diarizer_for_enrollment, HybridSpeakerDiarizer
+            ):
+                resolved_engine = diarizer_for_enrollment.enrollment_engine()
                 if resolved_engine is not None:
                     active_enrollment_engine = cast(
                         SpeakerEmbeddingEngine, resolved_engine

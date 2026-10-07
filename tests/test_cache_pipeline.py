@@ -140,6 +140,32 @@ def test_cache_hit_skips_asr_and_diarization(audio_file: Path, tmp_path: Path) -
     assert second_dia.calls == 0
 
 
+def test_diarization_cache_hit_skips_diarizer_creation(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Попадание в кэш диаризации не создаёт движок (не гоняет оценщик)."""
+    # Пустая библиотека образцов: enrollment не запускается и не резолвит движок.
+    empty_voices = tmp_path / "empty-voices"
+    empty_voices.mkdir()
+    config = _config(audio_file, tmp_path, voices_dir=empty_voices)
+    created: list[RecordingDiarizer] = []
+
+    def fake_create(config, device, **kwargs):
+        diarizer = RecordingDiarizer()
+        created.append(diarizer)
+        return diarizer
+
+    monkeypatch.setattr("audio_transcriber.pipeline.create_diarizer", fake_create)
+
+    # Промах: движок инициализируется (оценщик числа говорящих отрабатывает).
+    _run(config, RecordingRecognizer(), None)
+    assert len(created) == 1
+
+    # Попадание: движок уже не создаётся — дорогая инициализация пропущена.
+    _run(config, RecordingRecognizer(), None)
+    assert len(created) == 1
+
+
 def test_asr_cache_hit_but_diarization_recomputed_when_missing(
     audio_file: Path, tmp_path: Path
 ) -> None:
@@ -468,7 +494,7 @@ def test_diarization_cache_params_include_impl_version(
 ) -> None:
     config = _config(audio_file, tmp_path)
 
-    params = _diarization_cache_params(config, Device.CPU, RecordingDiarizer())
+    params = _diarization_cache_params(config, Device.CPU)
 
     assert params["diarization_impl_version"] == DIARIZATION_IMPL_VERSION
 
@@ -479,14 +505,14 @@ def test_diarization_cache_key_changes_with_impl_version(
     config = _config(audio_file, tmp_path)
 
     before = compute_cache_key(
-        "diarization", audio_file, _diarization_cache_params(config, Device.CPU, RecordingDiarizer())
+        "diarization", audio_file, _diarization_cache_params(config, Device.CPU)
     )
     monkeypatch.setattr(
         "audio_transcriber.pipeline.DIARIZATION_IMPL_VERSION",
         DIARIZATION_IMPL_VERSION + 1,
     )
     after = compute_cache_key(
-        "diarization", audio_file, _diarization_cache_params(config, Device.CPU, RecordingDiarizer())
+        "diarization", audio_file, _diarization_cache_params(config, Device.CPU)
     )
 
     assert before != after
@@ -505,7 +531,7 @@ def test_diarization_cache_params_include_hyperparameters(
         max_speakers=5,
     )
 
-    params = _diarization_cache_params(config, Device.CPU, RecordingDiarizer())
+    params = _diarization_cache_params(config, Device.CPU)
 
     assert params["min_duration_off"] == pytest.approx(0.7)
     assert params["clustering_threshold"] == pytest.approx(0.6)
@@ -521,12 +547,12 @@ def test_diarization_cache_key_changes_with_min_duration_off(
     changed = _config(audio_file, tmp_path, diarization_min_duration_off=0.5)
 
     before = compute_cache_key(
-        "diarization", audio_file, _diarization_cache_params(base, Device.CPU, RecordingDiarizer())
+        "diarization", audio_file, _diarization_cache_params(base, Device.CPU)
     )
     after = compute_cache_key(
         "diarization",
         audio_file,
-        _diarization_cache_params(changed, Device.CPU, RecordingDiarizer()),
+        _diarization_cache_params(changed, Device.CPU),
     )
 
     assert before != after
@@ -539,12 +565,12 @@ def test_diarization_cache_key_changes_with_speaker_range(
     changed = _config(audio_file, tmp_path, min_speakers=2, max_speakers=4)
 
     before = compute_cache_key(
-        "diarization", audio_file, _diarization_cache_params(base, Device.CPU, RecordingDiarizer())
+        "diarization", audio_file, _diarization_cache_params(base, Device.CPU)
     )
     after = compute_cache_key(
         "diarization",
         audio_file,
-        _diarization_cache_params(changed, Device.CPU, RecordingDiarizer()),
+        _diarization_cache_params(changed, Device.CPU),
     )
 
     assert before != after
@@ -773,7 +799,7 @@ def test_diarization_cache_params_include_routing_and_estimator(
 ) -> None:
     config = _config(audio_file, tmp_path)
 
-    params = _diarization_cache_params(config, Device.CPU, RecordingDiarizer())
+    params = _diarization_cache_params(config, Device.CPU)
 
     for field in (
         "diarization_hybrid_enabled",
@@ -801,12 +827,12 @@ def test_diarization_cache_key_changes_with_estimator_params(
     before = compute_cache_key(
         "diarization",
         audio_file,
-        _diarization_cache_params(base, Device.CPU, RecordingDiarizer()),
+        _diarization_cache_params(base, Device.CPU),
     )
     after = compute_cache_key(
         "diarization",
         audio_file,
-        _diarization_cache_params(changed, Device.CPU, RecordingDiarizer()),
+        _diarization_cache_params(changed, Device.CPU),
     )
 
     assert before != after
@@ -820,13 +846,11 @@ def test_diarization_cache_key_changes_with_denoise_signature(
     applied = _diarization_cache_params(
         config,
         Device.CPU,
-        RecordingDiarizer(),
         denoise_signature={"applied": True, "key": "k1"},
     )
     degraded = _diarization_cache_params(
         config,
         Device.CPU,
-        RecordingDiarizer(),
         denoise_signature={"applied": False, "key": None},
     )
 

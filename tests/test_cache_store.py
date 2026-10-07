@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from audio_transcriber.cache.store import (
@@ -148,3 +150,67 @@ def test_clear_removes_cache_files(tmp_path: Path) -> None:
 def test_clear_on_missing_dir_returns_zero(tmp_path: Path) -> None:
     cache = StageCache(tmp_path / ".cache")
     assert cache.clear() == 0
+
+
+# --- Параллельные записи (#91) ----------------------------------------------
+
+
+def test_temp_paths_are_unique(tmp_path: Path) -> None:
+    """Каждая запись получает уникальный временный файл (pid + uuid)."""
+    cache = StageCache(tmp_path / ".cache")
+    target = cache.directory / "asr-key.json"
+
+    paths = {cache._temp_path(target) for _ in range(50)}
+
+    assert len(paths) == 50
+    assert all(path != target for path in paths)
+    assert all(path.name.endswith(".tmp") for path in paths)
+
+
+def test_concurrent_atomic_writes_use_distinct_temp_files(tmp_path: Path) -> None:
+    """Две одновременные записи не делят один ``.tmp`` (иначе порча файла)."""
+    cache = StageCache(tmp_path / ".cache")
+    target = cache.directory / "asr-key.json"
+    barrier = threading.Barrier(2)
+    seen: list[Path] = []
+    lock = threading.Lock()
+
+    def producer(tmp: Path) -> None:
+        with lock:
+            seen.append(tmp)
+        # Обе записи внутри «критической секции» одновременно: при общем
+        # временном пути оба producer'а получили бы один и тот же файл.
+        barrier.wait(timeout=5)
+        tmp.write_text("payload", encoding="utf-8")
+
+    def writer() -> None:
+        cache._write_atomic(target, producer)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(writer) for _ in range(2)]
+        for future in futures:
+            future.result()
+
+    assert len(seen) == 2
+    assert seen[0] != seen[1]
+    assert target.read_text(encoding="utf-8") == "payload"
+
+
+def test_concurrent_saves_keep_file_valid_and_no_leftover_tmp(tmp_path: Path) -> None:
+    """Много параллельных ``save`` на один ключ: файл валиден, ``.tmp`` не остаются."""
+    cache = StageCache(tmp_path / ".cache")
+    barrier = threading.Barrier(8)
+
+    def writer(index: int) -> None:
+        barrier.wait(timeout=5)
+        cache.save("asr", "same-key", {"writer": index, "payload": "x" * 2048})
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(writer, index) for index in range(8)]
+        for future in futures:
+            future.result()
+
+    loaded = cache.load("asr", "same-key")
+    assert isinstance(loaded, dict)
+    assert loaded["writer"] in range(8)
+    assert list(cache.directory.glob("*.tmp")) == []

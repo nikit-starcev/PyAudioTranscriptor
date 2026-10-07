@@ -14,8 +14,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import shutil
-from collections.abc import Mapping
+import threading
+import uuid
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +61,10 @@ class StageCache:
     def __init__(self, directory: Path, *, enabled: bool = True) -> None:
         self.directory = Path(directory)
         self.enabled = enabled
+        #: Сериализация записей в рамках процесса. От межпроцессных гонок
+        #: защищает не лок, а уникальное имя временного файла + атомарный
+        #: ``os.replace`` (см. :meth:`_write_atomic`).
+        self._write_lock = threading.Lock()
 
     def key(self, stage: str, source: Path, params: Mapping[str, Any]) -> str:
         """Возвращает ключ кэша для стадии."""
@@ -107,14 +114,13 @@ class StageCache:
             return
         payload = {"cache_version": CACHE_FORMAT_VERSION, "stage": stage, "data": dict(data)}
         path = self._json_path(stage, key)
+        text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         try:
-            self.directory.mkdir(parents=True, exist_ok=True)
-            tmp_path = path.with_name(path.name + ".tmp")
-            tmp_path.write_text(
-                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-                encoding="utf-8",
-            )
-            tmp_path.replace(path)
+            with self._write_lock:
+                self._write_atomic(
+                    path,
+                    lambda tmp: tmp.write_text(text, encoding="utf-8"),
+                )
         except OSError as exc:
             logger.warning("Не удалось сохранить кэш %s: %s", stage, exc)
 
@@ -136,20 +142,51 @@ class StageCache:
             return None
         path = self._audio_path(stage, key)
         try:
-            self.directory.mkdir(parents=True, exist_ok=True)
-            tmp_path = path.with_name(path.name + ".tmp")
-            shutil.copyfile(source, tmp_path)
-            tmp_path.replace(path)
+            with self._write_lock:
+                self._write_atomic(
+                    path,
+                    lambda tmp: shutil.copyfile(source, tmp),
+                )
         except OSError as exc:
             logger.warning("Не удалось сохранить аудио в кэш %s: %s", stage, exc)
             return None
         return path
+
+    def _temp_path(self, target: Path) -> Path:
+        """Уникальный путь временного файла рядом с целевым.
+
+        В имя входят PID и UUID: параллельные записи (в том числе из разных
+        процессов) не делят один и тот же ``.tmp`` и не портят файл друг друга.
+        """
+        return target.with_name(f".{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+
+    def _write_atomic(self, target: Path, producer: Callable[[Path], object]) -> None:
+        """Пишет во временный файл уникального имени и публикует его ``os.replace``.
+
+        ``os.replace`` в пределах одной ФС атомарен: читатель видит либо старое
+        содержимое, либо уже полностью записанное новое, но никогда — обрывок.
+        Временный файл удаляется при любой ошибке (в том числе на ``os.replace``).
+        """
+        self.directory.mkdir(parents=True, exist_ok=True)
+        tmp_path = self._temp_path(target)
+        try:
+            producer(tmp_path)
+            os.replace(tmp_path, target)
+        except BaseException:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                logger.debug("Не удалось удалить временный файл кэша %s", tmp_path)
+            raise
 
     def clear(self) -> int:
         """Удаляет все файлы кэша и возвращает их количество."""
         if not self.directory.is_dir():
             return 0
         removed = 0
+        # ``*.tmp`` захватывает и уникальные скрытые ``.<name>.<pid>.<uuid>.tmp``
+        # (pathlib не выделяет файлы с ведущей точкой), поэтому отдельных
+        # шаблонов не нужно.
         for pattern in ("*.json", "*.wav", "*.tmp"):
             for entry in self.directory.glob(pattern):
                 try:

@@ -136,6 +136,41 @@ def test_denoiser_soft_skips_when_process_fails(
         assert denoiser.denoise(valid) == valid
 
 
+def test_transient_process_failure_does_not_disable_denoise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Транзиентный сбой ``deep-filter`` не отключает денойз навсегда (#91).
+
+    После разового сбоя (мягкая деградация → исходный путь) следующий вызов
+    должен снова запускать CLI и получать результат: неудача не кэшируется как
+    постоянная недоступность.
+    """
+    valid = _valid_wav(tmp_path / "input.wav")
+    binary = _fake_binary(tmp_path)
+    calls = {"count": 0}
+
+    def fake_popen(command: list[str], **_kwargs: object) -> _FakeProcess:
+        calls["count"] += 1
+        out_index = command.index("-o")
+        input_wav = Path(command[out_index - 1])
+        output_dir = Path(command[out_index + 1])
+        if calls["count"] == 1:
+            return _FakeProcess(command, returncode=1, stderr="transient")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(input_wav, output_dir / input_wav.name)
+        return _FakeProcess(command)
+
+    monkeypatch.setattr(df_module.subprocess, "Popen", fake_popen)
+
+    with DeepFilterDenoiser(binary=str(binary)) as denoiser:
+        first = denoiser.denoise(valid)
+        assert first == valid  # сбой — мягкая деградация, без исключения
+        second = denoiser.denoise(valid)
+        assert second != valid  # повторный запуск не отключён
+        assert second.exists()
+    assert calls["count"] == 2
+
+
 def test_denoiser_invokes_cli_with_expected_arguments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -575,8 +575,14 @@ class DeepFilterDenoiser:
         target = self._prepare_temp_path(input_path)
         self._write_temp_stream(target, resolved, expected)
 
-        assert self._last_waveform is not None
-        duration = self._last_waveform.shape[0] / self._output_sample_rate
+        waveform = self._last_waveform
+        if waveform is None:
+            # Явная проверка вместо ``assert``: под ``-O`` он выключился бы и
+            # упал бы сырой ``AttributeError``; ошибка должна быть понятной.
+            raise AudioFileError(
+                f"Шумоподавление не вернуло waveform для {input_path.name}"
+            )
+        duration = waveform.shape[0] / self._output_sample_rate
         logger.info("Шумоподавление: %s → %s (%.1f с)", input_path.name, target.name, duration)
         self._emit(1.0)
         return target

@@ -265,6 +265,83 @@ def _word_timestamps(
     return words
 
 
+def _parse_whisper_output(
+    json_path: Path, *, word_timestamps: bool
+) -> tuple[list[TranscriptionSegment], str | None]:
+    """Разбирает JSON-вывод whisper.cpp (``-ojf``) в сегменты и язык.
+
+    Битый, неполный или неожиданной структуры вывод не должен приводить к
+    «сырому» исключению (``JSONDecodeError``/``KeyError``/``TypeError``):
+    поднимаем понятную :class:`TranscriptionError` с контекстом, чтобы сбой
+    распознавания было чем объяснить в логах и UI, а не падать стектрейсом
+    внутри разбора. Пустой ``transcription`` — валидный случай (нет речи).
+    """
+    try:
+        raw = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TranscriptionError(
+            f"Не удалось прочитать JSON-вывод whisper.cpp ({json_path.name}): {exc}"
+        ) from exc
+
+    if not isinstance(raw, dict):
+        raise TranscriptionError(
+            f"Некорректный JSON-вывод whisper.cpp ({json_path.name}): "
+            "верхний уровень не объект"
+        )
+
+    items = raw.get("transcription", [])
+    if not isinstance(items, list):
+        raise TranscriptionError(
+            f"Некорректный JSON-вывод whisper.cpp ({json_path.name}): "
+            "поле 'transcription' не список"
+        )
+
+    segments: list[TranscriptionSegment] = []
+    for position, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise TranscriptionError(
+                f"Некорректный сегмент #{position} JSON-вывода whisper.cpp "
+                f"({json_path.name}): не объект"
+            )
+        offsets = item.get("offsets")
+        text = item.get("text")
+        if not isinstance(offsets, dict) or not isinstance(text, str):
+            raise TranscriptionError(
+                f"Некорректный сегмент #{position} JSON-вывода whisper.cpp "
+                f"({json_path.name}): нет offsets/text"
+            )
+        start_ms = offsets.get("from")
+        end_ms = offsets.get("to")
+        if (
+            isinstance(start_ms, bool)
+            or not isinstance(start_ms, (int, float))
+            or isinstance(end_ms, bool)
+            or not isinstance(end_ms, (int, float))
+        ):
+            raise TranscriptionError(
+                f"Некорректный сегмент #{position} JSON-вывода whisper.cpp "
+                f"({json_path.name}): нечисловые offsets"
+            )
+        stripped = text.strip()
+        if not stripped:
+            continue
+        segments.append(
+            TranscriptionSegment(
+                start=float(start_ms) / 1000.0,
+                end=float(end_ms) / 1000.0,
+                text=stripped,
+                avg_logprob=_segment_avg_logprob(item),
+                words=(
+                    _word_timestamps(item.get("tokens")) if word_timestamps else []
+                ),
+            )
+        )
+
+    result = raw.get("result")
+    detected = result.get("language") if isinstance(result, dict) else None
+    return segments, detected if isinstance(detected, str) else None
+
+
 def _shift_words(
     words: list[WordTimestamp], offset: float
 ) -> list[WordTimestamp]:
@@ -987,24 +1064,9 @@ class WhisperCppRecognizer:
                 f"whisper.cpp завершился с ошибкой (код {proc.returncode}): {detail}"
             )
 
-        data = json.loads(json_path.read_text(encoding="utf-8"))
-        segments = [
-            TranscriptionSegment(
-                start=item["offsets"]["from"] / 1000.0,
-                end=item["offsets"]["to"] / 1000.0,
-                text=item["text"].strip(),
-                avg_logprob=_segment_avg_logprob(item),
-                words=(
-                    _word_timestamps(item.get("tokens"))
-                    if self._word_timestamps
-                    else []
-                ),
-            )
-            for item in data.get("transcription", [])
-            if item.get("text", "").strip()
-        ]
-        detected = data.get("result", {}).get("language")
-        return segments, detected if isinstance(detected, str) else None
+        return _parse_whisper_output(
+            json_path, word_timestamps=self._word_timestamps
+        )
 
     def _transcribe_chunked(
         self, input_path: Path, tmpdir_path: Path, language: str | None

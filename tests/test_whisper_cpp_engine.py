@@ -390,3 +390,69 @@ def test_timeout_none_disables_deadline(
     assert WhisperCppRecognizer(model, timeout=0).timeout is None
     assert WhisperCppRecognizer(model, timeout=12.5).timeout == 12.5
 
+
+# --- Разбор битого JSON-вывода (#91) ----------------------------------------
+
+
+def test_broken_json_output_raises_transcription_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Невалидный JSON от whisper-cli — понятная ошибка, а не сырой JSONDecodeError."""
+    model = tmp_path / "model.bin"
+    model.write_bytes(b"fake")
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"")
+
+    def _fake_popen(cmd: list[str], *_args: object, **_kwargs: object) -> _FakeProc:
+        base = Path(cmd[cmd.index("-of") + 1])
+        Path(str(base) + ".json").write_text("{not json", encoding="utf-8")
+        return _FakeProc(pid=778, returncode=0)
+
+    monkeypatch.setattr(
+        whisper_module, "load_waveform", lambda _path: np.zeros(48000, dtype=np.float32)
+    )
+    monkeypatch.setattr(whisper_module, "write_wav", lambda _path, _waveform: None)
+    monkeypatch.setattr(whisper_module.subprocess, "Popen", _fake_popen)
+
+    with pytest.raises(TranscriptionError) as excinfo:
+        WhisperCppRecognizer(model).transcribe(audio)
+
+    message = str(excinfo.value)
+    assert "JSON" in message
+    assert "whisper.cpp" in message
+
+
+def test_malformed_segment_raises_transcription_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Сегмент без ``offsets`` — понятная ошибка с контекстом, не KeyError."""
+    model = tmp_path / "model.bin"
+    model.write_bytes(b"fake")
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"")
+    payload = {"result": {}, "transcription": [{"text": "без офсетов"}]}
+    _install_fake_popen(monkeypatch, payload)
+
+    with pytest.raises(TranscriptionError) as excinfo:
+        WhisperCppRecognizer(model).transcribe(audio)
+
+    message = str(excinfo.value)
+    assert "offsets" in message
+    assert "whisper.cpp" in message
+
+
+def test_empty_transcription_is_valid(tmp_path: Path) -> None:
+    """Пустой ``transcription`` — валидный результат (тишина), без ошибок."""
+    json_path = tmp_path / "result.json"
+    json_path.write_text(
+        json.dumps({"result": {"language": "ru"}, "transcription": []}),
+        encoding="utf-8",
+    )
+
+    segments, detected = whisper_module._parse_whisper_output(
+        json_path, word_timestamps=True
+    )
+
+    assert segments == []
+    assert detected == "ru"
+
