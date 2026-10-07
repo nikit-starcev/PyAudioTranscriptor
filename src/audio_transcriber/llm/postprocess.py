@@ -671,6 +671,7 @@ def run_llm_postprocess(
                     speakers,
                     llm=_wrap("резюме"),
                     max_chunk_chars=chunk_chars,
+                    system_prompt=config.llm_summary_prompt,
                 )
             except Exception as exc:  # noqa: BLE001 — резюме не роняет конвейер
                 logger.warning("Резюме встречи пропущено: %s", exc)

@@ -977,7 +977,6 @@ def test_put_settings_persists_hybrid_linkage_and_threshold(
 
 # --- #87: SSRF в проверке внешней LLM --------------------------------------
 
-
 def test_llm_check_rejects_non_http_scheme(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1029,3 +1028,58 @@ def test_llm_check_allows_localhost(
 
     assert payload["status"] == "ok"
     assert captured["base_url"] == "http://localhost:11434/v1"
+
+
+# --- #73: тумблер «протокол/резюме по завершении» (protocol_auto) -----------
+
+
+def test_protocol_auto_defaults_to_false() -> None:
+    """По умолчанию веб-задачи протокол не считают (кнопка в UI)."""
+    assert default_settings({}).protocol_auto is False
+
+
+def test_protocol_auto_settings_from_env() -> None:
+    assert default_settings({"PROTOCOL_AUTO": "true"}).protocol_auto is True
+    assert default_settings({"PROTOCOL_AUTO": "false"}).protocol_auto is False
+
+
+def test_protocol_auto_settings_roundtrip() -> None:
+    base = default_settings({})
+    merged = settings_from_mapping({"protocol_auto": True}, base=base)
+    assert merged.protocol_auto is True
+    assert merged.env_overrides()["PROTOCOL_AUTO"] == "true"
+
+
+def test_put_settings_persists_protocol_auto(client: TestClient) -> None:
+    """PUT реально сохраняет ``protocol_auto`` (защита от pydantic-дропа)."""
+    assert client.get("/api/settings").json()["protocol_auto"] is False
+
+    enabled = client.put("/api/settings", json={"protocol_auto": True})
+    assert enabled.status_code == 200, enabled.text
+    assert enabled.json()["protocol_auto"] is True
+
+    disabled = client.put("/api/settings", json={"protocol_auto": False})
+    assert disabled.status_code == 200, disabled.text
+    assert client.get("/api/settings").json()["protocol_auto"] is False
+
+
+def test_build_job_config_maps_protocol_auto(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("audio_transcriber.web.config.env_defaults", lambda: {})
+
+    disabled = build_job_config(
+        audio_file,
+        output_dir=tmp_path / "out",
+        data_dir=tmp_path / "data",
+        overrides={"PROTOCOL_AUTO": "false"},
+    )
+    enabled = build_job_config(
+        audio_file,
+        output_dir=tmp_path / "out",
+        data_dir=tmp_path / "data",
+        overrides={"PROTOCOL_AUTO": "true"},
+    )
+
+    assert disabled.protocol_auto is False
+    assert enabled.protocol_auto is True

@@ -336,6 +336,8 @@ def build_job_config(
         llm_gpu=_as_bool(defaults.get("LLM_GPU"), default=True),
         llm_context_size=_as_int(defaults.get("LLM_CONTEXT"), 4096),
         llm_summary=_as_bool(defaults.get("LLM_SUMMARY"), default=True),
+        # Пользовательский шаблон промпта резюме (#97) — из настроек веба.
+        llm_summary_prompt=defaults.get("LLM_SUMMARY_PROMPT") or None,
         llm_extract_names=_as_bool(defaults.get("LLM_EXTRACT_NAMES")),
         glossary_path=normalize_glossary_paths_tuple(glossary_path_raw or None),
         glossary_db=glossary_db,

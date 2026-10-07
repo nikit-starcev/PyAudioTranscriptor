@@ -65,6 +65,11 @@ class WebPaths:
         return self.data_dir / "settings.json"
 
     @property
+    def prompts_db(self) -> Path:
+        """SQLite-база пользовательских шаблонов промпта резюме (#97)."""
+        return self.data_dir / "prompts.db"
+
+    @property
     def secrets_json(self) -> Path:
         """Секреты (токен Hugging Face) с правами доступа только владельцу."""
         return self.data_dir / "secrets.json"

@@ -138,6 +138,30 @@ def test_summarize_meeting_long_transcript_uses_map_reduce() -> None:
     assert summary is not None
 
 
+def test_summarize_meeting_uses_custom_system_prompt() -> None:
+    """#97: пользовательский шаблон заменяет встроенный системный промпт."""
+    llm = _EchoClient("Тема: X")
+
+    summarize_meeting(
+        _short_entries(), _speakers(), llm=llm, system_prompt="МОЙ СИСТЕМНЫЙ ПРОМПТ"
+    )
+
+    system_message = llm.messages[0][0]
+    assert system_message["role"] == "system"
+    assert system_message["content"] == "МОЙ СИСТЕМНЫЙ ПРОМПТ"
+
+
+def test_summarize_meeting_custom_prompt_used_for_map_and_reduce() -> None:
+    """Кастомный шаблон применяется и к фрагментам, и к сведению."""
+    llm = _EchoClient("тезис")
+
+    summarize_meeting(_long_entries(), llm=llm, max_chunk_chars=60, system_prompt="CUSTOM")
+
+    assert llm.calls > 2
+    for messages in llm.messages:
+        assert messages[0]["content"] == "CUSTOM"
+
+
 def test_summarize_meeting_returns_none_on_llm_failure() -> None:
     class _BrokenClient:
         def chat(self, messages: list[dict[str, str]]) -> str:

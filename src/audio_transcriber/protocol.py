@@ -76,6 +76,7 @@ def _recompute_summary(
             result.speakers,
             llm=client,
             max_chunk_chars=chunk_chars_for_context(config.llm_context_size),
+            system_prompt=config.llm_summary_prompt,
         )
     except Exception as exc:  # noqa: BLE001 — протокол выгружаем и без резюме
         logger.warning("Резюме для протокола не удалось: %s", exc)

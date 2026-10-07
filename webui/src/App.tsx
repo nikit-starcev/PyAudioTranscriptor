@@ -5,6 +5,7 @@ import {
   describeApply,
   EXPORT_FORMATS,
   errorMessage,
+  fetchSummaryPrompts,
   formatClock,
   formatDuration,
   formatSize,
@@ -25,6 +26,7 @@ import {
   type ReassignResponse,
   type SampleMeta,
   type StageTime,
+  type SummaryPrompt,
   type TranscriptEditsRequest,
   type TranscriptResult,
   type VoiceInfo,
@@ -40,6 +42,7 @@ import SettingsModal from './components/SettingsModal'
 import SetupWizard from './components/SetupWizard'
 import SpeakersPanel from './components/SpeakersPanel'
 import StageTimes, { STAGE_KEYS } from './components/StageTimes'
+import SummaryPromptsModal from './components/SummaryPromptsModal'
 import ThemeToggle from './components/ThemeToggle'
 import TranscriptTable from './components/TranscriptTable'
 import VoicesModal from './components/VoicesModal'
@@ -148,6 +151,10 @@ function App() {
   const [protocol, setProtocol] = useState<ProtocolResponse | null>(null)
   const [protocolBusy, setProtocolBusy] = useState(false)
   const [protocolError, setProtocolError] = useState<string | null>(null)
+  const [promptsOpen, setPromptsOpen] = useState(false)
+  const [summaryPrompts, setSummaryPrompts] = useState<SummaryPrompt[]>([])
+  //: Шаблон промпта резюме для кнопки «Сформировать протокол» ('' — активный).
+  const [protocolPromptId, setProtocolPromptId] = useState<number | ''>('')
   // Отдельное действие «Переопределить говорящих» (#37): переиспользует
   // enrollment (POST apply-names), поэтому показывает свой итог в баннере.
   const [applyBusy, setApplyBusy] = useState(false)
@@ -256,6 +263,18 @@ function App() {
     }
   }, [])
 
+  // Шаблоны промпта резюме (#97): список для выбора на кнопке протокола.
+  const refreshSummaryPrompts = useCallback(async () => {
+    try {
+      const data = await fetchSummaryPrompts()
+      setSummaryPrompts(data.prompts)
+      setProtocolPromptId(data.active_id ?? '')
+    } catch {
+      setSummaryPrompts([])
+      setProtocolPromptId('')
+    }
+  }, [])
+
   const recheckDoctor = useCallback(async () => {
     setDoctorLoading(true)
     try {
@@ -359,7 +378,8 @@ function App() {
     void refreshJobs()
     void refreshDoctor()
     void refreshAsrDevice()
-  }, [refreshFiles, refreshJobs, refreshDoctor, refreshAsrDevice])
+    void refreshSummaryPrompts()
+  }, [refreshFiles, refreshJobs, refreshDoctor, refreshAsrDevice, refreshSummaryPrompts])
 
   // Фоновый поллинг-фолбэк списка задач: SSE подключён только к активной
   // задаче, и если её поток молчит или оборвался без конечного события, статусы
@@ -969,7 +989,13 @@ function App() {
         (actionId) =>
           api<ProtocolResponse>(`/api/jobs/${jobId}/protocol`, {
             method: 'POST',
-            headers: { 'X-Action-Id': actionId },
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Action-Id': actionId,
+            },
+            body: JSON.stringify({
+              prompt_id: typeof protocolPromptId === 'number' ? protocolPromptId : null,
+            }),
           }),
         (value) => ({
           text: value.summary
@@ -984,7 +1010,7 @@ function App() {
     } finally {
       setProtocolBusy(false)
     }
-  }, [runActionTask])
+  }, [runActionTask, protocolPromptId])
 
   const filteredEntries = useMemo(() => {
     if (!result) return []
@@ -1622,6 +1648,39 @@ function App() {
                     Считается резюме и экспорт — это может занять время
                   </span>
                 )}
+                {summaryPrompts.length > 0 && (
+                  <span className="flex items-center gap-2">
+                    <label
+                      htmlFor="prompt-select"
+                      className="text-xs text-slate-500 dark:text-slate-400"
+                    >
+                      Промпт резюме
+                    </label>
+                    <select
+                      id="prompt-select"
+                      value={protocolPromptId}
+                      onChange={(event) =>
+                        setProtocolPromptId(event.target.value ? Number(event.target.value) : '')
+                      }
+                      title="Шаблон промпта резюме для этого протокола"
+                      className="max-w-[16rem] rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                    >
+                      {summaryPrompts.map((prompt) => (
+                        <option key={prompt.id} value={prompt.id}>
+                          {prompt.name}
+                          {prompt.builtin ? ' (встроенный)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setPromptsOpen(true)}
+                  className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:hover:bg-slate-800"
+                >
+                  Промпты резюме
+                </button>
                 <span className="flex items-center gap-2">
                   <label
                     htmlFor="export-format"
@@ -1708,6 +1767,11 @@ function App() {
         }}
       />
       <GlossaryModal open={glossaryOpen} onClose={() => setGlossaryOpen(false)} />
+      <SummaryPromptsModal
+        open={promptsOpen}
+        onClose={() => setPromptsOpen(false)}
+        onChanged={() => void refreshSummaryPrompts()}
+      />
       <ModelsModal
         open={modelsOpen}
         onClose={() => setModelsOpen(false)}

@@ -18,6 +18,7 @@ import logging
 import mimetypes
 import os
 import shutil
+import sqlite3
 import tempfile
 import threading
 import uuid
@@ -29,7 +30,7 @@ from typing import Annotated
 from urllib.parse import urlparse
 
 import numpy as np
-from fastapi import APIRouter, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Body, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -74,6 +75,7 @@ from audio_transcriber.export.factory import create_exporter
 from audio_transcriber.llm.client import probe_openai_server
 from audio_transcriber.protocol import ProtocolArtifacts, generate_protocol
 from audio_transcriber.storage.glossary_builder import build_active_glossary
+from audio_transcriber.storage.prompts_db import PromptsDB
 from audio_transcriber.utils.audio import load_waveform, write_wav
 from audio_transcriber.utils.env import binary_available
 from audio_transcriber.utils.playback import amplitude_envelope, read_duration
@@ -141,6 +143,7 @@ from audio_transcriber.web.models import (
 from audio_transcriber.web.nemo_speech import NemoSpeechModelDownloader, PullRunner
 from audio_transcriber.web.paths import STATIC_DIR, WebPaths
 from audio_transcriber.web.processed import clear_processed, is_processed
+from audio_transcriber.web.prompts_api import register_prompts_routes
 from audio_transcriber.web.results import (
     apply_transcript_edits,
     load_result_file,
@@ -482,6 +485,16 @@ class SettingsUpdate(BaseModel):
     gigaam_vad: bool | None = None
 
 
+class ProtocolRequest(BaseModel):
+    """Тело ``POST /api/jobs/{id}/protocol`` (#97).
+
+    ``prompt_id`` — необязательный шаблон промпта резюме для этого прогона;
+    ``None`` — использовать активный шаблон из настроек/БД.
+    """
+
+    prompt_id: int | None = None
+
+
 class HfCheckRequest(BaseModel):
     """Тело ``POST /api/doctor/hf-check``: необязательный токен для проверки.
 
@@ -594,6 +607,20 @@ def create_app(
             return Path(voices_dir)
         return settings_store.load().resolved_voices_dir()
 
+    def active_summary_prompt_body() -> str | None:
+        """Тело активного шаблона промпта резюме (#97) или ``None``.
+
+        Ошибки доступа к БД шаблонов не должны ронять сборку конфигурации —
+        просто используется встроенный промпт.
+        """
+        try:
+            with PromptsDB(resolved_paths.prompts_db) as prompts_db:
+                prompt = prompts_db.active_prompt()
+        except (sqlite3.Error, OSError) as exc:
+            logger.warning("Не удалось прочитать активный шаблон резюме: %s", exc)
+            return None
+        return prompt.body if prompt is not None else None
+
     def default_config_builder(job_id: str, source_path: Path) -> AppConfig:
         overrides = settings_store.load().env_overrides()
         token = effective_hf_token(secrets_store, env_defaults())
@@ -602,6 +629,11 @@ def create_app(
         api_key = effective_llm_api_key(secrets_store, env_defaults())
         if api_key:
             overrides["LLM_API_KEY"] = api_key
+        # Активный пользовательский шаблон промпта резюме (#97) применяется к
+        # задаче при постановке; кнопка «Сформировать протокол» может переопределить.
+        prompt_body = active_summary_prompt_body()
+        if prompt_body:
+            overrides["LLM_SUMMARY_PROMPT"] = prompt_body
         return build_job_config(
             source_path,
             output_dir=resolved_paths.results_dir / job_id,
@@ -749,6 +781,20 @@ def register_api(
     def _glossary_db_path() -> Path:
         return settings_store.load().resolved_glossary_db()
 
+    def _prompts_db_path() -> Path:
+        return paths.prompts_db
+
+    def _prompt_body(prompt_id: int) -> str | None:
+        """Тело шаблона промпта по id (для протокола по кнопке, #97)."""
+        try:
+            with PromptsDB(_prompts_db_path()) as prompts_db:
+                prompt = prompts_db.get_prompt(prompt_id)
+        except (sqlite3.Error, OSError) as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Не удалось открыть БД шаблонов: {exc}"
+            ) from exc
+        return prompt.body if prompt is not None else None
+
     def _action_progress(
         action_id: str | None, kind: str
     ) -> ActionProgress | None:
@@ -820,6 +866,7 @@ def register_api(
             return []
 
     register_glossary_routes(router, db_path=_glossary_db_path)
+    register_prompts_routes(router, db_path=_prompts_db_path)
 
     @router.get("/health")
     def health(request: Request) -> dict[str, object]:
@@ -1869,6 +1916,7 @@ def register_api(
     def job_protocol(
         job_id: str,
         action_id: Annotated[str | None, Header(alias="X-Action-Id")] = None,
+        request_body: Annotated[ProtocolRequest | None, Body()] = None,
     ) -> dict[str, object]:
         """Формирует протокол по текущему результату (резюме + экспорт).
 
@@ -1876,7 +1924,9 @@ def register_api(
         остальные запросы не блокируются. LLM-резюме считается по актуальной
         стенограмме — уже с применёнными именами говорящих. Если клиент передал
         ``X-Action-Id``, этапы (подготовка → LLM → экспорт) публикуются в шину
-        действий для индикатора прогресса (#58).
+        действий для индикатора прогресса (#58). Необязательное тело
+        ``{"prompt_id": N}`` выбирает шаблон промпта резюме для этого прогона
+        (#97); без него берётся активный шаблон.
         """
         progress = _action_progress(action_id, ACTION_PROTOCOL)
         job = _require_job(store, job_id)
@@ -1890,10 +1940,19 @@ def register_api(
             if progress is not None:
                 progress.emit("prepare", "Подготовка стенограммы", 0.1)
             config = config_builder(job_id, source)
+            if request_body is not None and request_body.prompt_id is not None:
+                body = _prompt_body(request_body.prompt_id)
+                if body is None:
+                    raise HTTPException(status_code=404, detail="Шаблон промпта не найден")
+                config.llm_summary_prompt = body
             result = result_from_payload(payload, source_path=source)
             artifacts = protocol_fn(
                 config, result, on_progress=progress.as_callback() if progress else None
             )
+        except HTTPException as exc:
+            if progress is not None:
+                progress.fail(f"Протокол не сформирован: {exc.detail}")
+            raise
         except Exception as exc:
             if progress is not None:
                 progress.fail(f"Не удалось сформировать протокол: {exc}")

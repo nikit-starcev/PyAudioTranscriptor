@@ -906,7 +906,7 @@ def test_generate_protocol_recomputes_summary_and_exports(
 
     seen_speakers: dict[str, list[str]] = {}
 
-    def fake_summarize(entries, speakers, *, llm, max_chunk_chars=None):
+    def fake_summarize(entries, speakers, *, llm, max_chunk_chars=None, system_prompt=None):
         seen_speakers["names"] = [speaker.display_name for speaker in speakers]
         return "РЕЗЮМЕ"
 
@@ -977,6 +977,43 @@ def test_generate_protocol_without_llm_exports_without_summary(
     assert artifacts.summary is None
     assert artifacts.paths == (output_dir / f"{audio_file.stem}.txt",)
     assert artifacts.paths[0].is_file()
+
+
+def test_generate_protocol_passes_custom_summary_prompt(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#97: шаблон промпта из конфигурации доходит до summarize_meeting."""
+    from audio_transcriber.protocol import generate_protocol
+
+    seen: dict[str, object] = {}
+
+    def fake_summarize(entries, speakers, *, llm, max_chunk_chars=None, system_prompt=None):
+        seen["prompt"] = system_prompt
+        return "РЕЗЮМЕ"
+
+    monkeypatch.setattr("audio_transcriber.protocol.summarize_meeting", fake_summarize)
+
+    class FakeExporter:
+        def export(self, result, output_path) -> None:
+            Path(output_path).write_text("ok", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "audio_transcriber.protocol.create_exporter", lambda _fmt: FakeExporter()
+    )
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+        llm_enabled=True,
+        llm_summary=True,
+        llm_summary_prompt="МОЙ ПОЛЬЗОВАТЕЛЬСКИЙ ПРОМПТ",
+        timeline=False,
+    )
+
+    artifacts = generate_protocol(config, _protocol_result(audio_file), llm_client=RecordingLlm())
+
+    assert artifacts.summary == "РЕЗЮМЕ"
+    assert seen["prompt"] == "МОЙ ПОЛЬЗОВАТЕЛЬСКИЙ ПРОМПТ"
 
 
 # --- Отмена конвейера (#22) -----------------------------------------------

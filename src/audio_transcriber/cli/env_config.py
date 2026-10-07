@@ -392,6 +392,8 @@ def collect_env_kwargs(
         put("llm_suggest_terms", as_bool(val("LLM_SUGGEST_TERMS")))
     if has("LLM_SUMMARY"):
         put("llm_summary", as_bool(val("LLM_SUMMARY"), default=True))
+    if has("LLM_SUMMARY_PROMPT"):
+        put("llm_summary_prompt", val("LLM_SUMMARY_PROMPT"))
     if has("LLM_PROMPT_EXTRA"):
         put("llm_prompt_extra", val("LLM_PROMPT_EXTRA"))
     if has("LLM_PROMPT_FILE"):

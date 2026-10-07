@@ -752,6 +752,22 @@ export type ProtocolResponse = {
   protocol: Record<string, string>
 }
 
+/** Пользовательский шаблон промпта резюме (#97). */
+export type SummaryPrompt = {
+  id: number
+  name: string
+  body: string
+  builtin: boolean
+  created_at: string | null
+  updated_at: string | null
+}
+
+/** Ответ ``GET /api/summary-prompts`` (#97). */
+export type SummaryPromptsResponse = {
+  prompts: SummaryPrompt[]
+  active_id: number | null
+}
+
 export const EXPORT_FORMATS = ['txt', 'docx', 'json', 'srt'] as const
 
 export async function api<T>(url: string, init?: RequestInit): Promise<T> {
@@ -895,4 +911,51 @@ export function describeApply(response: ApplyNamesResponse, total: number): stri
     )
   if (candidates.length > 0) parts.push(`не добрали: ${candidates.join('; ')}`)
   return parts.join(' · ')
+}
+
+// --- Шаблоны промпта резюме (#97) -------------------------------------------
+
+/** Список шаблонов промпта резюме с id активного. */
+export async function fetchSummaryPrompts(): Promise<SummaryPromptsResponse> {
+  return api<SummaryPromptsResponse>('/api/summary-prompts')
+}
+
+/** Создаёт пользовательский шаблон промпта резюме. */
+export async function createSummaryPrompt(name: string, body: string): Promise<SummaryPrompt> {
+  return api<SummaryPrompt>('/api/summary-prompts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, body }),
+  })
+}
+
+/** Обновляет имя/тело существующего шаблона. */
+export async function updateSummaryPrompt(
+  id: number,
+  patch: { name?: string; body?: string },
+): Promise<SummaryPrompt> {
+  return api<SummaryPrompt>(`/api/summary-prompts/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+}
+
+/** Удаляет шаблон; возвращает новый ``active_id`` (может измениться). */
+export async function deleteSummaryPrompt(
+  id: number,
+): Promise<{ deleted: number; active_id: number | null }> {
+  return api<{ deleted: number; active_id: number | null }>(`/api/summary-prompts/${id}`, {
+    method: 'DELETE',
+  })
+}
+
+/** Делает шаблон активным (применяется к задачам по умолчанию). */
+export async function activateSummaryPrompt(
+  id: number,
+): Promise<{ active_id: number | null; prompt: SummaryPrompt }> {
+  return api<{ active_id: number | null; prompt: SummaryPrompt }>(
+    `/api/summary-prompts/${id}/activate`,
+    { method: 'POST' },
+  )
 }

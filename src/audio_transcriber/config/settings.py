@@ -291,6 +291,9 @@ class AppConfig:
     # Резюме встречи локальной LLM. По умолчанию включено и применяется,
     # только когда включена LLM-постобработка (llm_enabled).
     llm_summary: bool = True
+    # Пользовательский шаблон системного промпта резюме (#97). ``None`` —
+    # встроенный промпт. Полностью заменяет зашитый формат, когда задан.
+    llm_summary_prompt: str | None = None
     # Доп. инструкции пользователя к промптам LLM: инлайн-текст и/или путь к
     # файлу с инструкциями. Подмешиваются в системный промпт каждого этапа.
     llm_prompt_extra: str | None = None
@@ -446,6 +449,13 @@ class AppConfig:
 
         if not isinstance(self.llm_summary, bool):
             raise ConfigurationError("LLM_SUMMARY должно быть true или false")
+
+        if self.llm_summary_prompt is not None:
+            if not isinstance(self.llm_summary_prompt, str):
+                raise ConfigurationError("LLM_SUMMARY_PROMPT должно быть текстом")
+            # Пустой/пробельный шаблон ничего не меняет — нормализуем в None.
+            if not self.llm_summary_prompt.strip():
+                self.llm_summary_prompt = None
 
         if self.llm_prompt_extra is not None:
             if not isinstance(self.llm_prompt_extra, str):

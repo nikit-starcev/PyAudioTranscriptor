@@ -63,6 +63,32 @@ _REDUCE_SYSTEM_PROMPT = (
     + _SUMMARY_FORMAT
 )
 
+#: Имя пользовательского шаблона по умолчанию (совпадает с зашитым промптом).
+DEFAULT_SUMMARY_TEMPLATE_NAME = "Стандартный"
+
+#: Дефолтные шаблоны промпта резюме, которыми засевается БД (``#97``).
+#: Первый — текущее зашитое поведение (:data:`_SUMMARY_SYSTEM_PROMPT`), поэтому
+#: выбор «Стандартного» ничего не меняет для существующих пользователей.
+DEFAULT_SUMMARY_TEMPLATES: tuple[tuple[str, str], ...] = (
+    (DEFAULT_SUMMARY_TEMPLATE_NAME, _SUMMARY_SYSTEM_PROMPT),
+    (
+        "Кратко (3–5 пунктов)",
+        "Ты — ассистент, который составляет ОЧЕНЬ короткое резюме деловой "
+        "встречи по её стенограмме с метками говорящих. " + _SUMMARY_RULES
+        + "\nВерни не более 5 пунктов, каждый — одна короткая строка. "
+        "Структура: Тема, Решения, Что сделать.",
+    ),
+    (
+        "Постановка задач",
+        "Ты — ассистент, который вытаскивает из стенограммы деловой встречи "
+        "только ЗАДАЧИ и действия. " + _SUMMARY_RULES
+        + "\nФормат ответа:\n"
+        "Задачи:\n- <действие> — <кому, если сказано> — <срок, если сказан>\n"
+        "Решения:\n- <кратко>\n"
+        "Если задач и решений нет — верни «нет данных».",
+    ),
+)
+
 # Ответы-заглушки, которыми LLM сообщает, что данных нет: резюме не создаём.
 _EMPTY_SUMMARY_MARKERS = frozenset(
     {
@@ -139,6 +165,7 @@ def summarize_meeting(
     *,
     llm: LlmClient,
     max_chunk_chars: int | None = None,
+    system_prompt: str | None = None,
 ) -> str | None:
     """Строит резюме встречи через локальную LLM.
 
@@ -150,6 +177,12 @@ def summarize_meeting(
     Метки говорящих для модели берутся из ``display_name``: если имя известно
     (enrollment, ручное переименование, подстановка LLM) — в стенограмме и
     разделе «Участники» резюме будут актуальные имена, а не «Спикер N».
+
+    ``system_prompt`` — пользовательский шаблон промпта резюме (``#97``). Если
+    задан, он используется как системный промпт для всех запросов этапа
+    (одного, map и reduce), полностью заменяя зашитый формат; иначе берутся
+    встроенные промпты (:data:`DEFAULT_SUMMARY_TEMPLATES` /
+    :data:`DEFAULT_SUMMARY_TEMPLATE_NAME`).
     """
     speakers = speakers or unique_speakers(entries)
     labels = named_speaker_labels(speakers)
@@ -158,12 +191,19 @@ def summarize_meeting(
     if not chunks:
         return None
 
+    custom = system_prompt.strip() if system_prompt and system_prompt.strip() else None
+    single_system = custom or _SUMMARY_SYSTEM_PROMPT
+    # Кастомный шаблон применяется и к map, и к reduce — иначе итог отклонился
+    # бы от выбранного пользователем формата.
+    partial_system = custom or _PARTIAL_SYSTEM_PROMPT
+    reduce_system = custom or _REDUCE_SYSTEM_PROMPT
+
     if len(chunks) == 1:
-        return _chat(llm, _SUMMARY_SYSTEM_PROMPT, _single_user_prompt(chunks[0]))
+        return _chat(llm, single_system, _single_user_prompt(chunks[0]))
 
     partials: list[str] = []
     for chunk in chunks:
-        partial = _chat(llm, _PARTIAL_SYSTEM_PROMPT, _partial_user_prompt(chunk))
+        partial = _chat(llm, partial_system, _partial_user_prompt(chunk))
         if partial:
             partials.append(partial)
 
@@ -173,6 +213,6 @@ def summarize_meeting(
         return partials[0]
 
     combined = "\n\n".join(partials)
-    reduced = _chat(llm, _REDUCE_SYSTEM_PROMPT, _reduce_user_prompt(combined))
+    reduced = _chat(llm, reduce_system, _reduce_user_prompt(combined))
     # Если свести не удалось — отдаём собранные тезисы, а не теряем их.
     return reduced if reduced is not None else combined
