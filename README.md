@@ -38,6 +38,7 @@
 - [Возможности](#возможности)
 - [Требования](#требования)
 - [Установка](#установка)
+- [Docker](#docker)
 - [Быстрый запуск (run.sh / config.env)](#быстрый-запуск-без-ручной-установки-и-параметров-в-командной-строке)
 - [Веб-интерфейс](#веб-интерфейс)
 - [Интерактивный интерфейс (TUI)](#интерактивный-интерфейс-tui)
@@ -203,6 +204,89 @@ llama-models/     # GGUF-модели для LLM (напр. Qwen2.5-7B-Instruct 
 динамически и ищутся **рядом с бинарником**, поэтому бинарник и библиотеки
 должны лежать в одном каталоге. Пути к бинарникам, каталогам с библиотеками и
 моделям задаются в `config.env` (`WHISPER_CPP_*`, `LLM_*`).
+
+## Docker
+
+Самодостаточный образ Linux **x86_64** с веб-UI и нативными движками: внутри
+уже лежат `whisper-cli`, `llama-server` (оба с Vulkan), денойзер `deep-filter`,
+`ffmpeg` и Python-окружение (torch **CPU** + extras `web`, `gigaam`, `sherpa`).
+GPU-ускорение — через **Vulkan**, поэтому CUDA/ROCm не требуются: достаточно
+пробросить устройство `/dev/dri`.
+
+### Быстрый старт (docker compose)
+
+```bash
+docker compose up --build
+# затем: http://127.0.0.1:8790
+```
+
+Порты публикуются только на localhost (у веб-UI нет аутентификации). Чтобы
+открыть доступ по сети — поменяйте проброс в `docker-compose.yml` на
+`"8790:8790"` (осторожно).
+
+### Сборка и запуск вручную
+
+```bash
+docker build -t py-audio-transcriber .
+docker run --rm -p 127.0.0.1:8790:8790 \
+  -v "$PWD/web-data:/data" \
+  -v "$PWD/voices:/data/voices" \
+  --device /dev/dri --group-add video --group-add render \
+  py-audio-transcriber
+```
+
+Версия проекта для `/api/health` берётся из `.git` (hatch-vcs) при сборке;
+если git-контекста нет, её можно задать явно:
+`docker build --build-arg APP_VERSION=0.5.2 -t py-audio-transcriber .`.
+
+### GPU (Vulkan) — только Linux
+
+- Контейнеру нужен доступ к видеокарте: `--device /dev/dri` (в compose —
+  секция `devices`).
+- Vulkan-ICD (`mesa-vulkan-drivers`: RADV для AMD, ANV для Intel, lavapipe —
+  программный фолбэк) уже в образе; ничего с хоста монтировать не нужно.
+- Если движок не видит GPU, добавьте группы доступа. В образе есть группы
+  `video` и `render`; для нестандартных GID хоста укажите числовые значения:
+  ```bash
+  stat -c '%g' /dev/dri/renderD128     # например, 105
+  # docker run ... --group-add 105
+  ```
+- **На macOS и Windows Docker GPU не пробрасывает** — образ там работает
+  только на CPU (уберите `devices`/`group_add` из compose).
+- Проверка Vulkan внутри контейнера:
+  `docker run --rm --device /dev/dri --entrypoint llama-server py-audio-transcriber --list-devices`
+
+### Данные, модели и конфигурация
+
+- Все пользовательские данные — в томе `/data` (`./web-data:/data`):
+  загруженные файлы, `jobs.db`, результаты, кэш и **модели** (`/data/models/...`).
+  Образцы голоса — `./voices:/data/voices` (→ `/data/voices`).
+- Модели (ggml для whisper.cpp, GGUF для LLM, pyannote, GigaAM, sherpa)
+  **скачиваются из UI** при первом запуске в `/data/models` и сохраняются между
+  перезапусками. Токен Hugging Face задаётся в UI (мастер первого запуска) и
+  хранится в томе.
+- В образ встроен контейнерный `config.env` (копия `config.example.env`:
+  бинарники — из `PATH`, модели — под `/data`). Свой `config.env` можно
+  смонтировать поверх `/app/config.env`, но **пути в нём должны быть валидны
+  внутри контейнера** — абсолютные пути хоста (`llama-native/…`,
+  `pyannote-models/…`) там не существуют; указывайте `LLM_BINARY=llama-server`,
+  `WHISPER_CPP_BINARY=whisper-cli`, `DEEP_FILTER_BINARY=deep-filter`,
+  модели — `/data/models/...`.
+- Движок диаризации **nemo-speech в образ не входит** (опциональный Vulkan-
+  бандл). При необходимости смонтируйте его и задайте `NEMO_SPEECH_BINARY`.
+
+### Особенности
+
+- **Непривилегированный пользователь.** Веб-сервер и все движки работают от
+  пользователя `app` (uid 1000). Entrypoint стартует как root лишь чтобы
+  выровнять владельца тома `/data` (на Docker Desktop bind-mount виден как
+  `root:root`) и сразу сбрасывает привилегии через `setpriv`. Если владелец
+  `./web-data` на хосте не 1000, задайте `PUID`/`PGID` (в compose — переменные
+  `PUID`/`PGID`) либо заранее выполните `chown -R 1000:1000 web-data voices`.
+- **Порт `8790`** (`EXPOSE`), healthcheck — `GET /api/health`.
+- Образ не содержит CUDA-колёс (`torch …+cpu`); на AMD/Intel GPU ускорение даёт
+  Vulkan в `whisper.cpp`/`llama.cpp`, на NVIDIA-хосте образ работает на CPU
+  (для CUDA используйте обычную установку из исходников).
 
 ## Быстрый запуск (без ручной установки и параметров в командной строке)
 

@@ -485,8 +485,14 @@
   (скачивание весов не нужно). Обработка чанками (30 с, crossfade) → пик ~0.2–0.3 ГБ/час.
   В `pyproject.toml` extra `denoise` удалён, `uv.lock` без `--no-deps`-костыля; `doctor` проверяет
   бинарник `deep-filter`; веб-пункт пакетной установки денойза убран (ставится вручную).
-  Осталось: зафиксировать Python `>=3.12,<3.15` (приоритет 3.12/3.13), **Docker** (Linux/Vulkan;
-  GPU только на Linux), portable-бандл (uv+PyInstaller one-dir; ⚠️ pyannote→torchcodec+shared
+  ✅ **Шаг 1 — сделано:** зафиксирован Python `>=3.12,<3.15` (приоритет 3.12/3.13), снят
+  3.14-only синтаксис.
+  ✅ **Шаг 2 — сделано:** Docker-образ (Linux x86_64, Vulkan) — `Dockerfile` (multi-stage),
+  `docker-compose.yml`, `.dockerignore`, `entrypoint.sh`. Внутри: `whisper-cli` и `llama-server`
+  (Vulkan; llama.cpp собран из исходников), `deep-filter`, `ffmpeg`, torch **CPU** и extras
+  `web`/`gigaam`/`sherpa`; данные/модели — том `/data`, GPU — `/dev/dri` (только Linux),
+  веб-сервер от непривилегированного пользователя. README, раздел «Docker».
+  Осталось: portable-бандл (uv+PyInstaller one-dir; ⚠️ pyannote→torchcodec+shared
   FFmpeg), позже инсталляторы. **Intel Mac не поддерживается.** Автозагрузчик уже есть основа
   (`web/models.py`).
   Ориентиры: Buzz (PyInstaller/.dmg/Flatpak/Snap/AppImage), Ollama/GPT4All/LM Studio. Сложность: средняя/высокая; зависит от #23.

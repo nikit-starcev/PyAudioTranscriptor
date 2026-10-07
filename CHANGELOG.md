@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Docker-образ (Linux x86_64, Vulkan)** (#50, шаг 2): `Dockerfile`
+  (multi-stage), `docker-compose.yml`, `.dockerignore` и `entrypoint.sh`. Внутри
+  образа — `whisper-cli` и `llama-server` с Vulkan (`llama.cpp` собирается из
+  исходников), денойзер `deep-filter`, `ffmpeg`, torch **CPU** и extras
+  `web`/`gigaam`/`sherpa`. Данные и модели — в томе `/data`; GPU — через
+  `/dev/dri` (только Linux), веб-сервер работает от непривилегированного
+  пользователя. См. README, раздел «Docker».
+
 ## [0.5.2] - 2026-10-05
 
 ### Fixed

@@ -1,0 +1,40 @@
+# Контекст сборки: исключаем тяжёлые данные, секреты и артефакты. Каталог .git
+# НЕ исключается — он нужен hatch-vcs для вычисления версии при сборке (в
+# финальный образ не попадает: копируется только в builder-стадию).
+
+# Секреты и локальный конфиг (никогда не должны попадать в контекст сборки).
+config.env
+.env
+.envrc
+
+# Пользовательские данные, результаты и образцы голоса.
+web-data/
+voices/
+output/
+glossary.db
+glossary.db-*
+glossary.txt
+glossary.user.txt
+*.speakers/
+*.suggested.txt
+
+# Виртуальное окружение и кэши инструментов.
+.venv/
+env/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Фронтенд (собранная статика коммитится в src/audio_transcriber/web/static).
+webui/node_modules/
+webui/dist/
+
+# Тесты и CI в образе не нужны.
+tests/
+.github/
+
+# Документы и прочее.
+*.docx
