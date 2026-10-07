@@ -242,6 +242,9 @@ def binary_requirements(settings: object) -> list[dict[str, object]]:
             requirements.append(onnx)
     if llm_enabled:
         requirements.append(_binary_requirement("llama-server", settings, needed=True))
+    if bool(getattr(settings, "denoise", True)):
+        # Денойз опционален (некритично): без бинарника этап мягко пропускается.
+        requirements.append(_binary_requirement("deep-filter", settings, needed=False))
     requirements.extend(_diarization_requirements(settings))
     return requirements
 

@@ -91,7 +91,7 @@ def test_binary_requirements() -> None:
     # Диаризация включена всегда: sherpa-onnx предлагается, но некритично
     # (нужен оценщику N и гибриду; без него auto уходит на pyannote).
     base = web_setup.binary_requirements(WebSettings())
-    assert [item["key"] for item in base] == ["sherpa-onnx"]
+    assert [item["key"] for item in base] == ["deep-filter", "sherpa-onnx"]
     assert base[0]["needed"] is False
 
     requirements = web_setup.binary_requirements(
@@ -100,9 +100,11 @@ def test_binary_requirements() -> None:
     assert [item["key"] for item in requirements] == [
         "whisper-cli",
         "llama-server",
+        "deep-filter",
         "sherpa-onnx",
     ]
-    assert all(item["needed"] for item in requirements if item["key"] != "sherpa-onnx")
+    optional = {"sherpa-onnx", "deep-filter"}
+    assert all(item["needed"] for item in requirements if item["key"] not in optional)
 
 
 def test_binary_requirements_include_nemo_for_explicit_engines() -> None:
@@ -115,11 +117,12 @@ def test_binary_requirements_include_nemo_for_explicit_engines() -> None:
         assert by_key["nemo-speech"]["links"] == [web_setup.LINK_NEMO_SPEECH]
         assert by_key["sherpa-onnx"]["needed"] is False
 
-    # Явный pyannote без оценщика: внешние компоненты диаризации не нужны.
+    # Явный pyannote без оценщика: внешние компоненты диаризации не нужны,
+    # но кнопка денойза (deep-filter, некритично) остаётся.
     pyannote = web_setup.binary_requirements(
         WebSettings(diarization_engine="pyannote", diarization_estimate_enabled=False)
     )
-    assert pyannote == []
+    assert [item["key"] for item in pyannote] == ["deep-filter"]
 
 
 def test_required_models_include_gigaam_only_for_gigaam_backend() -> None:
@@ -137,10 +140,10 @@ def test_required_models_include_gigaam_only_for_gigaam_backend() -> None:
 def test_binary_requirements_include_onnx_asr_for_gigaam() -> None:
     assert [
         item["key"] for item in web_setup.binary_requirements(WebSettings())
-    ] == ["sherpa-onnx"]
+    ] == ["deep-filter", "sherpa-onnx"]
     assert [
         item["key"] for item in web_setup.binary_requirements(WebSettings(asr_backend="gigaam"))
-    ] == ["onnx-asr", "sherpa-onnx"]
+    ] == ["onnx-asr", "deep-filter", "sherpa-onnx"]
 
     gigaam = web_setup.binary_requirements(WebSettings(asr_backend="gigaam"))[0]
     assert gigaam["needed"] is True
