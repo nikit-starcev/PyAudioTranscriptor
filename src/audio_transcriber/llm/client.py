@@ -414,7 +414,7 @@ class LlamaServerClient:
                 with urllib.request.urlopen(f"{self._base_url}/health", timeout=5.0) as resp:
                     if resp.status == 200:
                         return
-            except urllib.error.URLError, OSError:
+            except (urllib.error.URLError, OSError):
                 pass
             time.sleep(0.5)
 

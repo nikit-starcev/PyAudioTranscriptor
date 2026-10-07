@@ -12,8 +12,12 @@ concurrency:
 
 jobs:
   checks:
-    name: pytest / ruff / mypy
+    name: pytest / ruff / mypy (${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
 
     steps:
       - name: Checkout
@@ -28,10 +32,10 @@ jobs:
           enable-cache: true
 
       - name: Set up Python
-        run: uv python install 3.14
+        run: uv python install ${{ matrix.python-version }}
 
       - name: Install project and dev tools
-        run: uv sync --group dev --all-extras --frozen
+        run: uv sync --group dev --all-extras --frozen --python ${{ matrix.python-version }}
 
       - name: Ruff
         run: uv run ruff check src tests

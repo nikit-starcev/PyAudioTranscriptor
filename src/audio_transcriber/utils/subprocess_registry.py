@@ -55,7 +55,7 @@ def terminate_process(proc: subprocess.Popen[str], *, timeout: float = 10.0) -> 
     try:
         proc.kill()
         proc.wait(timeout=5)
-    except subprocess.TimeoutExpired, OSError:
+    except (subprocess.TimeoutExpired, OSError):
         pass
 
 
@@ -78,7 +78,7 @@ def _handle_signal(signum: int, frame: FrameType | None) -> None:
         return
     try:
         signal.signal(signum, previous if previous is not None else signal.SIG_DFL)
-    except ValueError, OSError:
+    except (ValueError, OSError):
         signal.signal(signum, signal.SIG_DFL)
     os.kill(os.getpid(), signum)
 
@@ -100,7 +100,7 @@ def _ensure_cleanup_handlers() -> None:
         try:
             previous = signal.getsignal(signum)
             signal.signal(signum, _handle_signal)
-        except ValueError, OSError:
+        except (ValueError, OSError):
             continue
         _previous_signal_handlers[signum] = previous
     _signal_handlers_installed = True
@@ -128,7 +128,7 @@ class StderrReader:
         try:
             for line in self._stream:
                 self._lines.append(line.rstrip("\n"))
-        except OSError, ValueError:
+        except (OSError, ValueError):
             pass
 
     def tail(self) -> str:
