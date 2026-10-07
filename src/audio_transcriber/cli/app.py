@@ -1065,14 +1065,6 @@ def transcribe(
         if _is_explicit(ctx, "clear_cache")
         else as_bool(env_defaults.get("CLEAR_CACHE"))
     )
-    # Очистка кэша — действие, а не поле AppConfig. Раньше её пробрасывали
-    # обёртки run.sh/run.ps1 вручную (дрейф, issue #90); теперь единый источник —
-    # CLI: явный ``--clear-cache`` перебивает ``CLEAR_CACHE`` из config.env.
-    resolved_clear_cache = (
-        clear_cache
-        if _is_explicit(ctx, "clear_cache")
-        else as_bool(env_defaults.get("CLEAR_CACHE"))
-    )
 
     log_file = setup_logging(
         verbose=resolved_verbose, log_dir=resolved_output_dir / "logs"

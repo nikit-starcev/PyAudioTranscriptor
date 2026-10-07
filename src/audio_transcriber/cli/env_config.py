@@ -21,10 +21,6 @@ from audio_transcriber.cleaning.repetition_filter import (
     DEFAULT_REPEAT_MIN_WORDS,
     DEFAULT_REPEAT_SIMILARITY,
 )
-from audio_transcriber.cleaning.repetition_filter import (
-    DEFAULT_REPEAT_MIN_WORDS,
-    DEFAULT_REPEAT_SIMILARITY,
-)
 from audio_transcriber.config.defaults import (
     DEFAULT_DEEP_FILTER_BINARY,
     DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
@@ -222,12 +218,6 @@ def collect_env_kwargs(
     formats = env_export_formats(env)
     if formats is not None:
         put("export_formats", formats)
-
-    # --- Подсказка ASR (INITIAL_PROMPT) ------------------------------------
-    # Раньше INITIAL_PROMPT проводился только TUI/вебом, а CLI терял его
-    # (issue #90): без флага подсказку из config.env нужно перенести и здесь.
-    if has("INITIAL_PROMPT"):
-        put("initial_prompt", val("INITIAL_PROMPT"))
 
     # --- Подсказка ASR (INITIAL_PROMPT) ------------------------------------
     # Раньше INITIAL_PROMPT проводился только TUI/вебом, а CLI терял его
