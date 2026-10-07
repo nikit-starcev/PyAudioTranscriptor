@@ -51,33 +51,6 @@ def _intersecting_regions(
     ]
 
 
-def mark_overlap_entries(
-    entries: list[TranscriptEntry], regions: Sequence[SpeakerOverlap]
-) -> list[TranscriptEntry]:
-    """Возвращает реплики с проставленным признаком ``overlap``.
-
-    Реплики вне зон наложения возвращаются как есть; уже помеченные не
-    дублируются. Это «зональная» пометка без имён: используется как запасной
-    путь, когда участники зон неизвестны (например, старый кэш диаризации).
-    """
-    if not regions:
-        return entries
-
-    index = _region_index(regions)
-    result: list[TranscriptEntry] = []
-    marked = 0
-    for entry in entries:
-        if not entry.overlap and _intersecting_regions(entry, index):
-            result.append(replace(entry, overlap=True))
-            marked += 1
-        else:
-            result.append(entry)
-
-    if marked:
-        logger.info("Наложение речи: помечено реплик — %d", marked)
-    return result
-
-
 def apply_overlap_regions(
     entries: list[TranscriptEntry],
     speakers: list[Speaker],

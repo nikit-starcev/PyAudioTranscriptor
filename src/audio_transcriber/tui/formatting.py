@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from audio_transcriber.utils.config_env import parse_bool
+
 #: Символы для строки амплитуды (от тишины к пику).
 _AMP_CHARS = "▁▂▃▄▅▆▇█"
 
@@ -70,6 +72,4 @@ def _to_float(value: str | None, default: float) -> float:
 
 def _to_bool(value: str | None, default: bool = False) -> bool:
     """Разбирает булево значение из ``config.env`` («true», «1», «да», …)."""
-    if value is None:
-        return default
-    return value.strip().lower() in ("true", "1", "yes", "да")
+    return parse_bool(value, default)

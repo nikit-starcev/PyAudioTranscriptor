@@ -43,7 +43,7 @@ from audio_transcriber.config.defaults import (
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.diarization.reference import ReferencePrepareOptions
 from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
-from audio_transcriber.utils.config_env import load_config_env
+from audio_transcriber.utils.config_env import load_config_env, parse_bool
 from audio_transcriber.utils.glossary_paths import normalize_glossary_paths_tuple
 
 
@@ -54,9 +54,7 @@ def env_defaults() -> dict[str, str]:
 
 
 def _as_bool(raw: str | None, default: bool = False) -> bool:
-    if raw is None or not raw.strip():
-        return default
-    return raw.strip().casefold() in {"1", "true", "yes", "on", "да"}
+    return parse_bool(raw, default)
 
 
 def _as_int(raw: str | None, default: int) -> int:

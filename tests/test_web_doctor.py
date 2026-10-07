@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -188,6 +189,41 @@ def test_doctor_report_cache_expires_and_refresh(monkeypatch: pytest.MonkeyPatch
     cache.invalidate()
     cache.get(None, {})
     assert len(calls) == 4
+
+
+def test_doctor_cache_recomputes_once_under_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Параллельные запросы при истёкшем TTL считают отчёт один раз (stampede)."""
+    started = threading.Event()
+    release = threading.Event()
+    calls: list[int] = []
+
+    def slow_run(_path: object, _env: object) -> list[DoctorCheck]:
+        calls.append(1)
+        started.set()
+        release.wait(timeout=5.0)
+        return _sample_checks()
+
+    monkeypatch.setattr(doctor_api.doctor_module, "run_doctor", slow_run)
+    cache = doctor_api.DoctorReportCache()
+    results: list[dict[str, object]] = []
+
+    def worker() -> None:
+        results.append(cache.get(None, {}))
+
+    first = threading.Thread(target=worker)
+    first.start()
+    assert started.wait(timeout=5.0)
+    # Второй поток застаёт пустой кэш, но ждёт лок пересчёта, а не считает сам.
+    second = threading.Thread(target=worker)
+    second.start()
+    release.set()
+    first.join(timeout=5.0)
+    second.join(timeout=5.0)
+
+    assert len(calls) == 1
+    assert len(results) == 2
 
 
 def test_doctor_env_uses_secret_token_and_results_dir(

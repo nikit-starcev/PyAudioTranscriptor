@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 def format_timestamp(seconds: float) -> str:
-    """Форматирует секунды как ``ЧЧ:ММ:СС``."""
+    """Форматирует секунды как ``ЧЧ:ММ:СС`` (секунды усекаются)."""
 
     total_seconds = int(seconds)
     hours, remainder = divmod(total_seconds, 3600)
@@ -13,9 +13,14 @@ def format_timestamp(seconds: float) -> str:
 
 
 def format_srt_timestamp(seconds: float) -> str:
-    """Форматирует секунды как ``ЧЧ:ММ:СС,ммм`` (формат SubRip)."""
+    """Форматирует секунды как ``ЧЧ:ММ:СС,ммм`` (формат SubRip).
 
-    total_milliseconds = round(seconds * 1000)
+    Миллисекунды усекаются — как и секунды в :func:`format_timestamp`, чтобы
+    оба экспортёра (TXT и SRT) показывали одно и то же время для одной реплики
+    (раньше SRT округлял до миллисекунды, и на границе секунды метки расходились).
+    """
+
+    total_milliseconds = int(seconds * 1000)
     hours, remainder = divmod(total_milliseconds, 3_600_000)
     minutes, remainder = divmod(remainder, 60_000)
     secs, milliseconds = divmod(remainder, 1000)

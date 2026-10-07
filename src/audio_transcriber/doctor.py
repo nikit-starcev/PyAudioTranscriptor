@@ -35,7 +35,7 @@ from audio_transcriber.config.defaults import (
 )
 from audio_transcriber.diarization import nemo_speech_assets
 from audio_transcriber.domain.enums import AsrBackend
-from audio_transcriber.utils.config_env import load_config_env
+from audio_transcriber.utils.config_env import load_config_env, parse_bool
 from audio_transcriber.utils.env import effective_library_path
 
 __all__ = [
@@ -82,9 +82,8 @@ class DoctorCheck:
 
 
 def _truthy(value: str | None, default: bool = False) -> bool:
-    if value is None:
-        return default
-    return value.strip().lower() in ("true", "1", "yes", "да")
+    """Разбирает булево значение ``config.env`` единым хелпером."""
+    return parse_bool(value, default)
 
 
 # --- пробы окружения (легко подменяются в тестах) -------------------------

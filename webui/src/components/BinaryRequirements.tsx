@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   api,
   errorMessage,
+  formatBytes,
   type AssetInfo,
   type AssetsResponse,
   type BinaryRequirement,
@@ -14,19 +15,6 @@ type Props = {
   requirements: BinaryRequirement[]
   /** Вызывается после успешной установки — чтобы пересобрать план мастера. */
   onChanged?: () => void
-}
-
-/** Человекочитаемый размер в байтах (``~12.3 МБ``). */
-function formatSize(size: number): string {
-  if (!size || size <= 0) return ''
-  const units = ['Б', 'КБ', 'МБ', 'ГБ']
-  let value = size
-  let index = 0
-  while (value >= 1024 && index < units.length - 1) {
-    value /= 1024
-    index += 1
-  }
-  return index === 0 ? `${Math.round(value)} ${units[index]}` : `${value.toFixed(1)} ${units[index]}`
 }
 
 /**
@@ -186,7 +174,7 @@ function BinaryRequirements({ requirements, onChanged }: Props) {
                 </p>
                 {size > 0 && (
                   <p className="text-xs text-slate-400 dark:text-slate-500">
-                    Размер: ~{formatSize(size)}
+                    Размер: ~{formatBytes(size)}
                     {requirement.platform ? ` · ${requirement.platform}` : ''}
                     {asset?.artifact?.variant ? ` · ${asset.artifact.variant}` : ''}
                   </p>

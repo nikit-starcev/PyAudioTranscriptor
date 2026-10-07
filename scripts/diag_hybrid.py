@@ -919,10 +919,12 @@ def stage_window(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    base = Path("/home/user/LLM/установка транскрибера и ui")
+    # Путь по умолчанию — относительно репозитория (скрипт лежит в scripts/),
+    # а не захардкоженный каталог конкретного пользователя.
+    repo_root = Path(__file__).resolve().parents[1]
     parser.add_argument(
         "--audio",
-        default=str(base / "PyAudioTranscriptor/web-data/uploads/Отказоустойчивость_28_09.mp4"),
+        default=str(repo_root / "web-data/uploads/Отказоустойчивость_28_09.mp4"),
     )
     parser.add_argument("--out-dir", default="/tmp/opencode/diag_hybrid")
     parser.add_argument("--obs-cache", default="")

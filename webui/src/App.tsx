@@ -6,9 +6,9 @@ import {
   EXPORT_FORMATS,
   errorMessage,
   fetchSummaryPrompts,
+  formatBytes,
   formatClock,
   formatDuration,
-  formatSize,
   isTerminal,
   type ApplyNamesResponse,
   type AsrDeviceInfo,
@@ -1309,7 +1309,7 @@ function App() {
                         className="tabular-nums @xl:col-start-2 @xl:row-start-1 @xl:text-right"
                         title="Размер файла"
                       >
-                        {formatSize(file.size)}
+                        {formatBytes(file.size)}
                       </span>
                       <span
                         className="tabular-nums @xl:col-start-3 @xl:row-start-1 @xl:text-right"

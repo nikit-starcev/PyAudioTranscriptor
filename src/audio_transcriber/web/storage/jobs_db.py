@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -269,16 +270,29 @@ class JobsDB:
         """Путь к файлу БД."""
         return self._path
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Короткое соединение с БД: коммит при выходе и явное закрытие.
+
+        ``sqlite3.Connection`` как контекстный менеджер коммитит транзакцию, но
+        **не** закрывает соединение — закрываем его сами, иначе короткие
+        соединения остаются открытыми до сборки мусора.
+        """
         connection = sqlite3.connect(self._path, timeout=30.0)
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def initialize(self) -> None:
         """Создаёт каталог и таблицу задач, если их ещё нет."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
+            # Режим WAL — свойство файла БД, выставляется один раз при
+            # инициализации, а не при каждом коротком соединении.
+            connection.execute("PRAGMA journal_mode=WAL")
             connection.execute(_SCHEMA)
             self._migrate(connection)
 
