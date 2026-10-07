@@ -13,15 +13,17 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from audio_transcriber.domain.models import TranscriptionSegment
+from audio_transcriber.domain.models import TranscriptionSegment, WordTimestamp
 from audio_transcriber.transcription import whisper_cpp_engine as whisper_module
 from audio_transcriber.transcription.whisper_cpp_engine import (
     WhisperCppRecognizer,
+    _boundary_duplicate_word_count,
     _choose_chunk_bounds,
     _ChunkedSegment,
     _deduplicate_chunk_segments,
     _min_energy_sample,
     _segments_are_duplicates,
+    _trim_chunk_boundary_duplicates,
 )
 from audio_transcriber.utils.audio import AudioProbe
 
@@ -238,3 +240,144 @@ def test_dedup_keeps_both_non_duplicate_overlapping_segments() -> None:
     result = _deduplicate_chunk_segments(items)
 
     assert [segment.text for segment in result] == ["первый", "второй"]
+
+
+# --- сшивка/дедупликация стыков кусков на уровне слов (#94) ------------------
+
+
+def _word_seq(words: list[str], start: float, step: float = 0.1) -> list[WordTimestamp]:
+    return [
+        WordTimestamp(text=word, start=start + index * step, end=start + index * step + 0.05)
+        for index, word in enumerate(words)
+    ]
+
+
+def test_boundary_duplicate_count_removes_overlap_tail() -> None:
+    a = _word_seq(["все", "прекрасно", "у", "меня", "просто", "вопрос", "у", "нас", "в"], 8.0)
+    b = _word_seq(
+        ["все", "прекрасно", "у", "меня", "просто", "вопрос", "у", "нас", "будет", "ли"], 10.0
+    )
+
+    # Хвост A (9 слов) — дубль начала B: удаляем весь хвост, включая
+    # «оборванное» слово A.
+    assert _boundary_duplicate_word_count(a, b, 10.0) == 9
+
+
+def test_boundary_duplicate_count_keeps_unique_tail() -> None:
+    a = _word_seq(["совершенно", "другая", "фраза", "тут"], 8.0)
+    b = _word_seq(["абсолютно", "иной", "текст", "дальше"], 10.0)
+
+    assert _boundary_duplicate_word_count(a, b, 10.0) == 0
+
+
+def test_boundary_duplicate_count_handles_split_word() -> None:
+    a = _word_seq(["мы", "убедимся", "данн"], 8.0)
+    b = _word_seq(["данный", "момент", "идти"], 10.0)
+
+    # A оборван на «данн», B содержит целое «данный» — хвост A удаляется.
+    assert _boundary_duplicate_word_count(a, b, 10.0) == 1
+
+
+def test_trim_chunk_boundary_duplicates_updates_text_and_end() -> None:
+    first = _ChunkedSegment(
+        TranscriptionSegment(
+            8.0,
+            10.0,
+            "Да коллеги это все прекрасно У меня вопрос",
+            words=_word_seq(
+                ["Да", "коллеги", "это", "все", "прекрасно", "У", "меня", "вопрос"], 8.0
+            ),
+        ),
+        chunk_center=5.0,
+        chunk_index=0,
+    )
+    following = _ChunkedSegment(
+        TranscriptionSegment(
+            10.0,
+            14.0,
+            "все прекрасно у меня вопрос у нас будет",
+            words=_word_seq(
+                ["все", "прекрасно", "у", "меня", "вопрос", "у", "нас", "будет"], 10.0
+            ),
+        ),
+        chunk_center=12.0,
+        chunk_index=1,
+    )
+
+    result = _trim_chunk_boundary_duplicates([first, following], [0.0, 10.0])
+
+    trimmed = next(item for item in result if item.chunk_index == 0)
+    assert trimmed.segment.text == "Да коллеги это"
+    assert trimmed.segment.words[-1].text == "это"
+    assert trimmed.segment.end == pytest.approx(trimmed.segment.words[-1].end)
+    # Следующий кусок не тронут.
+    assert next(item for item in result if item.chunk_index == 1).segment.text == (
+        "все прекрасно у меня вопрос у нас будет"
+    )
+
+
+def test_trim_chunk_boundary_duplicates_no_words_is_noop() -> None:
+    items = [
+        _ChunkedSegment(TranscriptionSegment(0.0, 1.0, "привет"), 0.5, 0),
+        _ChunkedSegment(TranscriptionSegment(0.0, 1.0, "привет"), 1.5, 1),
+    ]
+
+    result = _trim_chunk_boundary_duplicates(items, [0.0, 1.0])
+
+    assert [item.segment.text for item in result] == ["привет", "привет"]
+
+
+def _token_payload(words: list[tuple[str, int, int]], *, text: str) -> dict:
+    tokens = [
+        {
+            "text": f" {word}",
+            "offsets": {"from": start_ms, "to": end_ms},
+            "p": 0.9,
+        }
+        for word, start_ms, end_ms in words
+    ]
+    return {
+        "offsets": {"from": words[0][1], "to": words[-1][2]},
+        "text": f" {text}",
+        "tokens": tokens,
+    }
+
+
+def test_chunked_engine_trims_word_overlap_on_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Дублированная фраза на стыке кусков убирается на уровне слов (#94)."""
+
+    captured: list[list[str]] = []
+    input_path, _written = _prepare_long_audio(monkeypatch, duration_seconds=65.0)
+
+    def payload_for(index: int) -> list[dict]:
+        if index == 0:
+            return [
+                _token_payload(
+                    [("это", 27800, 28200), ("все", 28200, 28600), ("прекрасно", 28600, 29500)],
+                    text="это все прекрасно",
+                )
+            ]
+        if index == 1:
+            return [
+                _token_payload(
+                    [("все", 100, 500), ("прекрасно", 500, 1200), ("дальше", 1200, 1800)],
+                    text="все прекрасно дальше",
+                )
+            ]
+        return [_segment_payload("конец")]
+
+    _install_popen(monkeypatch, captured, payload_for)
+
+    recognizer = WhisperCppRecognizer(
+        _model(tmp_path), chunk_seconds=30.0, chunk_overlap=2.0, word_timestamps=True
+    )
+    segments, _language, _duration = recognizer.transcribe(input_path)
+
+    texts = [segment.text for segment in segments]
+    # «все прекрасно» остаётся один раз — из следующего куска (B), хвост куска 0
+    # обрезан до «это».
+    assert texts == ["это", "все прекрасно дальше", "конец"]
+    first = next(segment for segment in segments if segment.text == "это")
+    assert first.end == pytest.approx(28.2)

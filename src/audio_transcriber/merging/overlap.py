@@ -136,3 +136,56 @@ def apply_overlap_regions(
     if marked:
         logger.info("Наложение речи: помечено реплик — %d", marked)
     return result, list(speakers_by_id.values())
+
+
+def trim_artifact_overlaps(entries: list[TranscriptEntry]) -> list[TranscriptEntry]:
+    """Убирает пересечения соседних реплик, не помеченные как наложение речи.
+
+    На стыке ASR-чанков последняя реплика предшествующего куска может быть
+    растянута до его конца, а первая реплика следующего куска начинается на
+    перекрытие раньше — интервалы ``start``/``end`` пересекаются, хотя реального
+    одновременного говора нет. Такое пересечение (обе реплики **без** признака
+    ``overlap`` и **без** сов-говорящих) — артефакт выравнивания/склейки:
+    ``end`` предыдущей реплики подрезается до ``start`` следующей. Настоящее
+    наложение речи (``overlap``/``extra_speakers``) не трогается — оно несёт
+    участников и должно отображаться как перекрытие.
+
+    Пословные метки подрезанной реплики, вылезающие за новый ``end``, тоже
+    ограничиваются, чтобы экспорт не показывал слова за пределами реплики.
+    """
+    result: list[TranscriptEntry] = []
+    trimmed = 0
+    for entry in entries:
+        if result:
+            previous = result[-1]
+            artifact = (
+                previous.end > entry.start > previous.start
+                and not previous.overlap
+                and not entry.overlap
+                and not previous.extra_speakers
+                and not entry.extra_speakers
+            )
+            if artifact:
+                new_end = entry.start
+                words = [
+                    replace(word, end=min(word.end, new_end))
+                    if word.end > new_end
+                    else word
+                    for word in previous.words
+                ]
+                words = [
+                    word if word.end >= word.start else replace(word, end=word.start)
+                    for word in words
+                ]
+                result[-1] = replace(previous, end=new_end, words=words)
+                trimmed += 1
+                logger.debug(
+                    "Артефакт наложения: реплика подрезана %.2f → %.2f с",
+                    previous.end,
+                    new_end,
+                )
+        result.append(entry)
+
+    if trimmed:
+        logger.info("Артефакты наложения речи: подрезано реплик — %d", trimmed)
+    return result

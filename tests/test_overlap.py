@@ -23,9 +23,14 @@ from audio_transcriber.domain.models import (
     SpeakerSegment,
     TranscriptEntry,
     TranscriptionSegment,
+    WordTimestamp,
 )
 from audio_transcriber.merging.aligner import OverlapSegmentMerger
-from audio_transcriber.merging.overlap import apply_overlap_regions, mark_overlap_entries
+from audio_transcriber.merging.overlap import (
+    apply_overlap_regions,
+    mark_overlap_entries,
+    trim_artifact_overlaps,
+)
 from audio_transcriber.pipeline import run_pipeline
 
 # --- вычисление зон ----------------------------------------------------------
@@ -508,3 +513,71 @@ def test_pipeline_old_cache_overlaps_mark_without_names(
 
     assert result.entries[0].overlap is True
     assert result.entries[0].extra_speakers == []
+
+
+# --- артефактные пересечения соседних реплик (#94) ---------------------------
+
+
+def _speaker(speaker_id: str) -> Speaker:
+    return Speaker(id=speaker_id, display_name=speaker_id)
+
+
+def test_trim_artifact_overlaps_clamps_unflagged_pair() -> None:
+    first = TranscriptEntry(
+        start=0.0,
+        end=2.0,
+        text="еще надо посмотреть",
+        speaker=_speaker("A"),
+        words=[
+            WordTimestamp("еще", 1.0, 1.3),
+            WordTimestamp("посмотреть", 1.3, 2.0),
+        ],
+    )
+    second = TranscriptEntry(start=1.5, end=3.0, text="давайте смотреть", speaker=_speaker("B"))
+
+    result = trim_artifact_overlaps([first, second])
+
+    assert result[0].end == pytest.approx(1.5)
+    assert result[1].end == pytest.approx(3.0)
+    # Слово, вылезавшее за новый конец, подрезано.
+    assert result[0].words[-1].end == pytest.approx(1.5)
+
+
+def test_trim_artifact_overlaps_keeps_flagged_overlap() -> None:
+    first = TranscriptEntry(start=0.0, end=2.0, text="первый", speaker=_speaker("A"))
+    second = TranscriptEntry(
+        start=1.5,
+        end=3.0,
+        text="второй",
+        speaker=_speaker("B"),
+        overlap=True,
+        extra_speakers=[_speaker("A")],
+    )
+
+    result = trim_artifact_overlaps([first, second])
+
+    assert result[0].end == pytest.approx(2.0)
+
+
+def test_trim_artifact_overlaps_keeps_extra_speakers() -> None:
+    first = TranscriptEntry(
+        start=0.0,
+        end=2.0,
+        text="первый",
+        speaker=_speaker("A"),
+        extra_speakers=[_speaker("B")],
+    )
+    second = TranscriptEntry(start=1.5, end=3.0, text="второй", speaker=_speaker("B"))
+
+    result = trim_artifact_overlaps([first, second])
+
+    assert result[0].end == pytest.approx(2.0)
+
+
+def test_trim_artifact_overlaps_leaves_non_overlapping() -> None:
+    first = TranscriptEntry(start=0.0, end=1.0, text="первый", speaker=_speaker("A"))
+    second = TranscriptEntry(start=1.5, end=3.0, text="второй", speaker=_speaker("B"))
+
+    result = trim_artifact_overlaps([first, second])
+
+    assert result[0].end == pytest.approx(1.0)

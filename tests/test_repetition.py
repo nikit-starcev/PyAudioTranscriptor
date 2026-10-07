@@ -9,12 +9,30 @@ import pytest
 from audio_transcriber.cleaning.repetition_filter import RepetitionCleaner
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.domain.enums import Device, ExportFormat
-from audio_transcriber.domain.models import TranscriptEntry, TranscriptionSegment
+from audio_transcriber.domain.models import (
+    Speaker,
+    TranscriptEntry,
+    TranscriptionSegment,
+    WordTimestamp,
+)
 from audio_transcriber.pipeline import run_pipeline
 
 
-def _entry(text: str, start: float = 0.0, end: float = 1.0) -> TranscriptEntry:
-    return TranscriptEntry(start=start, end=end, text=text)
+def _entry(
+    text: str,
+    start: float = 0.0,
+    end: float = 1.0,
+    *,
+    words: list[WordTimestamp] | None = None,
+) -> TranscriptEntry:
+    return TranscriptEntry(start=start, end=end, text=text, words=words or [])
+
+
+def _words(*texts: str) -> list[WordTimestamp]:
+    return [
+        WordTimestamp(text=text, start=float(index), end=float(index) + 0.5)
+        for index, text in enumerate(texts)
+    ]
 
 
 def test_collapses_consecutive_identical_entries() -> None:
@@ -169,3 +187,138 @@ def test_pipeline_keeps_repeats_when_disabled(audio_file: Path, tmp_path: Path) 
 
     # Реплики не схлопнуты и затем склеены SentenceMerger'ом в один текст.
     assert result.entries[0].text.count(_REPEATED_PHRASE) == 2
+
+
+# --- повторы n-грамм внутри одной реплики (whisper-loop) ----------------------
+
+
+def test_collapses_intra_repeated_ngram() -> None:
+    entry = _entry("Да, коллеги, это все прекрасно. все прекрасно у меня вопрос")
+
+    result = RepetitionCleaner().clean([entry])
+
+    assert result[0].text == "Да, коллеги, это все прекрасно. у меня вопрос"
+
+
+def test_collapses_intra_triple_repeat() -> None:
+    entry = _entry("они параллельно обрабатываются они параллельно обрабатываются они параллельно обрабатываются")
+
+    result = RepetitionCleaner().clean([entry])
+
+    assert result[0].text == "они параллельно обрабатываются"
+
+
+def test_collapses_intra_repeat_across_inserted_punctuation() -> None:
+    # Знак препинания между копиями не мешает распознать повтор.
+    entry = _entry("все хосты это сервер Все хосты – это сервер конкретный")
+
+    result = RepetitionCleaner().clean([entry])
+
+    assert result[0].text == "все хосты это сервер конкретный"
+
+
+def test_collapses_single_word_stutter() -> None:
+    entry = _entry("мы убедимся что перед перед запуском перед перед запуском активно")
+
+    result = RepetitionCleaner().clean([entry])
+
+    assert result[0].text == "мы убедимся что перед запуском активно"
+
+
+def test_keeps_non_adjacent_repeats() -> None:
+    # Легитимный повтор в разных местах фразы не трогаем.
+    entry = _entry("перед тем как сделать проверку надо посмотреть перед ним")
+
+    result = RepetitionCleaner().clean([entry])
+
+    assert result[0].text == "перед тем как сделать проверку надо посмотреть перед ним"
+
+
+def test_keeps_distinct_numbers() -> None:
+    entry = _entry("двадцать один двадцать два")
+
+    result = RepetitionCleaner().clean([entry])
+
+    assert result[0].text == "двадцать один двадцать два"
+
+
+@pytest.mark.parametrize("text", ["да да", "ну ну конечно", "вот вот так"])
+def test_keeps_short_interjection_doubling(text: str) -> None:
+    result = RepetitionCleaner().clean([_entry(text)])
+
+    assert result[0].text == text
+
+
+def test_intra_min_words_is_configurable() -> None:
+    entry = _entry("все прекрасно все прекрасно")
+
+    # При min_words=2 повтор 2-словной n-граммы схлопывается…
+    assert RepetitionCleaner(min_words=2).clean([entry])[0].text == "все прекрасно"
+    # …при min_words=3 n-грамма короче порога (и это не одиночное слово) — нет.
+    assert RepetitionCleaner(min_words=3).clean([entry])[0].text == "все прекрасно все прекрасно"
+
+
+def test_intra_collapse_syncs_words() -> None:
+    words = _words("все", "прекрасно", "все", "прекрасно", "у", "меня", "вопрос")
+    entry = _entry("все прекрасно все прекрасно у меня вопрос", words=words)
+
+    result = RepetitionCleaner().clean([entry])
+
+    assert result[0].text == "все прекрасно у меня вопрос"
+    assert [word.text for word in result[0].words] == [
+        "все",
+        "прекрасно",
+        "у",
+        "меня",
+        "вопрос",
+    ]
+
+
+def test_collapse_intra_method_on_entries() -> None:
+    entries = [
+        _entry("обычная реплика без повторов"),
+        _entry("журнала журнала а надо переключить"),
+    ]
+
+    result = RepetitionCleaner().collapse_intra(entries)
+
+    assert result[0].text == "обычная реплика без повторов"
+    assert result[1].text == "журнала а надо переключить"
+
+
+
+class _SplitRepeatMerger:
+    """Две реплики одного говорящего, повтор возникает только при склейке."""
+
+    def merge(self, transcription_segments, speaker_segments, known_speakers=None):
+        speaker = Speaker(id="S0", display_name="Спикер 1")
+        return [
+            TranscriptEntry(
+                start=0.0, end=1.0, text="это все прекрасно.", speaker=speaker
+            ),
+            TranscriptEntry(
+                start=1.2, end=2.0, text="все прекрасно у меня вопрос", speaker=speaker
+            ),
+        ], [speaker]
+
+
+def test_pipeline_collapses_repeat_created_by_sentence_merge(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+        diarization_enabled=False,
+        denoise=False,
+    )
+
+    result = run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=_FakeRecognizer(),
+        merger=_SplitRepeatMerger(),
+    )
+
+    # Склейка сегментов дала «прекрасно. все прекрасно» — повтор схлопнут.
+    assert [entry.text for entry in result.entries] == ["это все прекрасно. у меня вопрос"]

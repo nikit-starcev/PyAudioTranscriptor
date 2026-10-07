@@ -66,7 +66,7 @@ from audio_transcriber.export.timeline import (
 from audio_transcriber.llm.base import LlmClient
 from audio_transcriber.merging.aligner import OverlapSegmentMerger
 from audio_transcriber.merging.base import SegmentMerger
-from audio_transcriber.merging.overlap import apply_overlap_regions
+from audio_transcriber.merging.overlap import apply_overlap_regions, trim_artifact_overlaps
 from audio_transcriber.merging.same_name import merge_same_name_speakers
 from audio_transcriber.merging.sentence_merger import SentenceMerger
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
@@ -760,6 +760,11 @@ def run_pipeline(
         )
     entries = merged_entries
 
+    # Склейка коротких сегментов могла создать повтор n-грамм на их стыке —
+    # повторяем схлопывание уже по готовым репликам.
+    if repetition_cleaner is not None:
+        entries = repetition_cleaner.collapse_intra(entries)
+
     # Сов-говорящие и признак наложения — из зон перекрытий (они несут
     # участников), вычисляются после склейки: интервалы реплик уже финальные.
     # Дополняет extras, собранные объединителем из перекрывающихся
@@ -776,6 +781,11 @@ def run_pipeline(
     # сов-говорящих из зон наложения, чтобы переименовать id и там.
     if config.merge_same_name_speakers:
         entries, speakers = merge_same_name_speakers(entries, speakers)
+
+    # Пересечения соседних реплик без признака наложения — артефакт растянутых
+    # до конца ASR-куска границ; подрезаем до начала следующей реплики. Настоящее
+    # наложение речи (overlap/extra_speakers) сохраняется.
+    entries = trim_artifact_overlaps(entries)
 
     _ensure_not_cancelled(cancel_event, "перед автоисправлением")
     if corrector is not None:

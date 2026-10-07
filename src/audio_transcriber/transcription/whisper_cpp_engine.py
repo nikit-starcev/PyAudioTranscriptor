@@ -12,9 +12,11 @@ CUDA/PyTorch, а через Vulkan — поэтому работает и на A
 накапливает текстовый контекст между внутренними 30-с окнами одного запуска, и
 на длинной записи это приводит к потере речи и галлюцинациям. Каждый кусок
 распознаётся **отдельным** вызовом whisper-cli, таймкоды сдвигаются, а реплики
-из области перекрытия дедуплицируются (остаётся вариант из более «центрального»
-куска). Границы кусков сдвигаются к локальному минимуму энергии, чтобы не
-разрезать слово.
+из области перекрытия дедуплицируются: на уровне сегментов (остаётся вариант из
+более «центрального» куска) и на уровне пословных метк (#45/#94) — у
+предшествующего куска отбрасывается хвост, дублирующий начало следующего, а
+слово, разрезанное границей, берётся целым из следующего куска. Границы кусков
+сдвигаются к локальному минимуму энергии, чтобы не разрезать слово.
 """
 
 from __future__ import annotations
@@ -52,9 +54,10 @@ logger = logging.getLogger(__name__)
 #: Версия реализации ASR whisper.cpp. Участвует в ключе кэша (см.
 #: ``pipeline._asr_cache_params``): при изменении логики, влияющей на результат
 #: при тех же параметрах (отказ от лишнего перекодирования входа, чанкинг
-#: длинных файлов, пословные таймстемпы, учёт фактического денойза #83), старый
-#: кэш должен инвалидироваться.
-ASR_IMPL_VERSION = 5
+#: длинных файлов, пословные таймстемпы, учёт фактического денойза #83,
+#: посимвольная/пословная сшивка стыков кусков #94), старый кэш должен
+#: инвалидироваться.
+ASR_IMPL_VERSION = 6
 
 #: Таймаут одного вызова whisper-cli (секунды). Битая входная дорожка или
 #: дедлок GPU/Vulkan может повесить распознавание навсегда; по истечении
@@ -537,6 +540,167 @@ def _deduplicate_chunk_segments(
     return result
 
 
+#: Насколько (с) назад от границы куска смотреть слова куска-предшественника и
+#: вперёд — слова следующего куска при поиске дублированного перекрытия.
+_BOUNDARY_DUP_CONTEXT_SECONDS = 2.0
+#: Сколько слов каждого куска участвует в выравнивании (ограничение стоимости).
+_BOUNDARY_DUP_WINDOW_WORDS = 30
+#: Максимум слов, удаляемых у «краевого» куска за один стык.
+_BOUNDARY_DUP_MAX_DROP = 25
+#: Доля покрытия хвоста куска совпавшими блоками, при которой он считается
+#: дубликатом начала следующего куска.
+_BOUNDARY_DUP_COVERAGE = 0.6
+#: Насколько реплика B может «начаться раньше» совпадения (свои первые слова),
+#: чтобы совпавший блок всё ещё считался привязанным к началу куска B.
+_BOUNDARY_DUP_ANCHOR = 3
+
+
+def _word_keys(words: list[WordTimestamp]) -> list[str]:
+    """Ключи слов без пунктуации/регистра для выравнивания на стыке кусков."""
+    return [_normalize_for_dedup(word.text) for word in words]
+
+
+def _boundary_duplicate_word_count(
+    a_words: list[WordTimestamp],
+    b_words: list[WordTimestamp],
+    boundary_start: float,
+) -> int:
+    """Сколько хвостовых слов куска A дублирует начало куска B (по тексту).
+
+    Кусок B начинается на перекрытие раньше конца A, поэтому его первые слова —
+    это повторная распознанная речь из зоны перекрытия. Сравниваем «хвост» A и
+    «начало» B выравниванием слов (пунктуация/регистр не важны) и, если хвост A
+    в основном совпал с началом B, возвращаем длину этого хвоста — его можно
+    удалить, оставив более надёжный вариант B. Учитываем и слово, разрубленное
+    границей: если последнее слово A — префикс одного из первых слов B, хвост
+    тоже удаляется (сохраняется целое слово из B).
+
+    Возвращает ``0``, если явного дублирования нет: удаляем только текст,
+    который реально совпал, — осмысленная уникальная речь не теряется.
+    """
+    a_window = [
+        word
+        for word in a_words
+        if word.end >= boundary_start - _BOUNDARY_DUP_CONTEXT_SECONDS
+    ][-_BOUNDARY_DUP_WINDOW_WORDS:]
+    b_window = [
+        word
+        for word in b_words
+        if word.start <= boundary_start + _BOUNDARY_DUP_CONTEXT_SECONDS
+    ][:_BOUNDARY_DUP_WINDOW_WORDS]
+    if not a_window or not b_window:
+        return 0
+
+    a_keys = _word_keys(a_window)
+    b_keys = _word_keys(b_window)
+    matcher = difflib.SequenceMatcher(None, a_keys, b_keys, autojunk=False)
+    blocks = [block for block in matcher.get_matching_blocks() if block.size]
+
+    # Блоки, привязанные к началу куска B, — начало совпавшего дублирования.
+    # Достаточно и одного слова, если оно стоит в самом конце A и совпадает с
+    # первым словом B (типовой дубль последнего слова на стыке).
+    anchored = [
+        block
+        for block in blocks
+        if block.b <= _BOUNDARY_DUP_ANCHOR
+        and (block.size >= 2 or block.a + block.size == len(a_window))
+    ]
+    if anchored:
+        start = min(block.a for block in anchored)
+        if start < len(a_window):
+            total = len(a_window) - start
+            covered = sum(block.size for block in blocks if block.a >= start)
+            if 0 < total <= _BOUNDARY_DUP_MAX_DROP and covered / total >= _BOUNDARY_DUP_COVERAGE:
+                return total
+
+    # Слово, разрубленное границей: A кончается недословом, B — целым словом.
+    last_key = a_keys[-1]
+    if len(last_key) >= 2:
+        for key in b_keys[:3]:
+            if len(key) > len(last_key) and key.startswith(last_key):
+                return 1
+    return 0
+
+
+def _trim_chunk_boundary_duplicates(
+    items: list[_ChunkedSegment], chunk_starts: list[float]
+) -> list[_ChunkedSegment]:
+    """Убирает дубли перекрытия на стыках кусков на уровне слов (#94).
+
+    Для каждой пары соседних кусков удаляет у **предшествующего** куска хвост
+    слов, повторяющий начало следующего (вариативность ASR на границе решается в
+    пользу куска B, который покрывает зону перекрытия целиком). Реплики, у
+    которых не осталось слов, отбрасываются. Без пословных метк (стадия
+    выключена/движок не дал) функция ничего не меняет — работает прежняя
+    сегментная дедупликация.
+    """
+    by_chunk: dict[int, list[_ChunkedSegment]] = {}
+    for item in items:
+        by_chunk.setdefault(item.chunk_index, []).append(item)
+
+    def _ordered(chunk_index: int) -> list[_ChunkedSegment]:
+        return sorted(
+            by_chunk.get(chunk_index, []),
+            key=lambda item: (item.segment.start, item.segment.end),
+        )
+
+    for chunk_index in sorted(by_chunk):
+        next_index = chunk_index + 1
+        if next_index not in by_chunk or next_index >= len(chunk_starts):
+            continue
+        current = _ordered(chunk_index)
+        following = _ordered(next_index)
+        a_words = [word for item in current for word in item.segment.words]
+        b_words = [word for item in following for word in item.segment.words]
+        if not a_words or not b_words:
+            continue
+        drop = _boundary_duplicate_word_count(
+            a_words, b_words, chunk_starts[next_index]
+        )
+        if drop <= 0:
+            continue
+
+        remaining = drop
+        kept_items = list(current)
+        for position in range(len(kept_items) - 1, -1, -1):
+            if remaining <= 0:
+                break
+            item = kept_items[position]
+            words = list(item.segment.words)
+            if not words:
+                continue
+            take = min(remaining, len(words))
+            if take == len(words):
+                kept_items.pop(position)
+                remaining -= take
+                continue
+            words = words[: len(words) - take]
+            kept_items[position] = replace(
+                item,
+                segment=replace(
+                    item.segment,
+                    words=words,
+                    end=words[-1].end,
+                    text=" ".join(word.text for word in words),
+                ),
+            )
+            remaining -= take
+        if remaining < drop:
+            logger.debug(
+                "whisper.cpp: стык кусков %d→%d — убран дубль перекрытия "
+                "(%d слов)",
+                chunk_index,
+                next_index,
+                drop - remaining,
+            )
+        by_chunk[chunk_index] = kept_items
+
+    trimmed: list[_ChunkedSegment] = []
+    for chunk_index in sorted(by_chunk):
+        trimmed.extend(by_chunk[chunk_index])
+    return trimmed
+
+
 class WhisperCppRecognizer:
     """Распознаёт речь через whisper.cpp. Реализует протокол ``SpeechRecognizer``."""
 
@@ -877,6 +1041,15 @@ class WhisperCppRecognizer:
             self._emit(
                 fraction=(index + 1) / total_chunks,
                 detail=f"кусок {index + 1}/{total_chunks}",
+            )
+
+        # На стыках кусков (перекрытие) убираем дублированные слова на уровне
+        # пословных метк: у предшествующего куска отбрасывается хвост, который
+        # повторяет начало следующего. Так перекрытие не даёт сдвоенных фраз и
+        # не рвёт слово, разрезанное границей. Без слов — не меняем ничего.
+        if self._word_timestamps:
+            items = _trim_chunk_boundary_duplicates(
+                items, [start / SAMPLE_RATE for start, _end in bounds]
             )
 
         segments = _deduplicate_chunk_segments(items)
