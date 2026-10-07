@@ -492,9 +492,10 @@
   (Vulkan; llama.cpp собран из исходников), `deep-filter`, `ffmpeg`, torch **CPU** и extras
   `web`/`gigaam`/`sherpa`; данные/модели — том `/data`, GPU — `/dev/dri` (только Linux),
   веб-сервер от непривилегированного пользователя. README, раздел «Docker».
-  Осталось: portable-бандл (uv+PyInstaller one-dir; ⚠️ pyannote→torchcodec+shared
-  FFmpeg), позже инсталляторы. **Intel Mac не поддерживается.** Автозагрузчик уже есть основа
-  (`web/models.py`).
+  **Отложено (по запросу, Шаги 3–4):** portable-бандл Windows/macOS (uv+PyInstaller one-dir;
+  ⚠️ pyannote→torchcodec+shared FFmpeg → нужен waveform-фолбэк) и подписанные инсталляторы
+  (`.exe`/`.dmg`). GPU через Docker — только Linux (Windows — WSL2+NVIDIA, macOS — нет).
+  **Intel Mac не поддерживается.** Автозагрузчик уже есть основа (`web/models.py`).
   Ориентиры: Buzz (PyInstaller/.dmg/Flatpak/Snap/AppImage), Ollama/GPT4All/LM Studio. Сложность: средняя/высокая; зависит от #23.
 
 - **Экспорт VTT/Markdown/PDF + подсветка слов.** (#53)
