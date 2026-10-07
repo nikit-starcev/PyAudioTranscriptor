@@ -355,19 +355,22 @@ def _frame_energy(
     return energy, starts, frame
 
 
-def _min_energy_sample(
-    waveform: np.ndarray, *, target: int, radius: int, sample_rate: int = SAMPLE_RATE
+def _min_energy_sample_from_frames(
+    energy: np.ndarray,
+    starts: np.ndarray,
+    frame: int,
+    *,
+    target: int,
+    radius: int,
 ) -> int:
-    """Ближайшая к ``target`` точка минимума энергии в пределах ``radius``.
+    """Точка минимума энергии рядом с ``target`` по уже посчитанным кадрам.
 
-    Разрез по тишине/паузе не разрубает слово. Если энергии посчитать нельзя или
-    рядом нет кадров, возвращается ``target``.
+    Отделено от :func:`_min_energy_sample`, чтобы энергию по всему файлу можно
+    было посчитать один раз и переиспользовать для всех точек разреза (раньше
+    ``_frame_energy`` вызывался на каждый рез: ``O(K·N)`` с лишними
+    аллокациями). Возвращает ``target``, если рядом нет кадров.
     """
-    if radius <= 0 or len(waveform) == 0:
-        return target
-
-    energy, starts, frame = _frame_energy(waveform, sample_rate=sample_rate)
-    if energy.size == 0:
+    if radius <= 0 or energy.size == 0:
         return target
 
     centers = starts + frame // 2
@@ -384,6 +387,23 @@ def _min_energy_sample(
         ),
     )
     return int(centers[best])
+
+
+def _min_energy_sample(
+    waveform: np.ndarray, *, target: int, radius: int, sample_rate: int = SAMPLE_RATE
+) -> int:
+    """Ближайшая к ``target`` точка минимума энергии в пределах ``radius``.
+
+    Разрез по тишине/паузе не разрубает слово. Если энергии посчитать нельзя или
+    рядом нет кадров, возвращается ``target``.
+    """
+    if radius <= 0 or len(waveform) == 0:
+        return target
+
+    energy, starts, frame = _frame_energy(waveform, sample_rate=sample_rate)
+    return _min_energy_sample_from_frames(
+        energy, starts, frame, target=target, radius=radius
+    )
 
 
 def _choose_chunk_bounds(
@@ -412,6 +432,16 @@ def _choose_chunk_bounds(
     radius = round(safe_overlap * sample_rate / 2.0)
     min_tail = round(safe_overlap * sample_rate)
 
+    # Кадровые энергии считаем один раз на весь файл и переиспользуем для всех
+    # точек разреза: раньше энергия пересчитывалась на каждый рез (O(K·N)).
+    # При нулевом радиусе сдвиг к тишине не нужен — энергию не считаем вовсе.
+    if radius > 0:
+        energy, frame_starts, frame = _frame_energy(waveform, sample_rate=sample_rate)
+    else:
+        energy = np.zeros(0, dtype=np.float64)
+        frame_starts = np.zeros(0, dtype=np.int64)
+        frame = 1
+
     starts = [0]
     while True:
         nominal = starts[-1] + step
@@ -421,8 +451,8 @@ def _choose_chunk_bounds(
             # Остаток слишком мал для отдельного куска: предыдущий кусок
             # растягивается до конца файла (его длина остаётся <= chunk_seconds).
             break
-        snapped = _min_energy_sample(
-            waveform, target=nominal, radius=radius, sample_rate=sample_rate
+        snapped = _min_energy_sample_from_frames(
+            energy, frame_starts, frame, target=nominal, radius=radius
         )
         starts.append(max(starts[-1] + 1, min(snapped, total - 1)))
 

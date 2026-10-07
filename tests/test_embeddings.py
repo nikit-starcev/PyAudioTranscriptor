@@ -143,6 +143,38 @@ def test_cluster_embeddings_single_is_one() -> None:
     assert embeddings.count_clusters(np.array([[1.0, 0.0]]), threshold=0.7) == 1
 
 
+def test_cluster_embeddings_cosine_inplace_matches_reference() -> None:
+    """На месте посчитанная матрица даёт те же метки, что и прежняя формула (#89)."""
+    from sklearn.cluster import AgglomerativeClustering
+
+    rng = np.random.default_rng(1234)
+    matrix = rng.normal(size=(12, 6)).astype(np.float32)
+    unit = matrix / np.clip(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-12, None)
+    reference = np.clip(1.0 - unit @ unit.T, 0.0, 2.0)
+    np.fill_diagonal(reference, 0.0)
+
+    expected = AgglomerativeClustering(
+        n_clusters=None,
+        distance_threshold=0.9,
+        metric="precomputed",
+        linkage="complete",
+    ).fit_predict(reference)
+
+    labels = embeddings.cluster_embeddings(matrix, threshold=0.9)
+
+    assert labels.tolist() == expected.tolist()
+
+
+def test_cluster_embeddings_does_not_mutate_input() -> None:
+    """Нормировка/расстояния считаются на копиях — исходная матрица не меняется."""
+    matrix = np.eye(4, dtype=np.float32)
+    snapshot = matrix.copy()
+
+    embeddings.cluster_embeddings(matrix, threshold=0.5)
+
+    assert np.array_equal(matrix, snapshot)
+
+
 # --- доступность и разрешение модели ----------------------------------------
 
 

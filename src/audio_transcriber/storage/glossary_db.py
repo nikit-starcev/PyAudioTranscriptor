@@ -392,8 +392,78 @@ class GlossaryDB:
         """Записи с фильтрами по источнику, включённости и подстроке.
 
         Поиск регистронезависимый (в т.ч. по кириллице) и выполняется по
-        канону, ошибочной форме, заметке и категории.
+        канону, ошибочной форме, заметке и категории. Поиск по подстроке
+        делается на стороне Python (SQLite ``LIKE``/``lower`` не умеют
+        кириллицу), поэтому при ``search`` пагинация применяется после
+        фильтрации. Без поиска ``limit``/``offset`` уходят в SQL — листание
+        больших глоссариев не выгружает всю таблицу.
         """
+        clauses, params = self._entry_clauses(source, enabled_only)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        base_sql = (
+            "SELECT e.* FROM entries e LEFT JOIN sources s ON s.id = e.source_id"
+            f"{where} ORDER BY e.canonical, e.variant, e.id"
+        )
+        needle = search.casefold() if search and search.strip() else ""
+
+        if needle:
+            rows = self._conn.execute(base_sql, params).fetchall()
+            entries = [
+                entry
+                for entry in (_row_to_entry(row) for row in rows)
+                if needle in _entry_haystack(entry)
+            ]
+            start = max(offset, 0)
+            if start:
+                entries = entries[start:]
+            if limit is not None:
+                entries = entries[: max(limit, 0)]
+            return entries
+
+        # Без поиска пагинация выполняется в SQL: LIMIT -1 означает «без лимита».
+        sql = base_sql
+        page_params: list[object] = list(params)
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            page_params.extend((max(limit, 0), max(offset, 0)))
+        elif offset > 0:
+            sql += " LIMIT -1 OFFSET ?"
+            page_params.append(max(offset, 0))
+        rows = self._conn.execute(sql, page_params).fetchall()
+        return [_row_to_entry(row) for row in rows]
+
+    def count_entries(
+        self,
+        *,
+        source: str | int | None = None,
+        enabled_only: bool = False,
+        search: str | None = None,
+    ) -> int:
+        """Число записей, удовлетворяющих тем же фильтрам, что и ``list_entries``.
+
+        Нужно для пагинации: ``list_entries`` с ``limit``/``offset`` отдаёт одну
+        страницу, а общий размер считает этот метод (без загрузки всех записей в
+        объекты ``Entry``, когда поиск не используется).
+        """
+        if search and search.strip():
+            return len(
+                self.list_entries(
+                    source=source, enabled_only=enabled_only, search=search
+                )
+            )
+        clauses, params = self._entry_clauses(source, enabled_only)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS c FROM entries e "
+            f"LEFT JOIN sources s ON s.id = e.source_id{where}",
+            params,
+        ).fetchone()
+        return int(row["c"]) if row is not None else 0
+
+    def _entry_clauses(
+        self, source: str | int | None, enabled_only: bool
+    ) -> tuple[list[str], list[object]]:
+        """Общие SQL-фильтры ``list_entries``/``count_entries``."""
         clauses: list[str] = []
         params: list[object] = []
         if source is not None:
@@ -405,24 +475,7 @@ class GlossaryDB:
                 params.append(source)
         if enabled_only:
             clauses.append("e.enabled = 1")
-        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-        sql = (
-            "SELECT e.* FROM entries e LEFT JOIN sources s ON s.id = e.source_id"
-            f"{where} ORDER BY e.canonical, e.variant, e.id"
-        )
-        rows = self._conn.execute(sql, params).fetchall()
-        entries = [_row_to_entry(row) for row in rows]
-
-        if search and search.strip():
-            needle = search.casefold()
-            entries = [entry for entry in entries if needle in _entry_haystack(entry)]
-
-        start = max(offset, 0)
-        if start:
-            entries = entries[start:]
-        if limit is not None:
-            entries = entries[: max(limit, 0)]
-        return entries
+        return clauses, params
 
     def get_entry(self, entry_id: int) -> Entry | None:
         """Возвращает запись по id или ``None``."""

@@ -394,7 +394,11 @@ def _assign_global_clusters(
     при фиксированном ``k`` он даёт лучшее распределение. Чтобы вернуть прежнее
     поведение (порог по косинусу), передайте ``linkage="complete"``.
     """
-    matrix = np.stack([vector for _window, _speaker, vector in observations]).astype(np.float32)
+    matrix = np.stack([vector for _window, _speaker, vector in observations])
+    if matrix.dtype != np.float32:
+        # ``astype`` всегда копирует, поэтому приводим тип только при отличии:
+        # на пути по умолчанию (эмбеддер отдаёт float32) лишней копии N×D нет.
+        matrix = matrix.astype(np.float32)
     count = int(matrix.shape[0])
     if count <= 1:
         return np.zeros(count, dtype=int)

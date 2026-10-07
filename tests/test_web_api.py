@@ -180,6 +180,34 @@ def test_files_list_and_upload(client: TestClient) -> None:
     assert [item["name"] for item in files] == ["rec.mp3"]
 
 
+def test_files_duration_is_cached_by_mtime_and_size(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Длительность файла не пробуется заново, пока mtime/размер не изменились (#89)."""
+    calls: list[Path] = []
+
+    def spy(path: Path) -> float | None:
+        calls.append(path)
+        return 1.23
+
+    monkeypatch.setattr("audio_transcriber.web.app.probe_duration", spy)
+    uploaded = _upload(client, "cache.mp3", b"abc")
+    path = Path(uploaded["path"])
+
+    first = client.get("/api/files").json()
+    second = client.get("/api/files").json()
+
+    assert first[0]["duration"] == 1.23
+    assert second[0]["duration"] == 1.23
+    assert len(calls) == 1
+
+    # Перезапись меняет размер и mtime — ключ кэша другой, длительность пробуется снова.
+    path.write_bytes(b"abcd")
+
+    assert client.get("/api/files").json()[0]["duration"] == 1.23
+    assert len(calls) == 2
+
+
 def test_upload_deduplicates_names(client: TestClient) -> None:
     _upload(client, "rec.mp3", b"a")
     second = _upload(client, "rec.mp3", b"b")

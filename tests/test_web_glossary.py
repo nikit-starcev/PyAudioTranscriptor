@@ -103,6 +103,18 @@ def test_search_and_pagination(client: TestClient) -> None:
     assert found["total"] == 1
 
 
+def test_pagination_without_search_reports_total_and_page(client: TestClient) -> None:
+    """Без поиска пагинация идёт в SQL, но total и срез остаются верными (#89)."""
+    names = [f"Термин {index:02d}" for index in range(5)]
+    for name in names:
+        assert client.post("/api/glossary/entries", json={"canonical": name}).status_code == 201
+
+    page = client.get("/api/glossary/entries", params={"limit": 2, "offset": 1}).json()
+
+    assert page["total"] == 5
+    assert [entry["canonical"] for entry in page["entries"]] == sorted(names)[1:3]
+
+
 def test_import_txt_and_source_management(client: TestClient) -> None:
     content = "кисус = КИСУСС\n# комментарий\nОтдельный термин\n".encode()
     response = client.post(

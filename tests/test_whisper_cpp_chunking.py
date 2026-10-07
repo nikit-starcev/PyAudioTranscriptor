@@ -21,7 +21,9 @@ from audio_transcriber.transcription.whisper_cpp_engine import (
     _choose_chunk_bounds,
     _ChunkedSegment,
     _deduplicate_chunk_segments,
+    _frame_energy,
     _min_energy_sample,
+    _min_energy_sample_from_frames,
     _segments_are_duplicates,
     _trim_chunk_boundary_duplicates,
 )
@@ -211,6 +213,46 @@ def test_chunk_overlap_boundaries_snap_to_quiet_point() -> None:
 def test_min_energy_sample_returns_target_without_radius() -> None:
     waveform = np.ones(10 * SAMPLE_RATE, dtype=np.float32)
     assert _min_energy_sample(waveform, target=5 * SAMPLE_RATE, radius=0) == 5 * SAMPLE_RATE
+
+
+def test_min_energy_sample_from_frames_matches_wrapper() -> None:
+    """Предпосчитанные кадры дают тот же результат, что и полный пересчёт (#89)."""
+    waveform = np.ones(10 * SAMPLE_RATE, dtype=np.float32)
+    waveform[5 * SAMPLE_RATE - 100 : 5 * SAMPLE_RATE + 100] = 0.0
+    energy, starts, frame = _frame_energy(waveform, sample_rate=SAMPLE_RATE)
+    target = 5 * SAMPLE_RATE
+    radius = SAMPLE_RATE
+
+    from_frames = _min_energy_sample_from_frames(
+        energy, starts, frame, target=target, radius=radius
+    )
+
+    assert from_frames == _min_energy_sample(waveform, target=target, radius=radius)
+
+
+def test_choose_chunk_bounds_computes_frame_energy_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Энергия по всему файлу считается один раз, а не на каждый рез (#89)."""
+    total = 200 * SAMPLE_RATE
+    waveform = np.ones(total, dtype=np.float32)
+    calls = {"count": 0}
+    original = whisper_module._frame_energy
+
+    def counting(
+        data: np.ndarray, *, sample_rate: int = SAMPLE_RATE
+    ) -> tuple[np.ndarray, np.ndarray, int]:
+        calls["count"] += 1
+        return original(data, sample_rate=sample_rate)
+
+    monkeypatch.setattr(whisper_module, "_frame_energy", counting)
+
+    bounds = _choose_chunk_bounds(
+        waveform, chunk_seconds=30.0, overlap_seconds=2.0, sample_rate=SAMPLE_RATE
+    )
+
+    assert calls["count"] == 1
+    assert len(bounds) > 3
 
 
 def test_dedup_ignores_segments_without_time_overlap() -> None:

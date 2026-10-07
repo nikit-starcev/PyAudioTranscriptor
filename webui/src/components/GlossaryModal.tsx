@@ -25,6 +25,9 @@ type EntryDraft = {
 
 const EMPTY_DRAFT: EntryDraft = { canonical: '', variant: '', note: '', source: '' }
 const PAGE_SIZE = 10
+//: Задержка перед запросом поиска глоссария (мс): не дёргаем API на каждый
+//: символ, а ждём паузы в наборе (issue #89).
+const SEARCH_DEBOUNCE_MS = 300
 
 function GlossaryModal({ open, onClose, onChanged }: Props) {
   const [sources, setSources] = useState<GlossarySource[]>([])
@@ -33,6 +36,7 @@ function GlossaryModal({ open, onClose, onChanged }: Props) {
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(0)
   const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
   const [sourceFilter, setSourceFilter] = useState('')
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -52,7 +56,7 @@ function GlossaryModal({ open, onClose, onChanged }: Props) {
     try {
       const params = new URLSearchParams()
       if (sourceFilter) params.set('source', sourceFilter)
-      if (search.trim()) params.set('search', search.trim())
+      if (debouncedSearch.trim()) params.set('search', debouncedSearch.trim())
       params.set('limit', String(PAGE_SIZE))
       params.set('offset', String(offset))
       const [sourcesData, statsData, entriesData] = await Promise.all([
@@ -70,11 +74,21 @@ function GlossaryModal({ open, onClose, onChanged }: Props) {
     } finally {
       setLoading(false)
     }
-  }, [offset, search, sourceFilter])
+  }, [offset, debouncedSearch, sourceFilter])
 
   useEffect(() => {
     if (open) void refresh()
   }, [open, refresh])
+
+  // Debounce поиска: обновляем запрос только после паузы в наборе и сразу
+  // возвращаемся на первую страницу (offset сбрасывается вместе с запросом).
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearch(search)
+      setOffset(0)
+    }, SEARCH_DEBOUNCE_MS)
+    return () => window.clearTimeout(timer)
+  }, [search])
 
   useEffect(() => {
     if (!open) return
@@ -367,10 +381,7 @@ function GlossaryModal({ open, onClose, onChanged }: Props) {
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <input
                 value={search}
-                onChange={(event) => {
-                  setSearch(event.target.value)
-                  setOffset(0)
-                }}
+                onChange={(event) => setSearch(event.target.value)}
                 placeholder="Поиск по записям…"
                 className="w-56 rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
               />

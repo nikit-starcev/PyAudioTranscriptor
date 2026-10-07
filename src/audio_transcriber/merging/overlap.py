@@ -15,14 +15,40 @@ from collections.abc import Sequence
 from dataclasses import replace
 
 from audio_transcriber.domain.models import Speaker, SpeakerOverlap, TranscriptEntry
-from audio_transcriber.merging.aligner import DEFAULT_OVERLAP_MIN_SECONDS
+from audio_transcriber.merging.aligner import DEFAULT_OVERLAP_MIN_SECONDS, _IntervalIndex
 
 logger = logging.getLogger(__name__)
 
+#: Зона наложения в интервальном индексе: ``(start, end, region)``.
+_IndexedRegion = tuple[float, float, SpeakerOverlap]
 
-def _intersects(entry: TranscriptEntry, regions: Sequence[SpeakerOverlap]) -> bool:
-    """Пересекается ли реплика хотя бы с одной зоной наложения."""
-    return any(entry.start < region.end and entry.end > region.start for region in regions)
+
+def _region_index(regions: Sequence[SpeakerOverlap]) -> _IntervalIndex[SpeakerOverlap]:
+    """Строит интервальное дерево по зонам наложения.
+
+    Позволяет находить все зоны, пересекающие реплику, за ``O(log R + k)``
+    вместо линейного перебора ``O(R)`` на каждую реплику. Зон наложения обычно
+    немного, но реплик тысячи — раньше это давало ``O(N·R)``.
+    """
+    return _IntervalIndex([(region.start, region.end, region) for region in regions])
+
+
+def _intersecting_regions(
+    entry: TranscriptEntry, index: _IntervalIndex[SpeakerOverlap]
+) -> list[_IndexedRegion]:
+    """Зоны, имеющие с репликой строго положительное пересечение.
+
+    Интервальное дерево возвращает и касающиеся интервалы (пересечение 0), их
+    отсеиваем — семантика совпадает с прежним перебором ``entry.start <
+    region.end and entry.end > region.start``.
+    """
+    found: list[_IndexedRegion] = []
+    index.query(entry.start, entry.end, found)
+    return [
+        (start, end, region)
+        for start, end, region in found
+        if entry.start < end and entry.end > start
+    ]
 
 
 def mark_overlap_entries(
@@ -37,10 +63,11 @@ def mark_overlap_entries(
     if not regions:
         return entries
 
+    index = _region_index(regions)
     result: list[TranscriptEntry] = []
     marked = 0
     for entry in entries:
-        if not entry.overlap and _intersects(entry, regions):
+        if not entry.overlap and _intersecting_regions(entry, index):
             result.append(replace(entry, overlap=True))
             marked += 1
         else:
@@ -86,6 +113,7 @@ def apply_overlap_regions(
 
     names = known_speakers or {}
     speakers_by_id: dict[str, Speaker] = {speaker.id: speaker for speaker in speakers}
+    index = _region_index(regions)
 
     result: list[TranscriptEntry] = []
     added = 0
@@ -94,8 +122,8 @@ def apply_overlap_regions(
         main_id = entry.speaker.id if entry.speaker is not None else None
         durations: dict[str, float] = {}
         intersects = False
-        for region in regions:
-            overlap_seconds = min(entry.end, region.end) - max(entry.start, region.start)
+        for region_start, region_end, region in _intersecting_regions(entry, index):
+            overlap_seconds = min(entry.end, region_end) - max(entry.start, region_start)
             if overlap_seconds <= 0.0:
                 continue
             intersects = True

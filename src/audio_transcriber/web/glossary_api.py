@@ -117,16 +117,30 @@ def register_glossary_routes(router: APIRouter, *, db_path: Callable[[], Path]) 
     ) -> dict[str, object]:
         with _open() as db:
             names = {item.id: item.name for item in db.list_sources()}
-            matches = db.list_entries(
-                source=source or None,
-                search=search or None,
-                enabled_only=enabled_only,
-            )
-        total = len(matches)
-        start = max(offset, 0)
-        page = matches[start:] if start else matches
-        if limit is not None:
-            page = page[: max(limit, 0)]
+            needle = (search or "").strip()
+            if needle:
+                # Поиск по подстроке выполняется на стороне Python
+                # (регистронезависимо, включая кириллицу) — пагинируем после него.
+                matches = db.list_entries(
+                    source=source or None,
+                    search=needle,
+                    enabled_only=enabled_only,
+                )
+                total = len(matches)
+                start = max(offset, 0)
+                page = matches[start:] if start else matches
+                if limit is not None:
+                    page = page[: max(limit, 0)]
+            else:
+                # Без поиска пагинация уходит в SQL: страница не требует полной
+                # выгрузки таблицы (issue #89).
+                total = db.count_entries(source=source or None, enabled_only=enabled_only)
+                page = db.list_entries(
+                    source=source or None,
+                    enabled_only=enabled_only,
+                    limit=limit,
+                    offset=offset,
+                )
         return {"entries": [_entry_to_dict(entry, names) for entry in page], "total": total}
 
     @router.post("/glossary/entries", status_code=201)

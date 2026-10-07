@@ -226,6 +226,36 @@ def test_list_entries_offset_and_limit(tmp_path: Path) -> None:
     assert [entry.canonical for entry in page] == ["Б", "В"]
 
 
+def test_list_entries_sql_pagination_matches_full_slice(tmp_path: Path) -> None:
+    """SQL-пагинация без поиска даёт ровно тот же срез, что и срез полного списка."""
+    with GlossaryDB(tmp_path / "glossary.db") as db:
+        for index in range(25):
+            db.add_entry(f"Термин {index:02d}", source="s")
+
+        everything = db.list_entries()
+        for offset in (0, 5, 24, 40):
+            for limit in (None, 1, 7):
+                page = db.list_entries(limit=limit, offset=offset)
+                expected = everything[offset:]
+                if limit is not None:
+                    expected = expected[:limit]
+                assert [entry.id for entry in page] == [entry.id for entry in expected]
+
+
+def test_count_entries_respects_filters(tmp_path: Path) -> None:
+    with GlossaryDB(tmp_path / "glossary.db") as db:
+        db.add_entry("А", source="a")
+        db.add_entry("Б", source="a")
+        db.add_entry("В", source="b")
+        db.set_entry_enabled(db.list_entries(search="В")[0].id, False)
+
+        assert db.count_entries() == 3
+        assert db.count_entries(source="a") == 2
+        assert db.count_entries(enabled_only=True) == 2
+        assert db.count_entries(search="а") == 1
+        assert db.count_entries(source="b", enabled_only=True) == 0
+
+
 # --- Удаление источника ----------------------------------------------------
 def test_delete_source_cascade(tmp_path: Path) -> None:
     with GlossaryDB(tmp_path / "glossary.db") as db:

@@ -516,3 +516,61 @@ def test_normalize_sample_keeps_true_silence() -> None:
 
 def test_find_speaker_samples_missing_dir_is_empty(audio_file: Path, tmp_path: Path) -> None:
     assert find_speaker_samples(_result(audio_file, []), tmp_path / "nope") == {}
+
+
+# --- индекс по говорящим (#89) ----------------------------------------------
+
+
+def test_clean_intervals_by_speaker_matches_scan() -> None:
+    entries = [
+        _entry(0.0, 2.0, IVAN),
+        _entry(2.0, 4.0, IVAN, overlap=True),
+        _entry(5.0, 7.0, MARIA),
+    ]
+
+    grouped = samples._clean_intervals_by_speaker(entries)
+
+    assert grouped == {
+        "SPEAKER_00": samples._clean_intervals(entries, "SPEAKER_00"),
+        "SPEAKER_01": samples._clean_intervals(entries, "SPEAKER_01"),
+    }
+
+
+def test_forbidden_intervals_excluding_matches_full_scan() -> None:
+    """Индексный вычет совпадает с полным перебором, в т.ч. при общем интервале."""
+    entries = [
+        _entry(0.0, 2.0, IVAN),
+        _entry(0.0, 2.0, MARIA),  # посторонняя реплика с тем же интервалом
+        _entry(2.0, 4.0, IVAN, overlap=True),
+        _entry(5.0, 7.0, MARIA),
+    ]
+    own = samples._clean_intervals(entries, "SPEAKER_00")
+    all_intervals = samples._all_speech_intervals(entries)
+
+    result = samples._forbidden_intervals_excluding(all_intervals, own)
+
+    assert result == samples._forbidden_intervals(entries, "SPEAKER_00")
+
+
+def test_select_sample_variants_precomputed_intervals_match() -> None:
+    """Передача заранее посчитанных интервалов не меняет результат."""
+    entries = [_entry(0.0, 30.0, IVAN), _entry(10.0, 12.0, MARIA)]
+    waveform = _tone_waveform(duration=60.0, windows=((2.0, 8.0), (20.0, 26.0)))
+    own = samples._clean_intervals(entries, "SPEAKER_00")
+    forbidden = samples._forbidden_intervals_excluding(
+        samples._all_speech_intervals(entries), own
+    )
+
+    direct = select_sample_variants(entries, "SPEAKER_00", waveform=waveform, count=5)
+    cached = select_sample_variants(
+        entries,
+        "SPEAKER_00",
+        waveform=waveform,
+        count=5,
+        own=own,
+        forbidden=forbidden,
+    )
+
+    assert [(v.start, v.end, v.score) for v in direct] == [
+        (v.start, v.end, v.score) for v in cached
+    ]

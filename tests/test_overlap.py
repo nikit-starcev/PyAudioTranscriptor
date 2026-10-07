@@ -581,3 +581,115 @@ def test_trim_artifact_overlaps_leaves_non_overlapping() -> None:
     result = trim_artifact_overlaps([first, second])
 
     assert result[0].end == pytest.approx(1.0)
+
+
+# --- интервальный индекс зон наложения (#89) ---------------------------------
+
+
+def _many_regions() -> list[SpeakerOverlap]:
+    """Много зон: часть пересекает реплики, часть — «мимо»."""
+    regions: list[SpeakerOverlap] = []
+    for index in range(200):
+        start = index * 10.0
+        end = start + 0.4
+        # Зоны с чётным индексом несут участников, с нечётным — старый формат.
+        if index % 2 == 0:
+            regions.append(
+                SpeakerOverlap(
+                    start=start,
+                    end=end,
+                    speaker_ids=("SPEAKER_00", f"SPEAKER_{index % 7 + 1:02d}"),
+                )
+            )
+        else:
+            regions.append(SpeakerOverlap(start=start, end=end))
+    return regions
+
+
+def _brute_mark(
+    entries: list[TranscriptEntry], regions: list[SpeakerOverlap]
+) -> list[bool]:
+    return [
+        entry.overlap
+        or any(entry.start < region.end and entry.end > region.start for region in regions)
+        for entry in entries
+    ]
+
+
+def test_mark_overlap_entries_index_matches_brute_force() -> None:
+    regions = _many_regions()
+    entries = [
+        TranscriptEntry(start=value, end=value + 0.6, text=str(index))
+        for index, value in enumerate(
+            [0.0, 9.5, 20.1, 50.0, 100.3, 199.9, 500.0, 1000.0]
+        )
+    ]
+
+    result = mark_overlap_entries(entries, regions)
+
+    assert [entry.overlap for entry in result] == _brute_mark(entries, regions)
+
+
+def _brute_apply(
+    entries: list[TranscriptEntry],
+    speakers: list[Speaker],
+    regions: list[SpeakerOverlap],
+    *,
+    known_speakers: dict[str, str] | None = None,
+    overlap_min_seconds: float = 0.3,
+) -> tuple[list[list[str]], set[str]]:
+    """Эталон прежнего перебора: extras и множество добавленных говорящих."""
+    names = known_speakers or {}
+    by_id = {speaker.id: speaker for speaker in speakers}
+    extras: list[list[str]] = []
+    for entry in entries:
+        main_id = entry.speaker.id if entry.speaker is not None else None
+        durations: dict[str, float] = {}
+        for region in regions:
+            overlap = min(entry.end, region.end) - max(entry.start, region.start)
+            if overlap <= 0.0:
+                continue
+            if overlap < overlap_min_seconds:
+                continue
+            for speaker_id in region.speaker_ids:
+                if speaker_id == main_id:
+                    continue
+                durations[speaker_id] = durations.get(speaker_id, 0.0) + overlap
+        candidates = sorted(durations.items(), key=lambda item: (-item[1], item[0]))
+        extra_ids = [speaker.id for speaker in entry.extra_speakers]
+        seen = set(extra_ids)
+        for speaker_id, _seconds in candidates:
+            if speaker_id in seen:
+                continue
+            if speaker_id not in by_id:
+                by_id[speaker_id] = Speaker(
+                    id=speaker_id,
+                    display_name=names.get(speaker_id, f"Спикер {len(by_id) + 1}"),
+                )
+            extra_ids.append(speaker_id)
+            seen.add(speaker_id)
+        extras.append(extra_ids)
+    return extras, set(by_id)
+
+
+def test_apply_overlap_regions_index_matches_brute_force() -> None:
+    regions = _many_regions()
+    main = Speaker(id="SPEAKER_00", display_name="Аня")
+    entries = [
+        TranscriptEntry(start=0.0, end=2.0, text="а", speaker=main),
+        TranscriptEntry(start=20.0, end=21.0, text="б", speaker=main),
+        TranscriptEntry(start=100.2, end=100.5, text="в", speaker=main),
+        TranscriptEntry(start=5000.0, end=5001.0, text="г", speaker=main),
+    ]
+
+    result, speakers = apply_overlap_regions(entries, [main], regions)
+    expected_extras, expected_speakers = _brute_apply(entries, [main], regions)
+
+    assert [[speaker.id for speaker in entry.extra_speakers] for entry in result] == (
+        expected_extras
+    )
+    assert {speaker.id for speaker in speakers} == expected_speakers
+    # «в» короче порога (0.3 с) — помечена, но участников не получает.
+    assert result[2].overlap is True
+    assert result[2].extra_speakers == []
+    assert result[3].overlap is False

@@ -336,7 +336,14 @@ def cluster_embeddings(
     unit = matrix / np.clip(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-12, None)
     params: dict[str, object]
     if metric == "cosine":
-        data = np.clip(1.0 - unit @ unit.T, 0.0, 2.0)
+        # Косинусное расстояние: 1 - <unit_i, unit_j>. Матрица N×N неизбежна
+        # для ``precomputed``-кластеризации (её же хранит sklearn), но раньше
+        # на пути к ней создавалось до трёх копий: ``unit @ unit.T``,
+        # ``1.0 - ...`` и ``np.clip(...)``. Считаем результат на месте —
+        # остаётся ровно одна N×N-аллокация, пик памяти по ней ниже втрое.
+        data = unit @ unit.T
+        np.subtract(1.0, data, out=data)
+        np.clip(data, 0.0, 2.0, out=data)
         np.fill_diagonal(data, 0.0)
         params = {"metric": "precomputed", "linkage": linkage}
     else:  # euclidean (для ward)

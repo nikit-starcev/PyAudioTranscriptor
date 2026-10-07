@@ -2914,9 +2914,36 @@ def _remove_job_artifacts(paths: WebPaths, job: Job) -> None:
             continue
 
 
+#: Кэш длительностей медиафайлов (issue #89): ключ ``(путь, mtime_ns, размер)``,
+#: значение — секунды или ``None``. Инвалидируется сменой mtime/размера.
+_DURATION_CACHE_LIMIT = 512
+_duration_cache: dict[tuple[str, int, int], float | None] = {}
+_duration_cache_lock = threading.Lock()
+
+
 def _probe_duration(path: Path) -> float | None:
-    """Длительность аудио из контейнера без декодирования (``None`` при ошибке)."""
-    return probe_duration(path)
+    """Длительность аудио из контейнера без декодирования (``None`` при ошибке).
+
+    Результат кэшируется по ``(путь, mtime_ns, размер)``: пока файл не
+    перезаписан, длительность не меняется, поэтому повторные ``GET /api/files``
+    не переоткрывают контейнер каждого файла заново (раньше это была дорогая
+    операция на каждый запрос списка).
+    """
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    with _duration_cache_lock:
+        if key in _duration_cache:
+            return _duration_cache[key]
+    duration = probe_duration(path)
+    with _duration_cache_lock:
+        _duration_cache[key] = duration
+        # Простой FIFO-вытеснитель: не даём кэшу расти безгранично.
+        while len(_duration_cache) > _DURATION_CACHE_LIMIT:
+            _duration_cache.pop(next(iter(_duration_cache)))
+    return duration
 
 
 #: Размер чанка при потоковой отдаче аудио. Диапазон никогда не

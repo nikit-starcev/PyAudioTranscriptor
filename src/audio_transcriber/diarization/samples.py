@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -135,6 +136,50 @@ def _forbidden_intervals(
     ]
 
 
+def _clean_intervals_by_speaker(
+    entries: Sequence[TranscriptEntry],
+) -> dict[str, list[Interval]]:
+    """Чистые реплики, сгруппированные по говорящему, за один проход.
+
+    Заменяет повторные линейные вызовы :func:`_clean_intervals` (по одному на
+    говорящего) словарём: при ``S`` говорящих и ``E`` репликах это ``O(E)``
+    вместо ``O(S·E)``.
+    """
+    grouped: dict[str, list[Interval]] = {}
+    for entry in entries:
+        if entry.speaker is None or entry.overlap or entry.end <= entry.start:
+            continue
+        grouped.setdefault(entry.speaker.id, []).append((entry.start, entry.end))
+    return grouped
+
+
+def _all_speech_intervals(entries: Sequence[TranscriptEntry]) -> list[Interval]:
+    """Все интервалы реплик положительной длины — общий пул для запретных зон."""
+    return [(entry.start, entry.end) for entry in entries if entry.end > entry.start]
+
+
+def _forbidden_intervals_excluding(
+    all_intervals: Sequence[Interval], own: Sequence[Interval]
+) -> list[Interval]:
+    """Все интервалы, кроме собственных чистых реплик говорящего.
+
+    Точный мультимножественный вычет: из общего пула убирается ровно столько
+    вхождений каждого интервала, сколько их среди ``own`` (посторонние реплики с
+    тем же интервалом сохраняются). Результат совпадает с
+    :func:`_forbidden_intervals` без повторного перебора всех реплик.
+    """
+    if not own:
+        return list(all_intervals)
+    remaining = Counter(own)
+    result: list[Interval] = []
+    for interval in all_intervals:
+        if remaining.get(interval, 0) > 0:
+            remaining[interval] -= 1
+            continue
+        result.append(interval)
+    return result
+
+
 def _merge_intervals(intervals: Sequence[Interval]) -> list[Interval]:
     """Склеивает пересекающиеся/соприкасающиеся интервалы в непересекающиеся."""
     ordered = sorted((start, end) for start, end in intervals if end > start)
@@ -217,6 +262,8 @@ def select_sample_segment(
     waveform: np.ndarray | None = None,
     sample_rate: int = SAMPLE_RATE,
     step: float = DEFAULT_WINDOW_STEP_SECONDS,
+    own: Sequence[Interval] | None = None,
+    forbidden: Sequence[Interval] | None = None,
 ) -> Interval | None:
     """Выбирает участок речи говорящего под образец голоса.
 
@@ -229,17 +276,23 @@ def select_sample_segment(
     энергии ниже порога (тишина), образец не создаётся. Без ``waveform``
     работает прежняя эвристика по самой длинной чистой реплике.
 
+    ``own``/``forbidden`` — заранее посчитанные интервалы чистых реплик
+    говорящего и запретных зон (см. :func:`_clean_intervals_by_speaker`): их
+    можно переиспользовать, чтобы не перебирать все реплики повторно.
     Возвращает ``(start, end)`` или ``None``. ``step`` — длина кадра анализа.
     """
     if waveform is None:
         return _select_longest_clean_segment(entries, speaker_id, max_duration)
 
-    own = _clean_intervals(entries, speaker_id)
+    if own is None:
+        own = _clean_intervals(entries, speaker_id)
     if not own:
         return None
+    if forbidden is None:
+        forbidden = _forbidden_intervals(entries, speaker_id)
 
     allowed = _subtract_intervals(
-        _merge_intervals(own), _merge_intervals(_forbidden_intervals(entries, speaker_id))
+        _merge_intervals(own), _merge_intervals(forbidden)
     )
     if not allowed:
         return None
@@ -267,6 +320,8 @@ def select_sample_variants(
     sample_rate: int = SAMPLE_RATE,
     step: float = DEFAULT_WINDOW_STEP_SECONDS,
     min_separation: float = DEFAULT_VARIANT_MIN_SEPARATION_SECONDS,
+    own: Sequence[Interval] | None = None,
+    forbidden: Sequence[Interval] | None = None,
 ) -> list[SampleVariant]:
     """Выбирает несколько неперекрывающихся вариантов прослушивания говорящего.
 
@@ -278,15 +333,19 @@ def select_sample_variants(
     (аудио недоступно) берутся самые длинные чистые реплики — как запасной путь.
 
     Непересекаемость гарантируется и по чужим/наложенным интервалам: варианты
-    выбираются только из чистой речи говорящего.
+    выбираются только из чистой речи говорящего. ``own``/``forbidden`` — те же
+    предпосчитанные интервалы, что и у :func:`select_sample_segment`.
     """
     if count <= 0:
         return []
-    own = _clean_intervals(entries, speaker_id)
+    if own is None:
+        own = _clean_intervals(entries, speaker_id)
     if not own:
         return []
+    if forbidden is None:
+        forbidden = _forbidden_intervals(entries, speaker_id)
     allowed = _subtract_intervals(
-        _merge_intervals(own), _merge_intervals(_forbidden_intervals(entries, speaker_id))
+        _merge_intervals(own), _merge_intervals(forbidden)
     )
     if not allowed:
         return []
@@ -421,8 +480,10 @@ def extract_speaker_samples(
     результат денойза или общий waveform конвейера. Если он передан, аудиофайл
     не декодируется повторно; ``None`` — читать ``audio_path``, как раньше.
     """
+    clean_by_speaker = _clean_intervals_by_speaker(result.entries)
+    all_intervals = _all_speech_intervals(result.entries)
     speakers_with_speech = [
-        speaker for speaker in result.speakers if _clean_intervals(result.entries, speaker.id)
+        speaker for speaker in result.speakers if clean_by_speaker.get(speaker.id)
     ]
     for speaker in result.speakers:
         if speaker not in speakers_with_speech:
@@ -446,8 +507,15 @@ def extract_speaker_samples(
 
     planned: list[tuple[str, str, float, float]] = []
     for speaker in speakers_with_speech:
+        own = clean_by_speaker[speaker.id]
+        forbidden = _forbidden_intervals_excluding(all_intervals, own)
         segment = select_sample_segment(
-            result.entries, speaker.id, max_duration=max_duration, waveform=waveform
+            result.entries,
+            speaker.id,
+            max_duration=max_duration,
+            waveform=waveform,
+            own=own,
+            forbidden=forbidden,
         )
         if segment is None:
             logger.info(
