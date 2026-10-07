@@ -9,7 +9,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, replace
 
-from audio_transcriber.domain.models import Speaker, TranscriptEntry, TranscriptionResult
+from audio_transcriber.domain.models import (
+    Speaker,
+    TranscriptEntry,
+    TranscriptionResult,
+    WordTimestamp,
+)
 
 #: Идентификатор «автоматического» говорящего вида ``SPEAKER_07``.
 _AUTO_SPEAKER_ID = re.compile(r"SPEAKER_(\d+)")
@@ -278,3 +283,184 @@ def _remap_speaker(
             extras.append(candidate)
         remapped.append(replace(entry, speaker=speaker, extra_speakers=extras))
     return remapped
+
+
+def add_extra_speaker(entry: TranscriptEntry, target: Speaker) -> TranscriptEntry:
+    """Добавляет целевого говорящего сов-участником наложения (#78).
+
+    Если цель уже основной говорящий или уже есть в ``extra_speakers``,
+    реплика возвращается без изменений. Пометка наложения ``overlap``
+    выставляется, потому что со-говорящий означает одновременную речь.
+    """
+    if entry.speaker is not None and entry.speaker.id == target.id:
+        return entry
+    if any(extra.id == target.id for extra in entry.extra_speakers):
+        return entry
+    return replace(entry, extra_speakers=[*entry.extra_speakers, target], overlap=True)
+
+
+def remove_extra_speaker(entry: TranscriptEntry, speaker_id: str) -> TranscriptEntry:
+    """Убирает говорящего ``speaker_id`` из сов-участников наложения (#78).
+
+    Если такого участника нет, реплика возвращается без изменений. Когда после
+    удаления сов-участников не осталось, снимается и пометка ``overlap``.
+    """
+    extras = [extra for extra in entry.extra_speakers if extra.id != speaker_id]
+    if len(extras) == len(entry.extra_speakers):
+        return entry
+    return replace(entry, extra_speakers=extras, overlap=entry.overlap and bool(extras))
+
+
+def _partition_words(
+    words: list[WordTimestamp], boundary: float
+) -> tuple[list[WordTimestamp], list[WordTimestamp]]:
+    """Делит пословные метки на две группы по середине слова относительно границы."""
+    left: list[WordTimestamp] = []
+    right: list[WordTimestamp] = []
+    for word in words:
+        midpoint = (word.start + word.end) / 2
+        (left if midpoint <= boundary else right).append(word)
+    return left, right
+
+
+def _words_text(words: list[WordTimestamp]) -> str:
+    """Склеивает слова в текст (пробел между словами)."""
+    return " ".join(word.text for word in words)
+
+
+def _split_text(text: str, fraction: float) -> tuple[str, str]:
+    """Делит текст по долям слов, ближайшим к ``fraction`` (0..1).
+
+    Текст режется по границам слов (пробелам), чтобы не разрывать слово. Одна
+    доля всегда непуста, если в тексте больше одного слова.
+    """
+    tokens = text.split()
+    if len(tokens) < 2:
+        return text, ""
+    ratio = min(max(fraction, 0.0), 1.0)
+    cut = round(ratio * len(tokens))
+    cut = min(max(cut, 1), len(tokens) - 1)
+    return " ".join(tokens[:cut]), " ".join(tokens[cut:])
+
+
+def _dedupe_primary(entry: TranscriptEntry) -> TranscriptEntry:
+    """Убирает основного говорящего из ``extra_speakers``, если он там остался."""
+    if entry.speaker is None:
+        return entry
+    primary_id = entry.speaker.id
+    extras = [extra for extra in entry.extra_speakers if extra.id != primary_id]
+    if len(extras) == len(entry.extra_speakers):
+        return entry
+    return replace(entry, extra_speakers=extras)
+
+
+def split_entry(
+    entry: TranscriptEntry,
+    boundary_seconds: float,
+    *,
+    first_speaker: Speaker,
+    second_speaker: Speaker,
+) -> tuple[TranscriptEntry, TranscriptEntry]:
+    """Разрезает реплику по времени на две, каждой даёт своего говорящего (#78).
+
+    Граница ``boundary_seconds`` (секунды аудио) ограничивается интервалом
+    реплики. Текст делится по пословным таймкодам, когда они есть и реплика не
+    правилась вручную: слова с серединой до границы уходят в первую часть,
+    остальные — во вторую. Без слов (или у реплики с ручной правкой #26) текст
+    делится пропорционально доле времени по границам слов, а ручная правка
+    сохраняется: ``edited``/``original_text`` переносятся на обе части
+    разделёнными по той же доле, поэтому общий текст не теряется.
+
+    Основной говорящий каждой части заменяется на ``first_speaker``/
+    ``second_speaker``; участники наложения сохраняются на обеих частях (без
+    дублирования основного). Пометки ``overlap``, ``speaker_confidence`` и
+    прочие поля наследуются.
+    """
+    boundary = min(max(boundary_seconds, entry.start), entry.end)
+    left_words, right_words = _partition_words(entry.words, boundary)
+    total = entry.end - entry.start
+    fraction = (boundary - entry.start) / total if total > 0 else 0.5
+    tokens = entry.text.split()
+    word_aligned = (
+        not entry.edited
+        and bool(entry.words)
+        and len(tokens) == len(entry.words)
+        and 0 < len(left_words) < len(entry.words)
+    )
+    left_text: str
+    right_text: str
+    left_edited: bool
+    right_edited: bool
+    left_origin: str | None
+    right_origin: str | None
+    if word_aligned:
+        cut = len(left_words)
+        left_text = " ".join(tokens[:cut])
+        right_text = " ".join(tokens[cut:])
+        left_edited = right_edited = False
+        left_origin = right_origin = None
+    elif not entry.edited and entry.words and 0 < len(left_words) < len(entry.words):
+        left_text = _words_text(left_words)
+        right_text = _words_text(right_words)
+        left_edited = right_edited = False
+        left_origin = right_origin = None
+    else:
+        left_text, right_text = _split_text(entry.text, fraction)
+        if entry.edited:
+            left_edited = right_edited = True
+            if isinstance(entry.original_text, str):
+                left_origin, right_origin = _split_text(entry.original_text, fraction)
+            else:
+                left_origin = right_origin = None
+        else:
+            left_edited = right_edited = False
+            left_origin = right_origin = None
+    left = replace(
+        entry,
+        end=boundary,
+        text=left_text,
+        speaker=first_speaker,
+        words=left_words,
+        edited=left_edited,
+        original_text=left_origin,
+    )
+    right = replace(
+        entry,
+        start=boundary,
+        text=right_text,
+        speaker=second_speaker,
+        words=right_words,
+        edited=right_edited,
+        original_text=right_origin,
+    )
+    return _dedupe_primary(left), _dedupe_primary(right)
+
+
+def split_entry_in_result(
+    result: TranscriptionResult,
+    index: int,
+    boundary_seconds: float,
+    *,
+    first_speaker: Speaker,
+    second_speaker: Speaker,
+) -> tuple[TranscriptionResult, tuple[TranscriptEntry, TranscriptEntry]]:
+    """Разрезает реплику ``index`` результата и добавляет новых говорящих (#78).
+
+    Возвращает новый результат (реплика заменена двумя) и обе созданные части.
+    Оба говорящих добавляются в ``result.speakers``, если их там ещё нет.
+    """
+    entries = list(result.entries)
+    if index < 0 or index >= len(entries):
+        raise ValueError(f"Реплика #{index} не найдена")
+    left, right = split_entry(
+        entries[index],
+        boundary_seconds,
+        first_speaker=first_speaker,
+        second_speaker=second_speaker,
+    )
+    speakers = list(result.speakers)
+    for speaker in (first_speaker, second_speaker):
+        if not any(existing.id == speaker.id for existing in speakers):
+            speakers.append(speaker)
+    entries[index : index + 1] = [left, right]
+    return replace(result, speakers=speakers, entries=entries), (left, right)

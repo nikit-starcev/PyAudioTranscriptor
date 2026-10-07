@@ -13,16 +13,20 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from audio_transcriber.diarization.enrollment import EnrollmentOutcome, enroll_speakers
 from audio_transcriber.diarization.voices import merge_references
 from audio_transcriber.domain.editing import (
     EntrySpeakerChange,
+    add_extra_speaker,
     merge_speakers,
     next_speaker_id,
     reassign_window,
+    remove_extra_speaker,
     rename_speaker,
+    split_entry_in_result,
 )
 from audio_transcriber.domain.models import (
     Speaker,
@@ -313,6 +317,99 @@ def apply_entry_speaker_assign(
     return updated, changes
 
 
+def apply_entry_extra_speaker(
+    payload: Mapping[str, object],
+    *,
+    source_path: Path,
+    indexes: Sequence[int],
+    target: Speaker,
+    remove: bool,
+    samples: Mapping[str, str],
+) -> tuple[dict[str, object], list[EntrySpeakerChange]]:
+    """Добавляет или убирает второго говорящего у выбранных реплик (#78).
+
+    Второй говорящий — участник наложения (``extra_speakers``): основной
+    говорящий не меняется, а метка реплики становится вида «Имя1 + Имя2».
+    ``remove=True`` убирает целевого из участников наложения. Ручные правки
+    текста (#26), таймкоды, пословные метки и вычисленные флаги сохраняются,
+    потому что число и порядок реплик не меняются.
+    """
+    result = result_from_payload(payload, source_path=source_path)
+    entries = list(result.entries)
+    speakers = list(result.speakers)
+    if not remove and not any(speaker.id == target.id for speaker in speakers):
+        speakers.append(target)
+    changes: list[EntrySpeakerChange] = []
+    for index in indexes:
+        if index < 0 or index >= len(entries):
+            raise ValueError(f"Реплика #{index} не найдена")
+        entry = entries[index]
+        before_primary, before_extras = _entry_speaker_ids(entry)
+        candidate = (
+            remove_extra_speaker(entry, target.id)
+            if remove
+            else add_extra_speaker(entry, target)
+        )
+        after_primary, after_extras = _entry_speaker_ids(candidate)
+        if (before_primary, before_extras) != (after_primary, after_extras):
+            changes.append(
+                EntrySpeakerChange(
+                    index=index,
+                    before_speaker_id=before_primary,
+                    after_speaker_id=after_primary,
+                    before_extra_ids=before_extras,
+                    after_extra_ids=after_extras,
+                )
+            )
+        entries[index] = candidate
+    updated = replace(result, speakers=speakers, entries=entries)
+    return _reserialize(payload, updated, samples), changes
+
+
+def apply_split_entry(
+    payload: Mapping[str, object],
+    *,
+    source_path: Path,
+    index: int,
+    boundary: float,
+    first_speaker: Speaker,
+    second_speaker: Speaker,
+    samples: Mapping[str, str],
+) -> tuple[dict[str, object], tuple[TranscriptEntry, TranscriptEntry]]:
+    """Разрезает реплику ``index`` по ``boundary`` и сохраняет правку (#78).
+
+    Возвращает новый JSON результата и обе созданные части. Пословные таймкоды
+    и ручные правки текста (#26) распределяются доменной операцией
+    :func:`split_entry_in_result`; вычисленные флаги реплик (``low_confidence``,
+    ``low_speaker_confidence``) переносятся на части по их временному интервалу,
+    потому что после разреза индексы реплик сдвигаются.
+    """
+    result = result_from_payload(payload, source_path=source_path)
+    if index < 0 or index >= len(result.entries):
+        raise ValueError(f"Реплика #{index} не найдена")
+    entry = result.entries[index]
+    if not entry.start < boundary < entry.end:
+        raise ValueError("Граница должна быть внутри реплики")
+    updated, parts = split_entry_in_result(
+        result,
+        index,
+        boundary,
+        first_speaker=first_speaker,
+        second_speaker=second_speaker,
+    )
+    cleaned = {key: value for key, value in samples.items() if isinstance(value, str)}
+    new_payload = serialize_result(updated, samples=cleaned)
+    new_payload["samples"] = cleaned
+    _preserve_flags_by_span(payload, new_payload)
+    return new_payload, parts
+
+
+def _entry_speaker_ids(entry: TranscriptEntry) -> tuple[str | None, tuple[str, ...]]:
+    """``(основной, дополнительные)`` идентификаторы говорящих реплики."""
+    primary = entry.speaker.id if entry.speaker is not None else None
+    return primary, tuple(extra.id for extra in entry.extra_speakers)
+
+
 def _payload_speakers(payload: Mapping[str, object]) -> list[dict[str, object]]:
     """Копия списка говорящих результата (с сохранением ``has_sample``)."""
     raw = payload.get("speakers")
@@ -469,6 +566,48 @@ def _preserve_entry_flags(
         source = old_entries[index]
         if isinstance(source, Mapping) and "low_confidence" in source:
             entry["low_confidence"] = bool(source["low_confidence"])
+
+
+def _preserve_flags_by_span(
+    original: Mapping[str, object], updated: dict[str, object]
+) -> None:
+    """Переносит ``low_confidence`` по временному интервалу, а не по индексу.
+
+    Нужно после разреза реплики: число реплик растёт, индексы сдвигаются, и
+    позиционное сопоставление :func:`_preserve_entry_flags` дало бы неверные
+    пометки. Каждая новая реплика привязывается к исходной, в интервал которой
+    попадает её середина.
+    """
+    old_entries = [
+        item for item in _as_list(original.get("entries")) if isinstance(item, Mapping)
+    ]
+    new_entries = updated.get("entries")
+    if not isinstance(new_entries, list):
+        return
+    for entry in new_entries:
+        if not isinstance(entry, dict):
+            continue
+        start = _as_float(entry.get("start"))
+        end = _as_float(entry.get("end"))
+        if start is None or end is None:
+            continue
+        source = _containing_entry(old_entries, (start + end) / 2)
+        if source is not None and "low_confidence" in source:
+            entry["low_confidence"] = bool(source["low_confidence"])
+
+
+def _containing_entry(
+    entries: Sequence[Mapping[str, object]], point: float
+) -> Mapping[str, object] | None:
+    """Исходная реплика, в интервал ``[start, end]`` которой попадает ``point``."""
+    for entry in entries:
+        start = _as_float(entry.get("start"))
+        end = _as_float(entry.get("end"))
+        if start is None or end is None:
+            continue
+        if start <= point <= end:
+            return entry
+    return None
 
 
 def _as_list(value: object) -> list[object]:

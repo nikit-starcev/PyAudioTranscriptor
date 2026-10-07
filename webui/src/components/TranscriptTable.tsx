@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 
 import { formatTime, speakerName, type Entry, type SpeakerInfo } from '../api'
@@ -16,6 +16,19 @@ type Props = {
   onResetText?: (entry: Entry) => Promise<void>
   /** Принудительно назначить говорящего выделенным репликам (#59). */
   onAssignSpeaker?: (entries: Entry[], target: AssignTarget) => Promise<void>
+  /** Разрезать реплику по времени на двух говорящих (#78). */
+  onSplitEntry?: (
+    entry: Entry,
+    boundary: number,
+    first: AssignTarget,
+    second: AssignTarget,
+  ) => Promise<void>
+  /** Добавить (`remove=false`) или убрать (`remove=true`) второго говорящего (#78). */
+  onAddExtraSpeaker?: (
+    entries: Entry[],
+    target: AssignTarget,
+    remove: boolean,
+  ) => Promise<void>
   /** Отменить последнее назначение говорящего (#59). */
   onUndoAssign?: () => Promise<void>
   /** Доступна ли одношаговая отмена назначения. */
@@ -26,6 +39,24 @@ type AssignTarget = { speakerId?: string; newName?: string }
 
 /** Значение селекта «создать нового говорящего». */
 const NEW_SPEAKER = '__new__'
+
+/** Подсказка границы разреза: середина самого большого промежутка между словами. */
+function suggestBoundary(entry: Entry): number {
+  const words = entry.words ?? []
+  const middle = (entry.start + entry.end) / 2
+  if (words.length < 2) return middle
+  let best = middle
+  let bestGap = -1
+  for (let index = 1; index < words.length; index += 1) {
+    const gap = words[index].start - words[index - 1].end
+    if (gap > bestGap) {
+      bestGap = gap
+      best = (words[index - 1].end + words[index].start) / 2
+    }
+  }
+  if (bestGap < 0) return middle
+  return Math.min(Math.max(best, entry.start), entry.end)
+}
 
 type Fragment = { key: string; start: number; end: number }
 
@@ -90,6 +121,8 @@ function TranscriptTable({
   onSaveText,
   onResetText,
   onAssignSpeaker,
+  onSplitEntry,
+  onAddExtraSpeaker,
   onUndoAssign,
   undoAvailable,
 }: Props) {
@@ -119,6 +152,15 @@ function TranscriptTable({
   const [assignTargetId, setAssignTargetId] = useState('')
   const [newSpeakerName, setNewSpeakerName] = useState('')
   const [assignBusy, setAssignBusy] = useState(false)
+
+  // Разрезание реплики на двух говорящих (#78): ключ реплики и черновик формы.
+  const [splitKey, setSplitKey] = useState<string | null>(null)
+  const [splitBoundary, setSplitBoundary] = useState('')
+  const [splitFirstId, setSplitFirstId] = useState('')
+  const [splitFirstNew, setSplitFirstNew] = useState('')
+  const [splitSecondId, setSplitSecondId] = useState('')
+  const [splitSecondNew, setSplitSecondNew] = useState('')
+  const [splitBusy, setSplitBusy] = useState(false)
 
   // Актуальные значения для цикла requestAnimationFrame (без пересоздания).
   const entriesRef = useRef(entries)
@@ -156,6 +198,7 @@ function TranscriptTable({
     setEditingKey(null)
     setEditError(null)
     setContextMenu(null)
+    setSplitKey(null)
   }, [jobId])
 
   // Выделение реплик сбрасываем при смене задачи или списка реплик (после
@@ -311,6 +354,12 @@ function TranscriptTable({
     : []
   const allSelected = entries.length > 0 && selectedEntries.length === entries.length
 
+  const splitTarget = useMemo(() => {
+    if (!splitKey) return undefined
+    const index = entries.findIndex((entry, i) => entryKey(entry, i) === splitKey)
+    return index >= 0 ? entries[index] : undefined
+  }, [splitKey, entries])
+
   const toggleRow = useCallback((key: string) => {
     setSelectedKeys((current) => {
       const next = new Set(current)
@@ -367,6 +416,112 @@ function TranscriptTable({
     assignTargetId === NEW_SPEAKER
       ? newSpeakerName.trim().length > 0
       : assignTargetId.length > 0
+
+  const chosenEntries = useCallback(
+    () => entries.filter((entry, index) => selectedKeys.has(entryKey(entry, index))),
+    [entries, selectedKeys],
+  )
+
+  const resolveTarget = useCallback(
+    (speakerId: string, newName: string): AssignTarget =>
+      speakerId === NEW_SPEAKER ? { newName: newName.trim() } : { speakerId },
+    [],
+  )
+
+  const submitExtra = useCallback(async () => {
+    if (!onAddExtraSpeaker) return
+    const chosen = chosenEntries()
+    if (chosen.length === 0) return
+    const target = resolveTarget(assignTargetId, newSpeakerName)
+    setAssignBusy(true)
+    setEditError(null)
+    try {
+      await onAddExtraSpeaker(chosen, target, false)
+      setSelectedKeys(new Set())
+      setNewSpeakerName('')
+      setAssignTargetId('')
+    } catch (cause) {
+      setEditError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setAssignBusy(false)
+    }
+  }, [onAddExtraSpeaker, chosenEntries, resolveTarget, assignTargetId, newSpeakerName])
+
+  const removeExtra = useCallback(
+    async (entry: Entry, speakerId: string) => {
+      if (!onAddExtraSpeaker) return
+      setEditError(null)
+      try {
+        await onAddExtraSpeaker([entry], { speakerId }, true)
+      } catch (cause) {
+        setEditError(cause instanceof Error ? cause.message : String(cause))
+      }
+    },
+    [onAddExtraSpeaker],
+  )
+
+  const beginSplit = useCallback(
+    (entry: Entry, index: number) => {
+      if (!onSplitEntry) return
+      setSplitKey(entryKey(entry, index))
+      setSplitBoundary(suggestBoundary(entry).toFixed(2))
+      setSplitFirstId(entry.speaker_id ?? '')
+      setSplitFirstNew('')
+      setSplitSecondId('')
+      setSplitSecondNew('')
+      setEditError(null)
+    },
+    [onSplitEntry],
+  )
+
+  const suggestSplitBoundary = useCallback(() => {
+    if (!splitKey) return
+    const index = entries.findIndex((entry, i) => entryKey(entry, i) === splitKey)
+    const entry = index >= 0 ? entries[index] : undefined
+    if (entry) setSplitBoundary(suggestBoundary(entry).toFixed(2))
+  }, [splitKey, entries])
+
+  const submitSplit = useCallback(async () => {
+    if (!onSplitEntry || !splitKey) return
+    const index = entries.findIndex((entry, i) => entryKey(entry, i) === splitKey)
+    const entry = index >= 0 ? entries[index] : undefined
+    if (!entry) return
+    const boundary = Number(splitBoundary.replace(',', '.'))
+    if (!Number.isFinite(boundary) || boundary <= entry.start || boundary >= entry.end) {
+      setEditError('Граница должна быть строго внутри реплики')
+      return
+    }
+    const first = resolveTarget(splitFirstId, splitFirstNew)
+    const second = resolveTarget(splitSecondId, splitSecondNew)
+    if (!first.speakerId && !first.newName) {
+      setEditError('Укажите говорящего первой части')
+      return
+    }
+    if (!second.speakerId && !second.newName) {
+      setEditError('Укажите говорящего второй части')
+      return
+    }
+    setSplitBusy(true)
+    setEditError(null)
+    try {
+      await onSplitEntry(entry, boundary, first, second)
+      setSplitKey(null)
+    } catch (cause) {
+      setEditError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setSplitBusy(false)
+    }
+  }, [
+    onSplitEntry,
+    splitKey,
+    entries,
+    splitBoundary,
+    splitFirstId,
+    splitFirstNew,
+    splitSecondId,
+    splitSecondNew,
+    resolveTarget,
+  ])
 
   return (
     <div className="space-y-2">
@@ -444,12 +599,118 @@ function TranscriptTable({
           >
             {assignBusy ? 'Применяю…' : 'Назначить'}
           </button>
+          {onAddExtraSpeaker && (
+            <button
+              type="button"
+              onClick={() => void submitExtra()}
+              disabled={!assignReady || assignBusy}
+              title="Добавить выбранного говорящего вторым (наложение), не меняя основного"
+              className="rounded-md border border-blue-400 px-2.5 py-1 text-xs text-blue-700 hover:bg-blue-100 disabled:opacity-40 dark:border-blue-700 dark:text-blue-300 dark:hover:bg-blue-950/40"
+            >
+              + второй говорящий
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setSelectedKeys(new Set())}
             className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-white/60 dark:border-slate-600 dark:hover:bg-slate-800"
           >
             Снять выделение
+          </button>
+        </div>
+      )}
+
+      {onSplitEntry && splitKey && splitTarget && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+          <span className="font-medium">
+            Разделить реплику {formatTime(splitTarget.start)}–{formatTime(splitTarget.end)}
+          </span>
+          <label className="flex items-center gap-1">
+            Граница, с
+            <input
+              type="number"
+              min={splitTarget.start}
+              max={splitTarget.end}
+              step={0.01}
+              value={splitBoundary}
+              onChange={(event) => setSplitBoundary(event.target.value)}
+              className="w-24 rounded-md border border-slate-300 px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={suggestSplitBoundary}
+            title={
+              (splitTarget.words?.length ?? 0) >= 2
+                ? 'Подсказать границу по пословным таймкодам'
+                : 'Пословных таймкодов нет — середина реплики'
+            }
+            className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-white/60 dark:border-slate-600 dark:hover:bg-slate-800"
+          >
+            Подсказать
+          </button>
+          <select
+            value={splitFirstId}
+            onChange={(event) => setSplitFirstId(event.target.value)}
+            aria-label="Говорящий первой части"
+            className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+          >
+            <option value="">— 1-я часть —</option>
+            {speakers.map((speaker) => (
+              <option key={speaker.id} value={speaker.id}>
+                {speaker.display_name}
+              </option>
+            ))}
+            <option value={NEW_SPEAKER}>＋ новый говорящий…</option>
+          </select>
+          {splitFirstId === NEW_SPEAKER && (
+            <input
+              value={splitFirstNew}
+              onChange={(event) => setSplitFirstNew(event.target.value)}
+              placeholder="Имя"
+              className="w-28 rounded-md border border-slate-300 px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+            />
+          )}
+          <span className="text-slate-400">+</span>
+          <select
+            value={splitSecondId}
+            onChange={(event) => setSplitSecondId(event.target.value)}
+            aria-label="Говорящий второй части"
+            className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+          >
+            <option value="">— 2-я часть —</option>
+            {speakers.map((speaker) => (
+              <option key={speaker.id} value={speaker.id}>
+                {speaker.display_name}
+              </option>
+            ))}
+            <option value={NEW_SPEAKER}>＋ новый говорящий…</option>
+          </select>
+          {splitSecondId === NEW_SPEAKER && (
+            <input
+              value={splitSecondNew}
+              onChange={(event) => setSplitSecondNew(event.target.value)}
+              placeholder="Имя"
+              className="w-28 rounded-md border border-slate-300 px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+            />
+          )}
+          <button
+            type="button"
+            onClick={() => void submitSplit()}
+            disabled={splitBusy}
+            className="rounded-md bg-amber-600 px-2.5 py-1 text-xs text-white hover:bg-amber-500 disabled:opacity-40"
+          >
+            {splitBusy ? 'Разрезаю…' : 'Разделить'}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setSplitKey(null)
+              setEditError(null)
+            }}
+            className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-white/60 dark:border-slate-600 dark:hover:bg-slate-800"
+          >
+            Отмена
           </button>
         </div>
       )}
@@ -528,27 +789,49 @@ function TranscriptTable({
                     {formatTime(entry.start)}
                   </td>
                   <td className="px-3 py-1.5">
-                    <div
-                      className="max-w-[9rem] whitespace-normal break-words leading-snug sm:max-w-[16rem]"
-                      title={pieces.map((piece) => piece.name).join(' + ')}
-                    >
-                      {pieces.map((piece, pieceIndex) => (
-                        <span key={`${piece.id ?? 'none'}-${pieceIndex}`}>
-                          {pieceIndex > 0 && (
-                            <span className="mx-1 text-slate-400 dark:text-slate-500">+</span>
-                          )}
-                          <span
-                            className={
-                              piece.extra
-                                ? 'text-slate-500 dark:text-slate-400'
-                                : undefined
-                            }
-                            title={piece.extra ? 'дополнительный говорящий (наложение)' : undefined}
-                          >
-                            {piece.name}
+                    <div className="flex items-start gap-1.5">
+                      <div
+                        className="max-w-[9rem] whitespace-normal break-words leading-snug sm:max-w-[16rem]"
+                        title={pieces.map((piece) => piece.name).join(' + ')}
+                      >
+                        {pieces.map((piece, pieceIndex) => (
+                          <span key={`${piece.id ?? 'none'}-${pieceIndex}`}>
+                            {pieceIndex > 0 && (
+                              <span className="mx-1 text-slate-400 dark:text-slate-500">+</span>
+                            )}
+                            <span
+                              className={
+                                piece.extra
+                                  ? 'text-slate-500 dark:text-slate-400'
+                                  : undefined
+                              }
+                              title={piece.extra ? 'дополнительный говорящий (наложение)' : undefined}
+                            >
+                              {piece.name}
+                            </span>
+                            {piece.extra && piece.id && onAddExtraSpeaker && (
+                              <button
+                                type="button"
+                                onClick={() => void removeExtra(entry, piece.id as string)}
+                                title="Убрать второго говорящего"
+                                className="ml-1 rounded border border-slate-300 px-1 text-[10px] text-slate-500 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+                              >
+                                ×
+                              </button>
+                            )}
                           </span>
-                        </span>
-                      ))}
+                        ))}
+                      </div>
+                      {onSplitEntry && (
+                        <button
+                          type="button"
+                          onClick={() => beginSplit(entry, index)}
+                          title="Разделить реплику по времени на двух говорящих"
+                          className="mt-0.5 shrink-0 rounded border border-slate-300 px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+                        >
+                          разделить
+                        </button>
+                      )}
                     </div>
                   </td>
                   <td className="whitespace-nowrap px-3 py-1.5 text-base">

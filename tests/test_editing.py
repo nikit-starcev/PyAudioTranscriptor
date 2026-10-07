@@ -10,12 +10,21 @@ from __future__ import annotations
 from pathlib import Path
 
 from audio_transcriber.domain.editing import (
+    add_extra_speaker,
     merge_speakers,
     next_speaker_id,
     reassign_window,
+    remove_extra_speaker,
     rename_speaker,
+    split_entry,
+    split_entry_in_result,
 )
-from audio_transcriber.domain.models import Speaker, TranscriptEntry, TranscriptionResult
+from audio_transcriber.domain.models import (
+    Speaker,
+    TranscriptEntry,
+    TranscriptionResult,
+    WordTimestamp,
+)
 
 
 def _result() -> TranscriptionResult:
@@ -189,4 +198,156 @@ def test_reassign_window_does_not_mutate_original() -> None:
     reassign_window(_result(), start=0.0, end=1.0, target=target)
 
     assert _result().entries[0].speaker_label == "Аня + Боря"
+
+
+# --- разрезание реплики и второй говорящий (#78) ----------------------------
+
+
+def _words(*items: tuple[str, float, float]) -> list[WordTimestamp]:
+    return [WordTimestamp(text=text, start=start, end=end) for text, start, end in items]
+
+
+def _split_result() -> TranscriptionResult:
+    anya = Speaker(id="SPEAKER_00", display_name="Аня")
+    entry = TranscriptEntry(
+        start=0.0,
+        end=3.0,
+        text="привет как дела",
+        speaker=anya,
+        avg_logprob=-2.0,
+        words=_words(("привет", 0.0, 1.0), ("как", 1.0, 2.0), ("дела", 2.0, 3.0)),
+    )
+    return TranscriptionResult(
+        source_path=Path("call.mp3"),
+        language="ru",
+        duration=3.0,
+        entries=[entry],
+        speakers=[anya],
+    )
+
+
+def test_split_entry_uses_word_timestamps() -> None:
+    anya = Speaker(id="SPEAKER_00", display_name="Аня")
+    boris = Speaker(id="SPEAKER_01", display_name="Боря")
+    entry = _split_result().entries[0]
+
+    left, right = split_entry(entry, 1.5, first_speaker=anya, second_speaker=boris)
+
+    assert left.text == "привет как"
+    assert right.text == "дела"
+    assert left.speaker == anya
+    assert right.speaker == boris
+    assert (left.start, left.end) == (0.0, 1.5)
+    assert (right.start, right.end) == (1.5, 3.0)
+    assert [word.text for word in left.words] == ["привет", "как"]
+    assert [word.text for word in right.words] == ["дела"]
+
+
+def test_split_entry_without_words_splits_proportionally() -> None:
+    anya = Speaker(id="SPEAKER_00", display_name="Аня")
+    boris = Speaker(id="SPEAKER_01", display_name="Боря")
+    entry = TranscriptEntry(start=0.0, end=4.0, text="один два три четыре", speaker=anya)
+
+    left, right = split_entry(entry, 3.0, first_speaker=anya, second_speaker=boris)
+
+    assert left.text == "один два три"
+    assert right.text == "четыре"
+
+
+def test_split_entry_preserves_manual_edit() -> None:
+    anya = Speaker(id="SPEAKER_00", display_name="Аня")
+    boris = Speaker(id="SPEAKER_01", display_name="Боря")
+    entry = TranscriptEntry(
+        start=0.0,
+        end=2.0,
+        text="исправлено вручную",
+        speaker=anya,
+        edited=True,
+        original_text="исходный текст",
+    )
+
+    left, right = split_entry(entry, 1.0, first_speaker=anya, second_speaker=boris)
+
+    assert left.text == "исправлено"
+    assert right.text == "вручную"
+    assert left.text + " " + right.text == entry.text
+    assert left.edited is True and right.edited is True
+    assert left.original_text == "исходный"
+    assert right.original_text == "текст"
+
+
+def test_split_entry_preserves_overlap_extras_without_duplicating_primary() -> None:
+    anya = Speaker(id="SPEAKER_00", display_name="Аня")
+    boris = Speaker(id="SPEAKER_01", display_name="Боря")
+    entry = TranscriptEntry(
+        start=0.0,
+        end=2.0,
+        text="да нет",
+        speaker=anya,
+        overlap=True,
+        extra_speakers=[boris],
+    )
+
+    left, right = split_entry(entry, 1.0, first_speaker=anya, second_speaker=boris)
+
+    assert left.speaker_label == "Аня + Боря"
+    assert right.speaker_label == "Боря"
+
+
+def test_split_entry_in_result_replaces_and_adds_speakers() -> None:
+    boris = Speaker(id="SPEAKER_01", display_name="Боря")
+    vasya = Speaker(id="SPEAKER_02", display_name="Вася")
+
+    updated, parts = split_entry_in_result(
+        _split_result(),
+        0,
+        1.5,
+        first_speaker=boris,
+        second_speaker=vasya,
+    )
+
+    assert len(updated.entries) == 2
+    assert parts[0].speaker == boris
+    assert parts[1].speaker == vasya
+    assert [speaker.id for speaker in updated.speakers] == [
+        "SPEAKER_00",
+        "SPEAKER_01",
+        "SPEAKER_02",
+    ]
+
+
+def test_add_extra_speaker_marks_overlap_and_label() -> None:
+    anya = Speaker(id="SPEAKER_00", display_name="Аня")
+    boris = Speaker(id="SPEAKER_01", display_name="Боря")
+    entry = TranscriptEntry(start=0.0, end=1.0, text="да", speaker=anya)
+
+    updated = add_extra_speaker(entry, boris)
+
+    assert updated.speaker_label == "Аня + Боря"
+    assert updated.overlap is True
+    assert add_extra_speaker(updated, boris) == updated
+    assert add_extra_speaker(updated, anya) == updated
+
+
+def test_remove_extra_speaker_clears_overlap_when_none_left() -> None:
+    anya = Speaker(id="SPEAKER_00", display_name="Аня")
+    boris = Speaker(id="SPEAKER_01", display_name="Боря")
+    vasya = Speaker(id="SPEAKER_02", display_name="Вася")
+    entry = TranscriptEntry(
+        start=0.0,
+        end=1.0,
+        text="да",
+        speaker=anya,
+        overlap=True,
+        extra_speakers=[boris, vasya],
+    )
+
+    one_left = remove_extra_speaker(entry, "SPEAKER_01")
+    assert one_left.speaker_label == "Аня + Вася"
+    assert one_left.overlap is True
+
+    none_left = remove_extra_speaker(one_left, "SPEAKER_02")
+    assert none_left.speaker_label == "Аня"
+    assert none_left.overlap is False
+    assert remove_extra_speaker(none_left, "SPEAKER_09") == none_left
 

@@ -16,6 +16,7 @@ import {
   type ConfigInfo,
   type DoctorReport,
   type Entry,
+  type ExtraSpeakerResponse,
   type FileItem,
   type Job,
   type JobDetails,
@@ -25,6 +26,7 @@ import {
   type ReassignRequest,
   type ReassignResponse,
   type SampleMeta,
+  type SplitEntryResponse,
   type StageTime,
   type SummaryPrompt,
   type TranscriptEditsRequest,
@@ -58,6 +60,13 @@ const STAGES: { key: string; label: string }[] = [
   { key: 'llm', label: 'LLM-постобработка' },
   { key: 'export', label: 'Экспорт' },
 ]
+
+//: Говорящий части разрезаемой реплики (#78): новое имя или id существующего.
+function splitPart(target: { speakerId?: string; newName?: string }) {
+  return target.newName
+    ? { new_name: target.newName }
+    : { speaker_id: target.speakerId ?? null }
+}
 
 const STATUS_LABELS: Record<string, string> = {
   queued: 'В очереди',
@@ -910,6 +919,69 @@ function App() {
     [result],
   )
 
+  //: Разрезание реплики на двух говорящих по времени (#78). Результат
+  //: перезаписывается на сервере; доступна одношаговая отмена (общая с #40/#41).
+  const splitEntry = useCallback(
+    async (
+      jobId: string,
+      entry: Entry,
+      boundary: number,
+      first: { speakerId?: string; newName?: string },
+      second: { speakerId?: string; newName?: string },
+    ) => {
+      const index = result ? result.entries.indexOf(entry) : -1
+      if (index < 0) throw new Error('Не удалось определить выбранную реплику')
+      const response = await api<SplitEntryResponse>(
+        `/api/jobs/${jobId}/transcript/split`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            index,
+            boundary,
+            first: splitPart(first),
+            second: splitPart(second),
+          }),
+        },
+      )
+      setResult(response.result)
+      setSpeakerUndoAvailable(true)
+    },
+    [result],
+  )
+
+  //: Второй говорящий на реплику (#78): добавляет или убирает участника
+  //: наложения. Основной говорящий не меняется; доступна одношаговая отмена.
+  const editExtraSpeaker = useCallback(
+    async (
+      jobId: string,
+      entries: Entry[],
+      target: { speakerId?: string; newName?: string },
+      remove = false,
+    ) => {
+      const indexes = entries
+        .map((entry) => (result ? result.entries.indexOf(entry) : -1))
+        .filter((index) => index >= 0)
+      if (indexes.length === 0) {
+        throw new Error('Не удалось определить выбранные реплики')
+      }
+      const body: Record<string, unknown> = { indexes, remove }
+      if (target.newName) body.new_name = target.newName
+      else body.target_speaker_id = target.speakerId
+      const response = await api<ExtraSpeakerResponse>(
+        `/api/jobs/${jobId}/transcript/extra-speaker`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        },
+      )
+      setResult(response.result)
+      setSpeakerUndoAvailable(true)
+    },
+    [result],
+  )
+
   const applyNames = useCallback(
     async (jobId: string): Promise<ApplyNamesResponse> => {
       const response = await runActionTask(
@@ -1627,6 +1699,12 @@ function App() {
               }}
               onAssignSpeaker={(entries: Entry[], target) =>
                 assignSpeaker(activeJobId, entries, target)
+              }
+              onSplitEntry={(entry: Entry, boundary, first, second) =>
+                splitEntry(activeJobId, entry, boundary, first, second)
+              }
+              onAddExtraSpeaker={(entries: Entry[], target, remove) =>
+                editExtraSpeaker(activeJobId, entries, target, remove)
               }
               onUndoAssign={() => undoSpeakers(activeJobId)}
               undoAvailable={speakerUndoAvailable}

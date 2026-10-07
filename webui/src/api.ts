@@ -93,6 +93,14 @@ export type JobDetails = Job & { summary: Summary | null }
 
 export type SpeakerInfo = { id: string; display_name: string; has_sample: boolean }
 
+/** Пословная метка времени реплики (#45), приходит при включённой стадии. */
+export type WordTimestamp = {
+  text: string
+  start: number
+  end: number
+  probability: number | null
+}
+
 export type Entry = {
   start: number
   end: number
@@ -107,6 +115,8 @@ export type Entry = {
   edited: boolean
   /** Исходный текст до первой ручной правки (для сброса). */
   original_text: string | null
+  /** Пословные таймкоды реплики (#45), если стадия включена. */
+  words?: WordTimestamp[]
 }
 
 export type Mark = { key: string; symbol: string; label: string }
@@ -198,6 +208,47 @@ export type AssignSpeakerResponse = {
   target_speaker_id: string
   created_speaker: { id: string; display_name: string } | null
   indexes: number[]
+}
+
+/** Говорящий одной части разрезаемой реплики (#78): существующий или новый. */
+export type SplitPart = { speaker_id?: string | null; new_name?: string | null }
+
+/** Тело ``POST /api/jobs/{id}/transcript/split`` (#78). */
+export type SplitEntryRequest = {
+  index: number
+  /** Момент разреза в секундах аудио (строго внутри реплики). */
+  boundary: number
+  first: SplitPart
+  second: SplitPart
+}
+
+/** Ответ ``POST .../transcript/split`` (#78). */
+export type SplitEntryResponse = {
+  result: TranscriptResult
+  index: number
+  boundary: number
+  first_speaker_id: string
+  second_speaker_id: string
+  created_speakers: { id: string; display_name: string }[]
+}
+
+/** Тело ``POST /api/jobs/{id}/transcript/extra-speaker`` (#78). */
+export type ExtraSpeakerRequest = {
+  indexes: number[]
+  target_speaker_id?: string | null
+  new_name?: string | null
+  /** Убрать целевого из участников наложения вместо добавления. */
+  remove?: boolean
+}
+
+/** Ответ ``POST .../transcript/extra-speaker`` (#78). */
+export type ExtraSpeakerResponse = {
+  result: TranscriptResult
+  changes: SpeakerChange[]
+  target_speaker_id: string
+  created_speaker: { id: string; display_name: string } | null
+  indexes: number[]
+  removed: boolean
 }
 
 /** Класс устройства распознавания речи (#72). */

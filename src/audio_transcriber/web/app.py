@@ -25,6 +25,7 @@ import uuid
 import webbrowser
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlparse
@@ -71,6 +72,7 @@ from audio_transcriber.diarization.voices import (
     unique_sample_path,
 )
 from audio_transcriber.domain.enums import AsrBackend, ExportFormat
+from audio_transcriber.domain.models import Speaker, TranscriptionResult
 from audio_transcriber.export.factory import create_exporter
 from audio_transcriber.llm.client import probe_openai_server
 from audio_transcriber.protocol import ProtocolArtifacts, generate_protocol
@@ -167,9 +169,11 @@ from audio_transcriber.web.settings import (
 )
 from audio_transcriber.web.setup import build_setup_steps
 from audio_transcriber.web.speakers import (
+    apply_entry_extra_speaker,
     apply_entry_speaker_assign,
     apply_names,
     apply_speaker_changes,
+    apply_split_entry,
     apply_window_reassign,
     build_speaker_segments,
     find_speaker,
@@ -393,6 +397,45 @@ class AssignSpeakerRequest(BaseModel):
     target_speaker_id: str | None = None
     new_name: str | None = None
     co_speaker: bool = False
+
+
+class SplitPart(BaseModel):
+    """Говорящий одной части разрезаемой реплики (#78).
+
+    Указывается ровно одно: существующий ``speaker_id`` или ``new_name`` (новый
+    либо существующий с таким именем).
+    """
+
+    speaker_id: str | None = None
+    new_name: str | None = None
+
+
+class SplitEntryRequest(BaseModel):
+    """Тело ``POST /api/jobs/{id}/transcript/split`` (#78).
+
+    ``index`` — позиция реплики, ``boundary`` — момент разреза в секундах
+    аудио (строго внутри реплики). ``first``/``second`` задают говорящих
+    частей до и после границы.
+    """
+
+    index: int = Field(ge=0)
+    boundary: float
+    first: SplitPart
+    second: SplitPart
+
+
+class ExtraSpeakerRequest(BaseModel):
+    """Тело ``POST /api/jobs/{id}/transcript/extra-speaker`` (#78).
+
+    ``indexes`` — реплики, которым добавляется (или у которых убирается при
+    ``remove=True``) второй говорящий. Цель ровно одна: ``target_speaker_id``
+    или ``new_name``.
+    """
+
+    indexes: list[int] = Field(default_factory=list)
+    target_speaker_id: str | None = None
+    new_name: str | None = None
+    remove: bool = False
 
 
 class ApplyGlossaryRequest(BaseModel):
@@ -1685,6 +1728,138 @@ def register_api(
                 "target_speaker_id": target.id,
                 "created_speaker": created,
                 "indexes": indexes,
+            }
+        )
+
+    @router.post("/jobs/{job_id}/transcript/split")
+    def split_entry_route(job_id: str, payload: SplitEntryRequest) -> Response:
+        """Разрезает реплику по времени на двух говорящих (#78).
+
+        ``index`` — позиция реплики, ``boundary`` — момент разреза (секунды
+        аудио, строго внутри реплики). Текст делится по пословным таймкодам,
+        иначе — пропорционально времени; ручные правки текста (#26) не теряются.
+        Цели частей задаются ровно одним из ``speaker_id``/``new_name``; новые
+        говорящие создаются и попадают в список говорящих. Результат
+        сохраняется, доступна одношаговая отмена (``POST .../speakers/undo``).
+        """
+        job = _require_job(store, job_id)
+        raw = _require_result(paths, job)
+        entries = raw.get("entries")
+        if not isinstance(entries, list):
+            raise HTTPException(status_code=400, detail="В результате нет реплик")
+        if payload.index >= len(entries):
+            raise HTTPException(
+                status_code=400, detail=f"Реплика #{payload.index} не найдена"
+            )
+        source = Path(job.source_path)
+        result = result_from_payload(raw, source_path=source)
+        first, first_created = _resolve_split_part(result, payload.first)
+        if first_created is not None:
+            result = replace(result, speakers=[*result.speakers, first])
+        second, second_created = _resolve_split_part(result, payload.second)
+        try:
+            new_payload, _parts = apply_split_entry(
+                raw,
+                source_path=source,
+                index=payload.index,
+                boundary=payload.boundary,
+                first_speaker=first,
+                second_speaker=second,
+                samples=_result_samples(raw),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _write_result(paths, job, new_payload)
+        speaker_undo[job_id] = raw
+        created = [item for item in (first_created, second_created) if item is not None]
+        return JSONResponse(
+            {
+                "result": new_payload,
+                "index": payload.index,
+                "boundary": payload.boundary,
+                "first_speaker_id": first.id,
+                "second_speaker_id": second.id,
+                "created_speakers": created,
+            }
+        )
+
+    @router.post("/jobs/{job_id}/transcript/extra-speaker")
+    def extra_speaker_route(job_id: str, payload: ExtraSpeakerRequest) -> Response:
+        """Добавляет или убирает второго говорящего у реплик (#78).
+
+        ``indexes`` — позиции реплик. При ``remove=False`` цель становится
+        участником наложения (``extra_speakers``), метка реплики принимает вид
+        «Имя1 + Имя2», основной говорящий не меняется. При ``remove=True`` цель
+        убирается из участников наложения. Цель ровно одна: существующий
+        ``target_speaker_id`` или ``new_name``. Ручные правки текста (#26)
+        сохраняются, доступна одношаговая отмена.
+        """
+        job = _require_job(store, job_id)
+        raw = _require_result(paths, job)
+        entries = raw.get("entries")
+        if not isinstance(entries, list):
+            raise HTTPException(status_code=400, detail="В результате нет реплик")
+        indexes: list[int] = []
+        for index in payload.indexes:
+            if index < 0 or index >= len(entries):
+                raise HTTPException(
+                    status_code=400, detail=f"Реплика #{index} не найдена"
+                )
+            if index not in indexes:
+                indexes.append(index)
+        if not indexes:
+            raise HTTPException(status_code=400, detail="Не выбрано ни одной реплики")
+        target_id = (payload.target_speaker_id or "").strip()
+        new_name = (payload.new_name or "").strip()
+        if bool(target_id) == bool(new_name):
+            raise HTTPException(
+                status_code=400,
+                detail="Укажите ровно одно: говорящего или имя нового",
+            )
+        source = Path(job.source_path)
+        result = result_from_payload(raw, source_path=source)
+        created: dict[str, str] | None = None
+        if target_id:
+            target = find_speaker(result, target_id)
+            if target is None:
+                raise HTTPException(status_code=404, detail="Говорящий не найден")
+        else:
+            existing = find_speaker_by_name(result, new_name)
+            if existing is not None:
+                target = existing
+            elif payload.remove:
+                raise HTTPException(status_code=404, detail="Говорящий не найден")
+            else:
+                target = make_speaker(result, new_name)
+                created = {"id": target.id, "display_name": target.display_name}
+        try:
+            new_payload, changes = apply_entry_extra_speaker(
+                raw,
+                source_path=source,
+                indexes=indexes,
+                target=target,
+                remove=payload.remove,
+                samples=_result_samples(raw),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not changes:
+            detail = (
+                "У выбранных реплик нет этого второго говорящего"
+                if payload.remove
+                else "Выбранные реплики уже содержат этого говорящего"
+            )
+            raise HTTPException(status_code=400, detail=detail)
+        _write_result(paths, job, new_payload)
+        speaker_undo[job_id] = raw
+        return JSONResponse(
+            {
+                "result": new_payload,
+                "changes": [change.as_dict() for change in changes],
+                "target_speaker_id": target.id,
+                "created_speaker": created,
+                "indexes": indexes,
+                "removed": payload.remove,
             }
         )
 
@@ -3168,6 +3343,33 @@ def _validate_speaker_range(
             status_code=422,
             detail="min_speakers не может быть больше max_speakers",
         )
+
+
+def _resolve_split_part(
+    result: TranscriptionResult, part: SplitPart
+) -> tuple[Speaker, dict[str, str] | None]:
+    """Разрешает говорящего части разрезаемой реплики (#78).
+
+    Ровно одно из ``speaker_id``/``new_name``. Существующий говорящий ищется по
+    id или по имени; если имени нет, создаётся новый (dict — описание созданного).
+    """
+    target_id = (part.speaker_id or "").strip()
+    new_name = (part.new_name or "").strip()
+    if bool(target_id) == bool(new_name):
+        raise HTTPException(
+            status_code=400,
+            detail="Укажите ровно одно: говорящего или имя нового",
+        )
+    if target_id:
+        target = find_speaker(result, target_id)
+        if target is None:
+            raise HTTPException(status_code=404, detail="Говорящий не найден")
+        return target, None
+    existing = find_speaker_by_name(result, new_name)
+    if existing is not None:
+        return existing, None
+    target = make_speaker(result, new_name)
+    return target, {"id": target.id, "display_name": target.display_name}
 
 
 def _result_path(paths: WebPaths, job: Job) -> Path:
