@@ -156,7 +156,7 @@ def test_binary_requirements_include_onnx_asr_for_gigaam() -> None:
 
     # Бинарные пункты: check_id берётся из единого реестра assets (#98).
     whisper = web_setup.binary_requirements(WebSettings(asr_backend="whisper-cpp"))
-    assert [item["key"] for item in whisper] == ["whisper-cli", "sherpa-onnx"]
+    assert [item["key"] for item in whisper] == ["whisper-cli", "deep-filter", "sherpa-onnx"]
     assert whisper[0]["check_id"] == "bin:whisper-cli"
     assert whisper[0]["kind"] == "binary"
 
