@@ -473,6 +473,51 @@ def test_hybrid_raises_when_speakers_too_short(monkeypatch: pytest.MonkeyPatch) 
         diarizer.diarize(Path("audio.wav"), waveform=samples)
 
 
+def test_hybrid_keeps_short_speaker_insertion(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Короткая вставка (1 с) сохраняется отдельным кластером, а не теряется (#93)."""
+    samples = np.full(30 * SR, 0.5, dtype=np.float32)
+    _patch_windows(monkeypatch, [AnalysisWindow(0, 30 * SR, 0, 30 * SR)])
+    _patch_diarize(
+        monkeypatch,
+        [
+            [
+                SpeakerSegment(0.0, 10.0, "a"),
+                SpeakerSegment(10.0, 11.0, "b"),  # 1.0 с < 3.0, но >= 0.5
+                SpeakerSegment(11.0, 30.0, "a"),
+            ]
+        ],
+    )
+    diarizer = _diarizer(embedder=_SequenceEmbedder([_A, _B]), monkeypatch=monkeypatch)
+
+    segments = diarizer.diarize(Path("audio.wav"), waveform=samples)
+
+    # Два говорящих: длинный «a» и короткая вставка «b».
+    assert len({segment.speaker_id for segment in segments}) == 2
+    short = [segment for segment in segments if segment.start == pytest.approx(10.0)]
+    assert short and short[0].end - short[0].start == pytest.approx(1.0)
+
+
+def test_hybrid_drops_speaker_below_short_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Совсем короткий локальный говорящий (< 0.5 с) по-прежнему не кластеризуется."""
+    samples = np.full(30 * SR, 0.5, dtype=np.float32)
+    _patch_windows(monkeypatch, [AnalysisWindow(0, 30 * SR, 0, 30 * SR)])
+    _patch_diarize(
+        monkeypatch,
+        [
+            [
+                SpeakerSegment(0.0, 10.0, "a"),
+                SpeakerSegment(10.0, 10.4, "b"),  # 0.4 с < 0.5 — шум
+                SpeakerSegment(10.4, 30.0, "a"),
+            ]
+        ],
+    )
+    diarizer = _diarizer(embedder=_SequenceEmbedder([_A]), monkeypatch=monkeypatch)
+
+    segments = diarizer.diarize(Path("audio.wav"), waveform=samples)
+
+    assert {segment.speaker_id for segment in segments} == {"SPEAKER_00"}
+
+
 def test_hybrid_raises_when_binary_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(hybrid_engine, "binary_available", lambda _binary: False)
     diarizer = HybridSpeakerDiarizer(embedder=_SequenceEmbedder([]))

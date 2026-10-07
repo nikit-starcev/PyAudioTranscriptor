@@ -55,6 +55,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_HYBRID_LINKAGE,
     DEFAULT_DIARIZATION_HYBRID_MAX_EMBEDDING_SECONDS,
     DEFAULT_DIARIZATION_HYBRID_MAX_SPLIT_DEPTH,
+    DEFAULT_DIARIZATION_HYBRID_MIN_SHORT_SPEAKER_SECONDS,
     DEFAULT_DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS,
     DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS,
     DEFAULT_DIARIZATION_HYBRID_OVERLOAD_CHANGE_RATE,
@@ -93,7 +94,10 @@ logger = logging.getLogger(__name__)
 #:     TV≈0.19; ward/1.30 → k≈10, топ ~36%, TV≈0.12.
 #: 6 — в ключ кэша диаризации добавлены фактический денойз и все параметры
 #:     гибрида/оценщика (#83); версия поднята как сигнал смены семантики ключа.
-DIARIZATION_HYBRID_IMPL_VERSION = 6
+#: 7 — короткие локальные говорящие (от ``MIN_SHORT_SPEAKER_SECONDS``) больше не
+#:     выбрасываются: их эмбеддинг учитывается в глобальной кластеризации, и
+#:     короткая вставка другого участника сохраняется отдельным кластером (#93).
+DIARIZATION_HYBRID_IMPL_VERSION = 7
 
 #: Запас (в говорящих) к мягкой оценке числа говорящих при кластеризации.
 #: Оценка ``expected_speakers`` никогда не задаёт точное число кластеров: она
@@ -685,7 +689,13 @@ class HybridSpeakerDiarizer:
                 speech_seconds = sum(
                     max(0.0, segment.end - segment.start) for segment in speaker_segments
                 )
-                if speech_seconds < self._min_speaker_seconds:
+                # Короткий говорящий не выбрасывается, пока хватает длины для
+                # осмысленного эмбеддинга (#93): иначе короткая вставка другого
+                # участника терялась бы (в т.ч. склеивалась бы с соседом).
+                if (
+                    speech_seconds < self._min_speaker_seconds
+                    and speech_seconds < DEFAULT_DIARIZATION_HYBRID_MIN_SHORT_SPEAKER_SECONDS
+                ):
                     continue
                 clip = _collect_speaker_samples(
                     samples,

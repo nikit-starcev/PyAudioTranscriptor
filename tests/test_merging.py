@@ -5,7 +5,11 @@ from __future__ import annotations
 import random
 import time
 
-from audio_transcriber.domain.models import SpeakerSegment, TranscriptionSegment
+from audio_transcriber.domain.models import (
+    SpeakerSegment,
+    TranscriptionSegment,
+    WordTimestamp,
+)
 from audio_transcriber.merging.aligner import (
     MAX_NEAREST_GAP_SECONDS,
     OverlapSegmentMerger,
@@ -557,6 +561,23 @@ def test_speaker_confidence_zero_for_nearest_without_overlap() -> None:
 
     assert entries[0].speaker is not None
     assert entries[0].speaker_confidence == 0.0
+
+
+def test_speaker_confidence_uses_word_spans() -> None:
+    """С пословными метками уверенность считается по речи, а не по тишине."""
+    segment = TranscriptionSegment(
+        start=0.0,
+        end=10.0,
+        text="речь",
+        words=[WordTimestamp(text="речь", start=2.0, end=4.0)],
+    )
+    speaker_segments = [SpeakerSegment(start=2.0, end=4.0, speaker_id="SPEAKER_00")]
+
+    entries, _ = OverlapSegmentMerger().merge([segment], speaker_segments)
+
+    # Весь интервал = 10 с, покрытый говорящим — 2 с; но речь занимает 2 с и
+    # покрыта целиком → уверенность 1.0, а не 0.2.
+    assert entries[0].speaker_confidence == 1.0
 
 
 def test_mark_overlap_disabled_skips_extra_speakers() -> None:

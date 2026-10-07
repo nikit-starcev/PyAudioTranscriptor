@@ -66,9 +66,11 @@ from audio_transcriber.export.timeline import (
 from audio_transcriber.llm.base import LlmClient
 from audio_transcriber.merging.aligner import OverlapSegmentMerger
 from audio_transcriber.merging.base import SegmentMerger
+from audio_transcriber.merging.context import assign_context_speakers
 from audio_transcriber.merging.overlap import apply_overlap_regions, trim_artifact_overlaps
 from audio_transcriber.merging.same_name import merge_same_name_speakers
 from audio_transcriber.merging.sentence_merger import SentenceMerger
+from audio_transcriber.merging.split import SpeakerChangeSplitter
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.transcription.base import SpeechRecognizer
 from audio_transcriber.transcription.gigaam_engine import (
@@ -474,6 +476,7 @@ def run_pipeline(
     diarizer: SpeakerDiarizer | None = None,
     merger: SegmentMerger | None = None,
     sentence_merger: SentenceMerger | None = None,
+    speaker_splitter: SpeakerChangeSplitter | None = None,
     artifact_cleaner: ArtifactCleanerProtocol | None = None,
     repetition_cleaner: RepetitionCleanerProtocol | None = None,
     text_normalizer: TextNormalizerProtocol | None = None,
@@ -506,6 +509,11 @@ def run_pipeline(
     # с одним говорящим, как раньше.
     merger = merger or OverlapSegmentMerger(mark_overlap=config.mark_overlap)
     sentence_merger = sentence_merger or SentenceMerger()
+    # Автоматический аналог ручного «разделить» (#93): режет реплику, если
+    # внутри неё диаризация видит смену говорящего (в т.ч. короткую вставку).
+    speaker_splitter = speaker_splitter or SpeakerChangeSplitter(
+        mark_overlap=config.mark_overlap
+    )
     if artifact_cleaner is None and config.clean_artifacts:
         artifact_cleaner = ArtifactCleaner()
     if repetition_cleaner is None and config.collapse_repeats:
@@ -760,6 +768,14 @@ def run_pipeline(
         )
     entries = merged_entries
 
+    # Авторазделение реплик по смене говорящего (#93): после склейки интервалы
+    # финальны, а пословные метки позволяют точно рассёчь короткую вставку
+    # другого участника. Делаем до добора наложений — части должны встать на
+    # свои интервалы.
+    entries, speakers = speaker_splitter.split(
+        entries, speaker_segments, speakers, known_speakers
+    )
+
     # Склейка коротких сегментов могла создать повтор n-грамм на их стыке —
     # повторяем схлопывание уже по готовым репликам.
     if repetition_cleaner is not None:
@@ -782,10 +798,22 @@ def run_pipeline(
     if config.merge_same_name_speakers:
         entries, speakers = merge_same_name_speakers(entries, speakers)
 
+    # После авторазделения и сворачивания одноимённых кластеров соседние реплики
+    # одного говорящего снова склеиваем: фрагменты одного человека, разнесённые
+    # диаризацией по разным кластерам, после слияния имён стыкуются обратно,
+    # чтобы не дробить речь без нужды.
+    entries = sentence_merger.merge(entries)
+
     # Пересечения соседних реплик без признака наложения — артефакт растянутых
     # до конца ASR-куска границ; подрезаем до начала следующей реплики. Настоящее
     # наложение речи (overlap/extra_speakers) сохраняется.
     entries = trim_artifact_overlaps(entries)
+
+    # Короткие реплики в «дырках» разметки диаризации без говорящего добираем
+    # контекстом (#93): короткая вставка зажата между размеченной речью, и
+    # ближайший участник — почти наверняка её автор. Длинные реплики и далёкие
+    # соседи не трогаются (не угадываем).
+    entries = assign_context_speakers(entries)
 
     _ensure_not_cancelled(cancel_event, "перед автоисправлением")
     if corrector is not None:

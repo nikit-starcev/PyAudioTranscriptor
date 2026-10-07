@@ -74,6 +74,32 @@ def _merged_intervals_by_speaker(
     return merged
 
 
+def _word_spans(segment: TranscriptionSegment) -> list[tuple[float, float]]:
+    """Непересекающиеся интервалы речи реплики по пословным меткам (#45).
+
+    Возвращает объединённые по перекрытию интервалы слов, ограниченные рамками
+    реплики; ``[]`` — слов нет/они нулевой длины. По ним уверенность привязки
+    говорящего считается по **речи**, а не по всему интервалу реплики (включая
+    ведущую/замыкающую тишину), — иначе реплики с паузами по краям получали
+    заниженную уверенность.
+    """
+    spans = sorted(
+        (max(word.start, segment.start), min(word.end, segment.end))
+        for word in segment.words
+        if word.end > word.start
+    )
+    spans = [(start, end) for start, end in spans if end > start]
+    if not spans:
+        return []
+    merged: list[tuple[float, float]] = [spans[0]]
+    for start, end in spans[1:]:
+        if start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
 def _simultaneous_intervals(
     merged: Sequence[_CoverageInterval],
 ) -> list[_SimultaneousInterval]:
@@ -278,6 +304,13 @@ class OverlapSegmentMerger:
             if has_diarization:
                 covered = hits.get(speaker_id, 0.0) if speaker_id is not None else 0.0
                 confidence = 0.0 if duration <= 0 else min(1.0, covered / duration)
+                # При наличии пословных меток (#45) уверенность считаем по речи,
+                # а не по всему интервалу реплики: ведущая/замыкающая тишина
+                # больше не занижает привязку.
+                if speaker_id is not None:
+                    speech_confidence = resolver.coverage_of_speech(segment, speaker_id)
+                    if speech_confidence is not None:
+                        confidence = speech_confidence
 
             entries.append(
                 TranscriptEntry(
@@ -468,6 +501,33 @@ class _SpeakerResolver:
                     hits[speaker_id] = hits.get(speaker_id, 0.0) + overlap
             result.append(hits)
         return result
+
+    def coverage_of_speech(
+        self, segment: TranscriptionSegment, speaker_id: str
+    ) -> float | None:
+        """Доля покрытия речи реплики сегментами говорящего (0..1).
+
+        Считается по объединённым интервалам ``words`` (#45) — только по речи,
+        без ведущей/замыкающей тишины. ``None`` — слов нет/они нулевой длины:
+        вызывающий откатывается к покрытию всего интервала реплики.
+        """
+        spans = _word_spans(segment)
+        if not spans or self._coverage_index is None:
+            return None
+        total = sum(end - start for start, end in spans)
+        if total <= 0.0:
+            return None
+        covered = 0.0
+        for start, end in spans:
+            found: list[_CoverageInterval] = []
+            self._coverage_index.query(start, end, found)
+            for seg_start, seg_end, active in found:
+                if active != speaker_id:
+                    continue
+                overlap = min(seg_end, end) - max(seg_start, start)
+                if overlap > 0.0:
+                    covered += overlap
+        return min(1.0, covered / total)
 
     def simultaneous_by_speaker(
         self, transcription_segments: Sequence[TranscriptionSegment]
