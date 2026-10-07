@@ -24,6 +24,10 @@ from dataclasses import dataclass, replace
 from audio_transcriber.config.defaults import DEFAULT_NEMO_SPEECH_MODEL
 from audio_transcriber.diarization import nemo_speech_assets as assets
 from audio_transcriber.utils.env import with_library_path
+from audio_transcriber.utils.subprocess_registry import (
+    register_process,
+    terminate_process,
+)
 from audio_transcriber.web.models import (
     STATUS_DONE,
     STATUS_DOWNLOADING,
@@ -35,6 +39,8 @@ from audio_transcriber.web.models import (
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "DEFAULT_NEMO_PULL_TIMEOUT",
+    "NemoPullTimeout",
     "NemoSpeechModelDownloader",
     "NemoSpeechPullState",
     "PullRunner",
@@ -43,6 +49,10 @@ __all__ = [
 
 #: Запуск команды pull: ``(команда, on_line, окружение) -> код возврата``.
 PullRunner = Callable[[list[str], Callable[[str], None], Mapping[str, str]], int]
+
+#: Таймаут ``nemo-speech pull`` по умолчанию (секунды): зависшая загрузка
+#: гасится (#87). Переопределяется ``NEMO_SPEECH_TIMEOUT``; ``<= 0`` — без него.
+DEFAULT_NEMO_PULL_TIMEOUT = 3600.0
 
 #: Заголовок фазы скачивания: ``[model] downloading <repo>@<rev> (<role>, 140.3 MiB)``.
 _DOWNLOADING_RE = re.compile(
@@ -76,12 +86,37 @@ def _shorten(text: str, limit: int = 200) -> str:
     return clean if len(clean) <= limit else clean[: limit - 1] + "…"
 
 
+class NemoPullTimeout(RuntimeError):
+    """``nemo-speech pull`` не завершился за таймаут (процесс остановлен)."""
+
+
+def _pull_timeout() -> float:
+    """Таймаут pull: ``NEMO_SPEECH_TIMEOUT`` или :data:`DEFAULT_NEMO_PULL_TIMEOUT`."""
+    raw = os.environ.get("NEMO_SPEECH_TIMEOUT", "").strip()
+    if not raw:
+        return DEFAULT_NEMO_PULL_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("NEMO_SPEECH_TIMEOUT=%r — не число, использую дефолт", raw)
+        return DEFAULT_NEMO_PULL_TIMEOUT
+    return max(value, 0.0)
+
+
 def run_nemo_speech_pull(
     command: list[str],
     on_line: Callable[[str], None],
     env: Mapping[str, str],
+    *,
+    timeout: float | None = None,
 ) -> int:
-    """Реальный запуск ``nemo-speech pull``: stdout+stderr построчно в ``on_line``."""
+    """Реальный запуск ``nemo-speech pull``: stdout+stderr построчно в ``on_line``.
+
+    Процесс регистрируется в общем реестре и ограничен дедлайном (#87): при
+    зависании он принудительно гасится (:class:`NemoPullTimeout`), а при
+    остановке сервера — вместе с остальными процессами.
+    """
+    limit = _pull_timeout() if timeout is None else timeout
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -93,12 +128,32 @@ def run_nemo_speech_pull(
         bufsize=1,
         env=dict(env),
     )
-    try:
-        if process.stdout is not None:
+    register_process(process)
+
+    def _drain() -> None:
+        if process.stdout is None:
+            return
+        try:
             for raw in process.stdout:
                 on_line(raw.rstrip("\r\n"))
+        except (OSError, ValueError):
+            # Поток закрыт при принудительной остановке процесса.
+            pass
+
+    reader = threading.Thread(target=_drain, name="nemo-speech-output", daemon=True)
+    reader.start()
+    wait_timeout = limit if limit and limit > 0 else None
+    try:
+        try:
+            process.wait(timeout=wait_timeout)
+        except subprocess.TimeoutExpired as exc:
+            terminate_process(process)
+            raise NemoPullTimeout(
+                f"nemo-speech pull не завершился за {limit:g} с — процесс остановлен"
+            ) from exc
     finally:
-        process.wait()
+        terminate_process(process)
+    reader.join(timeout=5.0)
     return process.returncode
 
 
@@ -212,6 +267,10 @@ class NemoSpeechModelDownloader:
 
         try:
             code = self._runner(command, on_line, env)
+        except NemoPullTimeout as exc:
+            logger.warning("nemo-speech pull: %s", exc)
+            self._finish_error(str(exc))
+            return
         except Exception as exc:  # noqa: BLE001 — внешний процесс: мягкая ошибка
             logger.warning("nemo-speech pull не запустился: %s", exc)
             self._finish_error(f"Не удалось запустить nemo-speech: {exc}")

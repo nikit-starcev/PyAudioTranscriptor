@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
   api,
@@ -33,6 +33,7 @@ type ToggleKey =
   | 'llm_summary'
   | 'denoise'
   | 'mark_overlap'
+  | 'merge_same_name_speakers'
   | 'normalize_text'
   | 'clean_artifacts'
   | 'enable_correction'
@@ -49,6 +50,13 @@ const TOGGLES: { key: ToggleKey; label: string; hint: string }[] = [
   { key: 'llm_summary', label: 'Резюме встречи', hint: 'Считать резюме при формировании протокола' },
   { key: 'denoise', label: 'Шумоподавление', hint: 'DeepFilterNet перед распознаванием' },
   { key: 'mark_overlap', label: 'Помечать наложение речи', hint: 'Отмечать реплики поверх друг друга' },
+  {
+    key: 'merge_same_name_speakers',
+    label: 'Сводить одинаковые имена',
+    hint:
+      'Кластеры с одинаковым уверенным именем (enrollment) — в одного говорящего; ' +
+      'безымянные «Спикер N» не сливаются',
+  },
   { key: 'normalize_text', label: 'Нормализация текста', hint: 'Пробелы, пунктуация, многоточия' },
   { key: 'clean_artifacts', label: 'Очистка артефактов', hint: 'Удалять [СМЕХ], [BLANK_AUDIO] и т.п.' },
   {
@@ -93,6 +101,9 @@ const ENGINE_HINTS: Record<string, string> = {
 const INPUT_CLASS =
   'mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100'
 
+/** Допустимые linkage гибридной кластеризации (DIARIZATION_HYBRID_LINKAGE). */
+const HYBRID_LINKAGES = ['ward', 'complete', 'average'] as const
+
 /** Числовые поля раздела «Диаризация» — редактируются как текст ради дробей. */
 type NumericKey =
   | 'diarization_estimate_seconds'
@@ -101,6 +112,7 @@ type NumericKey =
   | 'diarization_hybrid_window_seconds'
   | 'diarization_hybrid_overlap_seconds'
   | 'diarization_hybrid_min_speaker_seconds'
+  | 'diarization_hybrid_threshold'
 
 const NUMERIC_KEYS: NumericKey[] = [
   'diarization_estimate_seconds',
@@ -109,6 +121,7 @@ const NUMERIC_KEYS: NumericKey[] = [
   'diarization_hybrid_window_seconds',
   'diarization_hybrid_overlap_seconds',
   'diarization_hybrid_min_speaker_seconds',
+  'diarization_hybrid_threshold',
 ]
 
 /** Текстовые черновики числовых полей (чтобы «0.» не теряло точку). */
@@ -146,6 +159,7 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
   const [nemoModel, setNemoModel] = useState<NemoSpeechModelStatus | null>(null)
   const [nemoDownload, setNemoDownload] = useState<NemoSpeechModelEvent | null>(null)
   const [nemoBusy, setNemoBusy] = useState(false)
+  const lastNemoSeq = useRef(-1)
 
   const refreshNemoModel = useCallback(async () => {
     try {
@@ -186,10 +200,18 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
     if (!open) return
     setNemoDetect(null)
     setNemoDownload(null)
+    lastNemoSeq.current = -1
     void refreshNemoModel()
     const source = new EventSource('/api/diarization/nemo-speech/model/events')
     source.onmessage = (message) => {
       const event = JSON.parse(message.data) as NemoSpeechModelEvent
+      // Дедуп по ``seq``: сервер может повторно отдать накопленную историю при
+      // (пере)подключении SSE — старые события не должны откатывать прогресс.
+      const seq = event.seq
+      if (typeof seq === 'number') {
+        if (seq <= lastNemoSeq.current) return
+        lastNemoSeq.current = seq
+      }
       setNemoDownload(event)
       if (event.status === 'done' || event.status === 'error') {
         void refreshNemoModel()
@@ -255,6 +277,7 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
         llm_summary: settings.llm_summary,
         denoise: settings.denoise,
         mark_overlap: settings.mark_overlap,
+        merge_same_name_speakers: settings.merge_same_name_speakers,
         normalize_text: settings.normalize_text,
         clean_artifacts: settings.clean_artifacts,
         enable_correction: settings.enable_correction,
@@ -304,6 +327,11 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
         diarization_hybrid_min_speaker_seconds: parseNumber(
           numbers.diarization_hybrid_min_speaker_seconds,
           settings.diarization_hybrid_min_speaker_seconds,
+        ),
+        diarization_hybrid_linkage: settings.diarization_hybrid_linkage,
+        diarization_hybrid_threshold: parseNumber(
+          numbers.diarization_hybrid_threshold,
+          settings.diarization_hybrid_threshold,
         ),
         gigaam_model: settings.gigaam_model,
         gigaam_model_path: settings.gigaam_model_path,
@@ -1075,9 +1103,44 @@ function SettingsModal({ open, onClose, onSaved }: Props) {
                       />
                     </label>
                   </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="block text-sm">
+                      <span className="text-slate-600 dark:text-slate-300">
+                        Linkage (DIARIZATION_HYBRID_LINKAGE)
+                      </span>
+                      <select
+                        value={settings.diarization_hybrid_linkage}
+                        onChange={(event) =>
+                          update({ diarization_hybrid_linkage: event.target.value })
+                        }
+                        className={INPUT_CLASS}
+                      >
+                        {HYBRID_LINKAGES.map((linkage) => (
+                          <option key={linkage} value={linkage}>
+                            {linkage}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="block text-sm">
+                      <span className="text-slate-600 dark:text-slate-300">
+                        Порог кластеризации (DIARIZATION_HYBRID_THRESHOLD)
+                      </span>
+                      <input
+                        inputMode="decimal"
+                        value={numbers?.diarization_hybrid_threshold ?? ''}
+                        onChange={(event) =>
+                          updateNumber('diarization_hybrid_threshold', event.target.value)
+                        }
+                        placeholder="0.8"
+                        className={INPUT_CLASS}
+                      />
+                    </label>
+                  </div>
                   <span className="block text-xs text-slate-400 dark:text-slate-500">
                     Перекрытие должно быть меньше окна. Требуются sherpa-onnx и модель
-                    эмбеддингов (см. выше/каталог моделей).
+                    эмбеддингов (см. выше/каталог моделей). Порог — в единицах евклидова
+                    расстояния при linkage=ward.
                   </span>
                 </div>
 

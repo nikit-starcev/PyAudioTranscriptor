@@ -935,3 +935,97 @@ def test_build_job_config_maps_enable_correction(
     assert disabled.enable_correction is False
     assert enabled.enable_correction is True
 
+
+
+# --- #88: полнота SettingsUpdate (merge_same_name_speakers и гибрид) -------
+
+
+def test_put_settings_persists_merge_same_name_speakers(client: TestClient) -> None:
+    """#88: ``merge_same_name_speakers`` не должен молча теряться при PUT."""
+    assert client.get("/api/settings").json()["merge_same_name_speakers"] is True
+
+    response = client.put(
+        "/api/settings", json={"merge_same_name_speakers": False}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["merge_same_name_speakers"] is False
+    assert client.get("/api/settings").json()["merge_same_name_speakers"] is False
+
+
+def test_put_settings_persists_hybrid_linkage_and_threshold(
+    client: TestClient,
+) -> None:
+    """#88: linkage/порог гибрида сохраняются через PUT и читаются обратно."""
+    response = client.put(
+        "/api/settings",
+        json={
+            "diarization_hybrid_linkage": "complete",
+            "diarization_hybrid_threshold": 1.1,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["diarization_hybrid_linkage"] == "complete"
+    assert body["diarization_hybrid_threshold"] == pytest.approx(1.1)
+
+    saved = client.get("/api/settings").json()
+    assert saved["diarization_hybrid_linkage"] == "complete"
+    assert saved["diarization_hybrid_threshold"] == pytest.approx(1.1)
+
+
+# --- #87: SSRF в проверке внешней LLM --------------------------------------
+
+
+def test_llm_check_rejects_non_http_scheme(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    called: list[int] = []
+    monkeypatch.setattr(
+        "audio_transcriber.web.app.probe_openai_server",
+        lambda *_a, **_k: (called.append(1), (True, "ok", []))[1],
+    )
+
+    payload = client.post(
+        "/api/llm/check", json={"base_url": "file:///etc/passwd"}
+    ).json()
+
+    assert payload["status"] == "error"
+    assert called == []
+
+
+def test_llm_check_rejects_link_local_metadata(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    called: list[int] = []
+    monkeypatch.setattr(
+        "audio_transcriber.web.app.probe_openai_server",
+        lambda *_a, **_k: (called.append(1), (True, "ok", []))[1],
+    )
+
+    payload = client.post(
+        "/api/llm/check", json={"base_url": "http://169.254.169.254/v1"}
+    ).json()
+
+    assert payload["status"] == "error"
+    assert called == []
+
+
+def test_llm_check_allows_localhost(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_probe(base_url: str, *, api_key: str | None = None):
+        captured["base_url"] = base_url
+        return True, "Доступно.", ["m"]
+
+    monkeypatch.setattr("audio_transcriber.web.app.probe_openai_server", fake_probe)
+
+    payload = client.post(
+        "/api/llm/check", json={"base_url": "http://localhost:11434/v1"}
+    ).json()
+
+    assert payload["status"] == "ok"
+    assert captured["base_url"] == "http://localhost:11434/v1"

@@ -12,18 +12,21 @@ CORS не нужен: фронт и API раздаёт один и тот же o
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import mimetypes
+import os
 import shutil
 import tempfile
 import threading
 import uuid
 import webbrowser
-from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import urlparse
 
 import numpy as np
 from fastapi import APIRouter, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
@@ -74,6 +77,7 @@ from audio_transcriber.storage.glossary_builder import build_active_glossary
 from audio_transcriber.utils.audio import load_waveform, write_wav
 from audio_transcriber.utils.env import binary_available
 from audio_transcriber.utils.playback import amplitude_envelope, read_duration
+from audio_transcriber.utils.subprocess_registry import terminate_all_processes
 from audio_transcriber.utils.text import sanitize_filename
 from audio_transcriber.web import assets as assets_registry
 from audio_transcriber.web import deps as deps_registry
@@ -155,6 +159,7 @@ from audio_transcriber.web.settings import (
     SettingsError,
     SettingsStore,
     settings_from_mapping,
+    validate_llm_base_url,
     validate_settings,
 )
 from audio_transcriber.web.setup import build_setup_steps
@@ -191,6 +196,33 @@ ProtocolFn = Callable[..., ProtocolArtifacts]
 VoicesResolver = Callable[[], Path]
 
 logger = logging.getLogger(__name__)
+
+#: Небезопасные HTTP-методы, для которых проверяется ``Origin``/``Sec-Fetch-Site``
+#: (CSRF, issue #87).
+_CSRF_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _is_cross_origin(request: Request) -> bool:
+    """Похож ли запрос на межсайтовый (CSRF-защита, issue #87).
+
+    Мягкая политика: заголовки учитываются, только если браузер их прислал
+    (CLI/тесты без заголовков не затрагиваются). Блокируются ``Sec-Fetch-Site:
+    cross-site`` и ``Origin`` с чужим host. Same-origin SPA проходит.
+    """
+    site = request.headers.get("sec-fetch-site", "").strip().casefold()
+    if site == "cross-site":
+        return True
+    origin = request.headers.get("origin", "").strip()
+    if not origin:
+        return False
+    try:
+        parsed = urlparse(origin)
+    except ValueError:
+        return True
+    host = request.headers.get("host", "").strip()
+    if not host:
+        return False
+    return parsed.netloc.casefold() != host.casefold()
 
 #: Заголовки SSE: без кэша и без буферизации прокси.
 SSE_HEADERS = {
@@ -404,6 +436,10 @@ class SettingsUpdate(BaseModel):
     denoise: bool | None = None
     deep_filter_binary: str | None = None
     mark_overlap: bool | None = None
+    #: Сводить кластеры с одинаковым уверенным именем в одного говорящего (#88).
+    #: Поле обязано присутствовать и здесь, и в ``WebSettings`` — иначе pydantic
+    #: молча отбросит его при ``PUT /api/settings``.
+    merge_same_name_speakers: bool | None = None
     normalize_text: bool | None = None
     clean_artifacts: bool | None = None
     enable_correction: bool | None = None
@@ -593,6 +629,10 @@ def create_app(
             yield
         finally:
             runner.stop()
+            # Гасим зарегистрированные внешние процессы (установщики пакетов,
+            # nemo-speech pull и т.п.) при остановке сервера (#87): иначе
+            # зависший subprocess переживёт приложение.
+            terminate_all_processes()
 
     app = FastAPI(
         title="AudioTranscriber Web",
@@ -601,6 +641,24 @@ def create_app(
         openapi_url="/api/openapi.json",
         lifespan=lifespan,
     )
+
+    @app.middleware("http")
+    async def csrf_guard(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        """Отклоняет межсайтовые state-changing запросы (CSRF, issue #87).
+
+        Мягкая проверка ``Origin``/``Sec-Fetch-Site``: same-origin SPA и
+        запросы без заголовков (CLI, тесты) проходят.
+        """
+        if request.method in _CSRF_UNSAFE_METHODS and _is_cross_origin(request):
+            return JSONResponse(
+                {"detail": "Межсайтовый запрос отклонён (CSRF)"},
+                status_code=403,
+            )
+        return await call_next(request)
+
     app.state.paths = resolved_paths
     app.state.store = store
     app.state.bus = bus
@@ -882,6 +940,12 @@ def register_api(
                 "message": "Не задан базовый URL внешней LLM",
                 "models": [],
             }
+        # SSRF-защита (issue #87): base_url из тела не доверяем на слово —
+        # допускаем только http(s) с хостом и без link-local/метаданных.
+        try:
+            validate_llm_base_url(base_url)
+        except SettingsError as exc:
+            return {"status": "error", "message": str(exc), "models": []}
         requested_key = payload.api_key if payload is not None else None
         api_key = (
             requested_key.strip()
@@ -1994,7 +2058,10 @@ def register_api(
             else DEFAULT_ENROLLMENT_MIN_SIMILARITY
         )
         source = Path(job.source_path)
-        explicit = _explicit_references(payload.references if payload is not None else {})
+        explicit = _explicit_references(
+            payload.references if payload is not None else {},
+            roots=_reference_roots(paths, resolve_voices()),
+        )
         library = collect_voice_library(resolve_voices())
         references_total = len(explicit) + len(library)
         segments = build_speaker_segments(result)
@@ -2247,33 +2314,41 @@ def register_api(
             )
 
         async def stream() -> AsyncIterator[str]:
-            # 1) Сначала догоняем историю, которую клиент ещё не видел
-            #    (``Last-Event-ID``). Первое подключение без заголовка получает
-            #    всю историю задачи.
-            for history_event in bus.history(job_id, after=after):
+            # 1) Атомарно подписываемся и снимаем историю под локом шины
+            #    (issue #85): подписка регистрируется ДО чтения снимка, поэтому
+            #    события между историей и подпиской не теряются. ``after``
+            #    (``Last-Event-ID``) отсекает уже полученную клиентом историю.
+            stream_state = bus.open(job_id, after=after)
+            # 2) Свежий снимок состояния берём ПОСЛЕ подписки (перечитываем из
+            #    БД): иначе старый ``job`` откатил бы ``fraction``/``stage``.
+            fresh = store.get(job_id) or job
+            # 3) История — раньше свежего снимка: старые ``stage_elapsed≈0``
+            #    не откатывают таймеры, финальным остаётся актуальное состояние.
+            for history_event in stream_state.history:
                 yield _sse(history_event)
-            # 2) Затем свежий снимок текущего состояния. Он идёт ПОСЛЕ истории,
-            #    поэтому финальным для клиента остаётся актуальное: старые
-            #    ``stage_elapsed≈0`` из истории больше не откатывают таймеры.
+            if stream_state.terminal:
+                # Задача завершилась в окне до подписки: конечное событие уже
+                # пришло в истории, живой поток закрыт.
+                return
             active = runner.is_active(job_id)
             initial: dict[str, object] = {
-                "stage": job.stage or STATUS_QUEUED,
-                "fraction": job.fraction,
+                "stage": fresh.stage or STATUS_QUEUED,
+                "fraction": fresh.fraction,
                 "message": "Подключено",
-                "status": job.status,
+                "status": fresh.status,
                 "active": active,
-                "elapsed": job.total_seconds if active else None,
-                "stage_elapsed": job.stage_elapsed if active else None,
-                "duration": job.duration,
-                "stage_times": [timing.as_dict() for timing in job.stage_times],
-                "planned_stages": list(job.planned_stages),
-                "failed_stage": failed_stage_of(job),
+                "elapsed": fresh.total_seconds if active else None,
+                "stage_elapsed": fresh.stage_elapsed if active else None,
+                "duration": fresh.duration,
+                "stage_times": [timing.as_dict() for timing in fresh.stage_times],
+                "planned_stages": list(fresh.planned_stages),
+                "failed_stage": failed_stage_of(fresh),
             }
-            initial.update(estimator.snapshot(job, active=active))
+            initial.update(estimator.snapshot(fresh, active=active))
             yield _sse(initial)
-            # 3) Живой поток. Историю уже отдали — повторно не реплеим, иначе
-            #    после снимка снова пришли бы устаревшие события.
-            async for live_event in bus.subscribe(job_id, replay=False):
+            # 4) Живой поток. Подписка уже оформлена атомарно, историю не
+            #    реплеим — иначе после снимка снова пришли бы устаревшие события.
+            async for live_event in stream_state.events():
                 yield ": ping\n\n" if live_event is None else _sse(live_event)
 
         return StreamingResponse(
@@ -2321,9 +2396,6 @@ def register_api(
         clean = sanitize_filename(raw_name)
         if not raw_name or not clean:
             raise HTTPException(status_code=400, detail="Не указано имя образца")
-        data = await file.read()
-        if not data:
-            raise HTTPException(status_code=400, detail="Пустой файл")
         directory = resolve_voices()
         try:
             directory.mkdir(parents=True, exist_ok=True)
@@ -2333,9 +2405,19 @@ def register_api(
             ) from exc
         target = unique_sample_path(directory, raw_name)
         suffix = Path(file.filename or "").suffix.lower()
-        quality = _save_upload_to_library(
-            data, suffix, target, options=reference_prepare_options()
-        )
+        # Потоковая запись на диск с лимитом размера (issue #86) — вместо
+        # чтения всей загрузки в память.
+        size = await _stream_upload(file, target, max_bytes=_max_sample_upload_bytes())
+        if size == 0:
+            target.unlink(missing_ok=True)
+            raise HTTPException(status_code=400, detail="Пустой файл")
+        try:
+            quality = _save_upload_to_library(
+                target, suffix, target, options=reference_prepare_options()
+            )
+        except HTTPException:
+            target.unlink(missing_ok=True)
+            raise
         return VoiceSample(name=base_sample_name(target.stem), path=target).as_dict(quality)
 
     @router.get("/voices/samples/{filename}/audio")
@@ -2520,8 +2602,54 @@ def _protocol_file(paths: WebPaths, job: Job, fmt: str) -> Path | None:
     return None
 
 
-def _explicit_references(raw: Mapping[str, str]) -> dict[str, list[Path]]:
-    """Существующие файлы из тела запроса: ``имя -> [путь]``."""
+def _resolve_within(root: Path, candidate: Path) -> Path | None:
+    """Разрешает ``candidate`` и возвращает его, только если он внутри ``root``.
+
+    Единый хелпер защиты от path traversal/симлинков (issue #86): ``resolve()``
+    разворачивает ``..`` и симлинки, затем проверяется вложенность через
+    ``is_relative_to``. Путь наружу (в т.ч. абсолютный или через симлинк) —
+    ``None``.
+    """
+    try:
+        root_resolved = root.resolve()
+        resolved = candidate.resolve()
+    except (OSError, ValueError):
+        return None
+    return resolved if resolved.is_relative_to(root_resolved) else None
+
+
+def _resolve_within_any(candidate: Path, roots: Sequence[Path]) -> Path | None:
+    """Первый разрешённый корень из ``roots``, внутри которого лежит ``candidate``."""
+    for root in roots:
+        resolved = _resolve_within(root, candidate)
+        if resolved is not None:
+            return resolved
+    return None
+
+
+def _reference_roots(paths: WebPaths, voices_dir: Path) -> list[Path]:
+    """Разрешённые корни явных образцов голоса: каталог данных и библиотека."""
+    roots = [paths.data_dir]
+    if voices_dir not in roots:
+        roots.append(voices_dir)
+    return roots
+
+
+def _explicit_references(
+    raw: Mapping[str, str], *, roots: Sequence[Path]
+) -> dict[str, list[Path]]:
+    """Существующие файлы из тела запроса: ``имя -> [путь]``.
+
+    Путь обязан лежать внутри одного из ``roots`` (issue #86): произвольный
+    файл хоста (абсолютный путь, ``..``, симлинк наружу) отклоняется ``400``,
+    а не декодируется.
+    """
+    resolved_roots: list[Path] = []
+    for root in roots:
+        try:
+            resolved_roots.append(root.resolve())
+        except OSError:
+            continue
     references: dict[str, list[Path]] = {}
     for name, value in raw.items():
         clean = name.strip()
@@ -2530,8 +2658,14 @@ def _explicit_references(raw: Mapping[str, str]) -> dict[str, list[Path]]:
         path = Path(value).expanduser()
         if not path.is_absolute():
             path = path.resolve()
-        if path.is_file():
-            references.setdefault(clean, []).append(path)
+        resolved = _resolve_within_any(path, resolved_roots)
+        if resolved is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Путь образца голоса должен находиться внутри каталога данных",
+            )
+        if resolved.is_file():
+            references.setdefault(clean, []).append(resolved)
     return references
 
 
@@ -2594,30 +2728,35 @@ def _decode_upload(data: bytes, suffix: str) -> np.ndarray:
 
 
 def _save_upload_to_library(
-    data: bytes,
+    raw_path: Path,
     suffix: str,
     target: Path,
     *,
     options: ReferencePrepareOptions,
 ) -> ReferenceQuality | None:
-    """Сохраняет загруженный образец, подготавливая его (VAD + RMS).
+    """Сохраняет потоково загруженный образец, подготавливая его (VAD + RMS).
 
-    При выключенной подготовке поведение прежнее: WAV пишется как есть, прочие
-    форматы конвертируются в 16 кГц моно. При включённой — аудио декодируется,
-    обрезается до речи и нормализуется, а качество возвращается для API.
+    ``raw_path`` — уже записанный на диск сырой файл (см. :func:`_stream_upload`),
+    ``target`` — итоговый путь в библиотеке. При выключенной подготовке WAV
+    остаётся как есть (без перечитывания в память), прочие форматы
+    конвертируются. При включённой — аудио декодируется, обрезается до речи и
+    нормализуется, а качество возвращается для API.
     """
     if not options.enabled:
         if suffix == ".wav":
-            try:
-                target.write_bytes(data)
-            except OSError as exc:
-                raise HTTPException(
-                    status_code=500, detail=f"Не удалось сохранить образец: {exc}"
-                ) from exc
-        else:
-            _write_converted_wav(data, suffix, target)
+            if raw_path != target:
+                try:
+                    raw_path.replace(target)
+                except OSError as exc:
+                    raise HTTPException(
+                        status_code=500, detail=f"Не удалось сохранить образец: {exc}"
+                    ) from exc
+            return None
+        data = raw_path.read_bytes()
+        _write_converted_wav(data, suffix, target)
         return None
 
+    data = raw_path.read_bytes()
     prepared = prepare_reference(_decode_upload(data, suffix), options=options)
     if prepared.waveform.size == 0:
         raise HTTPException(status_code=400, detail="Пустой или нечитаемый аудиофайл")
@@ -2736,6 +2875,100 @@ def _list_files(
     return items
 
 
+#: Предельный размер загрузки медиафайла (issue #86). Переопределяется
+#: переменной ``WEB_MAX_UPLOAD_MB``; ``<= 0`` — без лимита. Файл пишется
+#: потоково, целиком в память не читается.
+DEFAULT_MAX_UPLOAD_BYTES = 4096 * 1024 * 1024
+
+#: Предельный размер загрузки образца голоса (короткое аудио, но декодируется
+#: в память). ``WEB_MAX_SAMPLE_UPLOAD_MB``; ``<= 0`` — без лимита.
+DEFAULT_MAX_SAMPLE_UPLOAD_BYTES = 256 * 1024 * 1024
+
+#: Размер чанка потоковой записи загрузки.
+_UPLOAD_CHUNK_SIZE = 1024 * 1024
+
+
+def _upload_limit(env_name: str, default_bytes: int) -> int:
+    """Лимит загрузки из переменной окружения (МБ) или значение по умолчанию."""
+    raw = os.environ.get(env_name, "").strip()
+    if not raw:
+        return default_bytes
+    try:
+        megabytes = float(raw)
+    except ValueError:
+        logger.warning("%s=%r — не число, использую лимит по умолчанию", env_name, raw)
+        return default_bytes
+    if megabytes <= 0:
+        return 0
+    return int(megabytes * 1024 * 1024)
+
+
+def _max_upload_bytes() -> int:
+    """Предел размера медиазагрузки (issue #86)."""
+    return _upload_limit("WEB_MAX_UPLOAD_MB", DEFAULT_MAX_UPLOAD_BYTES)
+
+
+def _max_sample_upload_bytes() -> int:
+    """Предел размера загрузки образца голоса (issue #86)."""
+    return _upload_limit("WEB_MAX_SAMPLE_UPLOAD_MB", DEFAULT_MAX_SAMPLE_UPLOAD_BYTES)
+
+
+class _UploadTooLarge(RuntimeError):
+    """Загрузка превысила лимит размера (ответ — 413)."""
+
+
+async def _stream_upload(file: UploadFile, target: Path, *, max_bytes: int) -> int:
+    """Потоково пишет загрузку в ``target``; возвращает число записанных байт.
+
+    Не читает файл целиком в память (issue #86): чанки сразу уходят на диск.
+    Лимит размера (413), свободное место (507) и ошибки записи (500)
+    контролируются; при сбое частичный файл удаляется.
+    """
+    declared = getattr(file, "size", None)
+    if isinstance(declared, int) and declared > 0:
+        if max_bytes and declared > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    "Файл больше допустимого размера "
+                    f"({declared / 1024 / 1024:.1f} МБ > {max_bytes // (1024 * 1024)} МБ)"
+                ),
+            )
+        if free_space(target.parent) < declared:
+            raise HTTPException(
+                status_code=507, detail="Недостаточно свободного места для файла"
+            )
+    written = 0
+    try:
+        with target.open("wb") as handle:
+            while True:
+                chunk = await file.read(_UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if max_bytes and written > max_bytes:
+                    raise _UploadTooLarge
+                handle.write(chunk)
+    except _UploadTooLarge as exc:
+        target.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Файл больше допустимого размера ({max_bytes // (1024 * 1024)} МБ)"
+            ),
+        ) from exc
+    except OSError as exc:
+        target.unlink(missing_ok=True)
+        if exc.errno == errno.ENOSPC:
+            raise HTTPException(
+                status_code=507, detail="Недостаточно свободного места"
+            ) from exc
+        raise HTTPException(
+            status_code=500, detail=f"Не удалось сохранить файл: {exc}"
+        ) from exc
+    return written
+
+
 async def _save_upload(file: UploadFile, input_dir: Path) -> dict[str, object]:
     original = Path(file.filename or "audio")
     safe_stem = sanitize_filename(original.stem, fallback="audio")
@@ -2743,11 +2976,7 @@ async def _save_upload(file: UploadFile, input_dir: Path) -> dict[str, object]:
     if suffix not in MEDIA_EXTENSIONS:
         suffix = ""
     target = _unique_path(input_dir, f"{safe_stem}{suffix}")
-    data = await file.read()
-    try:
-        target.write_bytes(data)
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Не удалось сохранить файл: {exc}") from exc
+    await _stream_upload(file, target, max_bytes=_max_upload_bytes())
     # Новый файл не может быть «обработан»: снимаем возможный устаревший маркер
     # от прежде удалённого файла с тем же именем (issue #16).
     clear_processed(target)
@@ -2883,9 +3112,23 @@ def _validate_speaker_range(
 
 
 def _result_path(paths: WebPaths, job: Job) -> Path:
-    """Путь к JSON-результату задачи (только внутри каталога результатов)."""
-    path = Path(job.result_path) if job.result_path else paths.results_dir / f"{job.id}.json"
-    return path
+    """Путь к JSON-результату задачи (только внутри каталога результатов).
+
+    ``job.result_path`` берётся из БД и может быть подделан: если он после
+    разрешения выходит за пределы ``results_dir`` (issue #86), используется
+    штатный путь ``<results_dir>/<job_id>.json`` — читать/писать наружу нельзя.
+    """
+    root = paths.results_dir
+    default = root / f"{job.id}.json"
+    if job.result_path:
+        resolved = _resolve_within(root, Path(job.result_path))
+        if resolved is not None:
+            return resolved
+        logger.warning(
+            "result_path задачи %s вне каталога результатов — использую штатный путь",
+            job.id,
+        )
+    return default
 
 
 def _remove_job_artifacts(paths: WebPaths, job: Job) -> None:

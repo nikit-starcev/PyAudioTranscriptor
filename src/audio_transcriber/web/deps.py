@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -27,11 +28,16 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from audio_transcriber.utils.subprocess_registry import (
+    register_process,
+    terminate_process,
+)
 from audio_transcriber.web.models import DownloadBus
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "DEFAULT_INSTALL_TIMEOUT",
     "DEPENDENCIES",
     "DEP_DONE",
     "DEP_ERROR",
@@ -40,6 +46,7 @@ __all__ = [
     "DependencyInstaller",
     "DependencySpec",
     "DependencyState",
+    "InstallerTimeout",
     "InstallerUnavailable",
     "find_dependency",
     "installer_available",
@@ -55,6 +62,10 @@ DEP_IDLE = "idle"
 DEP_RUNNING = "running"
 DEP_DONE = "done"
 DEP_ERROR = "error"
+
+#: Таймаут установки по умолчанию (секунды): зависший установщик гасится (#87).
+#: Переопределяется ``DEP_INSTALL_TIMEOUT``; ``<= 0`` — без таймаута.
+DEFAULT_INSTALL_TIMEOUT = 1800.0
 
 #: Типовые каталоги, куда ставится ``uv`` без прав root.
 _UV_FALLBACK_PATHS = ("~/.local/bin/uv", "~/.cargo/bin/uv")
@@ -107,6 +118,10 @@ _DEPENDENCIES_BY_KEY = {spec.key: spec for spec in DEPENDENCIES}
 
 class InstallerUnavailable(RuntimeError):
     """Ни ``uv``, ни ``pip`` не найдены — установить пакет нечем."""
+
+
+class InstallerTimeout(RuntimeError):
+    """Установщик не завершился за отведённый таймаут (процесс остановлен)."""
 
 
 def find_dependency(key: str) -> DependencySpec | None:
@@ -174,8 +189,32 @@ def resolve_install_command(spec: str) -> list[str]:
 InstallRunner = Callable[[list[str], Callable[[str], None]], int]
 
 
-def run_installer(command: list[str], on_line: Callable[[str], None]) -> int:
-    """Реальный запуск установщика: stdout+stderr построчно уходят в ``on_line``."""
+def _install_timeout() -> float:
+    """Таймаут установки: ``DEP_INSTALL_TIMEOUT`` или :data:`DEFAULT_INSTALL_TIMEOUT`."""
+    raw = os.environ.get("DEP_INSTALL_TIMEOUT", "").strip()
+    if not raw:
+        return DEFAULT_INSTALL_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("DEP_INSTALL_TIMEOUT=%r — не число, использую дефолт", raw)
+        return DEFAULT_INSTALL_TIMEOUT
+    return max(value, 0.0)
+
+
+def run_installer(
+    command: list[str],
+    on_line: Callable[[str], None],
+    *,
+    timeout: float | None = None,
+) -> int:
+    """Реальный запуск установщика: stdout+stderr построчно уходят в ``on_line``.
+
+    Процесс регистрируется в общем реестре и ограничен дедлайном (#87): при
+    зависании он принудительно останавливается (:class:`InstallerTimeout`), а
+    при остановке сервера гасится вместе с остальными (``terminate_all_processes``).
+    """
+    limit = _install_timeout() if timeout is None else timeout
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -186,12 +225,32 @@ def run_installer(command: list[str], on_line: Callable[[str], None]) -> int:
         errors="replace",
         bufsize=1,
     )
-    try:
-        if process.stdout is not None:
+    register_process(process)
+
+    def _drain() -> None:
+        if process.stdout is None:
+            return
+        try:
             for raw in process.stdout:
                 on_line(raw.rstrip("\r\n"))
+        except (OSError, ValueError):
+            # Поток закрыт при принудительной остановке процесса.
+            pass
+
+    reader = threading.Thread(target=_drain, name="dep-install-output", daemon=True)
+    reader.start()
+    wait_timeout = limit if limit and limit > 0 else None
+    try:
+        try:
+            process.wait(timeout=wait_timeout)
+        except subprocess.TimeoutExpired as exc:
+            terminate_process(process)
+            raise InstallerTimeout(
+                f"Установка не завершилась за {limit:g} с — процесс остановлен"
+            ) from exc
     finally:
-        process.wait()
+        terminate_process(process)
+    reader.join(timeout=5.0)
     return process.returncode
 
 
@@ -309,6 +368,10 @@ class DependencyInstaller:
 
         try:
             code = self._runner(command, on_line)
+        except InstallerTimeout as exc:
+            logger.warning("Установка %s: %s", spec, exc)
+            self._publish(key, DEP_ERROR, str(exc), str(exc))
+            return
         except Exception as exc:  # noqa: BLE001 — установщик внешний: мягкая ошибка
             logger.warning("Установка %s не запустилась: %s", spec, exc)
             self._publish(key, DEP_ERROR, f"Не удалось запустить установщик: {exc}", str(exc))

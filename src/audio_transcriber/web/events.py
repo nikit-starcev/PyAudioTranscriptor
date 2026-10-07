@@ -33,6 +33,51 @@ class _Subscriber:
     loop: asyncio.AbstractEventLoop
 
 
+class _JobStream:
+    """Результат атомарной подписки: снимок истории + живой поток.
+
+    Создаётся :meth:`JobEventBus.open`; подписчик уже зарегистрирован в шине,
+    поэтому события, опубликованные после возврата ``open``, не теряются.
+    ``terminal`` означает, что задача завершилась и живой поток пуст.
+    """
+
+    __slots__ = ("_bus", "_job_id", "_subscriber", "history", "terminal")
+
+    def __init__(
+        self,
+        bus: JobEventBus,
+        job_id: str,
+        subscriber: _Subscriber | None,
+        history: list[JobEvent],
+        terminal: bool,
+    ) -> None:
+        self._bus = bus
+        self._job_id = job_id
+        self._subscriber = subscriber
+        self.history = history
+        self.terminal = terminal
+
+    async def events(self) -> AsyncIterator[JobEvent | None]:
+        """Живой поток: событие, ``None`` — heartbeat; у конечной задачи пусто."""
+        subscriber = self._subscriber
+        if self.terminal or subscriber is None:
+            return
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(
+                        subscriber.queue.get(), timeout=self._bus._heartbeat
+                    )
+                except TimeoutError:
+                    yield None
+                    continue
+                if item is None:
+                    break
+                yield item
+        finally:
+            self._bus._discard_subscriber(self._job_id, subscriber)
+
+
 class JobEventBus:
     """Потокобезопасная шина событий по ``job_id``."""
 
@@ -77,7 +122,12 @@ class JobEventBus:
         полученное клиентом (как в :meth:`DownloadBus.history`).
         """
         with self._lock:
-            events = list(self._history.get(job_id, ()))
+            events = self._history_after_locked(job_id, after)
+        return events
+
+    def _history_after_locked(self, job_id: str, after: int | None) -> list[JobEvent]:
+        """Отфильтрованная история; вызывать под ``self._lock`` (не реентерабельный)."""
+        events = list(self._history.get(job_id, ()))
         if after is None:
             return events
         result: list[JobEvent] = []
@@ -86,6 +136,41 @@ class JobEventBus:
             if isinstance(seq, int) and seq > after:
                 result.append(event)
         return result
+
+    def _discard_subscriber(self, job_id: str, subscriber: _Subscriber) -> None:
+        """Убирает подписчика из шины (идемпотентно)."""
+        with self._lock:
+            subscribers = self._subscribers.get(job_id)
+            if subscribers and subscriber in subscribers:
+                subscribers.remove(subscriber)
+                if not subscribers:
+                    self._subscribers.pop(job_id, None)
+
+    def open(self, job_id: str, *, after: int | None = None) -> _JobStream:
+        """Атомарно: снимок истории (``after``) + регистрация живого подписчика.
+
+        Возвращает :class:`_JobStream` с готовым ``history`` и живым потоком
+        ``events()``. Снимок истории и регистрация берутся под одним локом —
+        события, опубликованные между ними, **не теряются** (issue #85): они
+        попадут либо в ``history``, либо в очередь подписчика.
+
+        ``already_terminal`` определяется по **полной** истории (а не по
+        отфильтрованной ``after``), чтобы подключение после уже доставленного
+        конечного события не «зависло» в ожидании.
+        """
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[JobEvent | None] = asyncio.Queue()
+        subscriber: _Subscriber | None = None
+        with self._lock:
+            full = list(self._history.get(job_id, ()))
+            already_terminal = bool(
+                full and full[-1].get("status") in TERMINAL_STATUSES
+            )
+            history = self._history_after_locked(job_id, after)
+            if not already_terminal:
+                subscriber = _Subscriber(queue=queue, loop=loop)
+                self._subscribers.setdefault(job_id, []).append(subscriber)
+        return _JobStream(self, job_id, subscriber, history, already_terminal)
 
     def clear(self, job_id: str) -> None:
         """Забывает историю, подписчиков и нумерацию задачи.

@@ -1214,6 +1214,53 @@ def test_event_bus_subscribe_without_replay_still_yields_terminal() -> None:
     assert [e["stage"] for e in events if e is not None] == ["done"]
 
 
+def test_event_bus_open_registers_subscriber_before_snapshot() -> None:
+    """#85: ``open`` подписывает и снимает историю атомарно — событий не теряем.
+
+    Событие, опубликованное сразу после ``open`` (но до итерации ``events()``),
+    раньше терялось: подписка регистрировалась лишь при входе в генератор.
+    """
+    bus = JobEventBus(heartbeat=0.05)
+    bus.publish("j1", {"stage": "a", "status": "running"})
+
+    async def scenario() -> tuple[list[str], list[str]]:
+        stream = bus.open("j1")
+        # Гонка: публикация ровно в окне «снимок сделан, подписки ещё нет».
+        bus.publish("j1", {"stage": "b", "status": "running"})
+        bus.publish("j1", {"stage": "done", "status": "done"})
+        live: list[str] = []
+        async for event in stream.events():
+            if event is None:
+                continue
+            live.append(str(event["stage"]))
+            if event.get("status") == "done":
+                break
+        return [str(e["stage"]) for e in stream.history], live
+
+    history, live = asyncio.run(scenario())
+
+    assert history == ["a"]
+    assert live == ["b", "done"]
+
+
+def test_event_bus_open_filters_history_and_detects_terminal() -> None:
+    """#85: ``open(after=...)`` фильтрует историю, но terminal видит по полной."""
+    bus = JobEventBus(heartbeat=0.05)
+    bus.publish("j1", {"stage": "a", "status": "running"})
+    bus.publish("j1", {"stage": "done", "status": "done"})
+
+    async def scenario() -> tuple[bool, list[str]]:
+        stream = bus.open("j1", after=1)
+        live = [event async for event in stream.events()]
+        assert live == []
+        return stream.terminal, [str(e["stage"]) for e in stream.history]
+
+    terminal, history = asyncio.run(scenario())
+
+    assert terminal is True
+    assert history == ["done"]
+
+
 def _job_events_route(app) -> object:
     """Находит APIRoute ``/api/jobs/{job_id}/events`` (роутер FastAPI вложен)."""
     stack = list(app.routes)

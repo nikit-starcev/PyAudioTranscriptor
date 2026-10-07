@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import threading
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
@@ -22,6 +23,10 @@ from audio_transcriber.diarization import nemo_speech_assets as assets
 from audio_transcriber.doctor import DoctorCheck
 from audio_transcriber.web import doctor_api
 from audio_transcriber.web.app import create_app
+from audio_transcriber.web.nemo_speech import (
+    NemoPullTimeout,
+    run_nemo_speech_pull,
+)
 from audio_transcriber.web.paths import WebPaths
 
 MODEL = "nvidia/diar_streaming_sortformer_4spk-v2"
@@ -361,3 +366,43 @@ def test_events_fresh_client_gets_history(client: TestClient) -> None:
 
     assert [event["status"] for event in events] == ["downloading"]
     assert any(line.startswith("id: ") for line in lines)
+
+
+# --- #87: таймаут и реестр процесса nemo-speech pull ------------------------
+
+
+def test_run_nemo_speech_pull_times_out() -> None:
+    command = [sys.executable, "-c", "import time; time.sleep(5)"]
+
+    with pytest.raises(NemoPullTimeout, match="процесс остановлен"):
+        run_nemo_speech_pull(command, lambda _line: None, {}, timeout=0.5)
+
+
+def test_nemo_pull_timeout_reported_as_error(web_paths: WebPaths) -> None:
+    class TimeoutRunner:
+        def __call__(
+            self,
+            command: list[str],
+            on_line: Callable[[str], None],
+            env: Mapping[str, str],
+        ) -> int:
+            raise NemoPullTimeout("nemo-speech pull не завершился за 1 с")
+
+    app = create_app(
+        paths=web_paths,
+        nemo_pull_runner=TimeoutRunner(),
+        nemo_poll_interval=None,
+        heartbeat=0.05,
+    )
+    with TestClient(app) as test_client:
+        binary = _make_binary(web_paths.data_dir / "bin" / "nemo-speech")
+        _configure_binary(test_client, binary)
+        assert (
+            test_client.post("/api/diarization/nemo-speech/model/download").status_code
+            == 202
+        )
+        test_client.app.state.nemo_downloader.wait(5)  # type: ignore[attr-defined]
+        state = test_client.app.state.nemo_downloader.state()  # type: ignore[attr-defined]
+        assert state.status == "error"
+        assert state.error is not None and "не завершился" in state.error
+

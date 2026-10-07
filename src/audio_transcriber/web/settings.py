@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 from collections.abc import Mapping
@@ -542,11 +543,8 @@ def validate_settings(settings: WebSettings) -> None:
             "DIARIZATION_HYBRID_THRESHOLD должно быть числом в диапазоне (0; 2)"
         )
 
-    if settings.llm_base_url and not _is_http_url(settings.llm_base_url):
-        raise SettingsError(
-            f"Некорректный LLM_BASE_URL: {settings.llm_base_url!r} "
-            "(ожидается http(s)://host[:port][/path])"
-        )
+    if settings.llm_base_url:
+        validate_llm_base_url(settings.llm_base_url)
 
     paths = (
         ("glossary_db", settings.glossary_db),
@@ -564,6 +562,36 @@ def validate_settings(settings: WebSettings) -> None:
         if not value.strip():
             continue
         _validate_path(label, value)
+
+
+def validate_llm_base_url(value: str) -> None:
+    """Проверяет base_url внешней LLM (SSRF, #87).
+
+    Разрешён только абсолютный http(s)-URL с хостом. Дополнительно
+    отклоняются link-local адреса (``169.254.0.0/16``, ``fe80::/10``), которые
+    в локальном приложении не бывают легитимным LLM-сервером, но часто служат
+    целью SSRF (метаданные облака). Loopback/приватные адреса разрешены —
+    Ollama/llama.cpp/LM Studio обычно живут там.
+
+    :raises SettingsError: если значение не является допустимым URL.
+    """
+    if not value:
+        return
+    if not _is_http_url(value):
+        raise SettingsError(
+            f"Некорректный LLM_BASE_URL: {value!r} "
+            "(ожидается http(s)://host[:port][/path])"
+        )
+    host = urlparse(value).hostname or ""
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return
+    if address.is_link_local:
+        raise SettingsError(
+            f"Недопустимый адрес LLM_BASE_URL: {host!r} "
+            "(link-local/метаданные облака запрещены)"
+        )
 
 
 def _is_http_url(value: str) -> bool:

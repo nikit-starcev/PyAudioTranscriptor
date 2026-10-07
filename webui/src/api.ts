@@ -260,6 +260,8 @@ export type WebSettings = {
   llm_summary: boolean
   denoise: boolean
   mark_overlap: boolean
+  /** Сводить кластеры с одинаковым уверенным именем в одного говорящего. */
+  merge_same_name_speakers: boolean
   normalize_text: boolean
   clean_artifacts: boolean
   /** Автоисправление опечаток (стадия correction, pymorphy3). */
@@ -299,6 +301,9 @@ export type WebSettings = {
   diarization_hybrid_window_seconds: number
   diarization_hybrid_overlap_seconds: number
   diarization_hybrid_min_speaker_seconds: number
+  /** Linkage и порог пороговой ветки кластеризации гибрида (#88). */
+  diarization_hybrid_linkage: string
+  diarization_hybrid_threshold: number
   /** GigaAM v3 (onnx-asr): имя модели, локальный каталог снимка и квантизация. */
   gigaam_model: string
   gigaam_model_path: string

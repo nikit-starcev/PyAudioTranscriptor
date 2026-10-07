@@ -359,3 +359,36 @@ def test_deps_events_fresh_client_gets_history(client: TestClient) -> None:
 
     assert [event["status"] for event in events] == ["running"]
     assert any(line.startswith("id: ") for line in lines)
+
+
+# --- #87: таймаут и реестр процесса установщика ----------------------------
+
+
+def test_run_installer_returns_exit_code() -> None:
+    code = web_deps.run_installer(
+        [sys.executable, "-c", "print('ok')"], lambda _line: None, timeout=30.0
+    )
+
+    assert code == 0
+
+
+def test_run_installer_times_out() -> None:
+    command = [sys.executable, "-c", "import time; time.sleep(5)"]
+
+    with pytest.raises(web_deps.InstallerTimeout, match="процесс остановлен"):
+        web_deps.run_installer(command, lambda _line: None, timeout=0.5)
+
+
+def test_installer_timeout_reported_as_error(web_paths: WebPaths) -> None:
+    class TimeoutRunner:
+        def __call__(self, command: list[str], on_line: Callable[[str], None]) -> int:
+            raise web_deps.InstallerTimeout("Установка не завершилась за 1 с")
+
+    with _make_client(web_paths, TimeoutRunner()) as test_client:  # type: ignore[arg-type]
+        assert test_client.post("/api/deps/gigaam/install").status_code == 202
+        test_client.app.state.dependency_installer.wait(5)  # type: ignore[attr-defined]
+
+        state = test_client.app.state.dependency_installer.state("gigaam")  # type: ignore[attr-defined]
+        assert state.status == web_deps.DEP_ERROR
+        assert state.error is not None and "не завершилась" in state.error
+
