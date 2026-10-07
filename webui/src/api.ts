@@ -1010,3 +1010,96 @@ export async function activateSummaryPrompt(
     { method: 'POST' },
   )
 }
+
+// --- Чат по стенограмме (#54/#96) ------------------------------------------
+
+/** Ссылка ответа LLM на реплику стенограммы (таймкод + говорящий + текст). */
+export type ChatCitation = {
+  index: number
+  start: number
+  end: number
+  speaker: string
+  text: string
+}
+
+/** Сообщение чата по стенограмме (вопрос пользователя или ответ LLM). */
+export type ChatMessage = {
+  id: number
+  role: 'user' | 'assistant'
+  content: string
+  citations: ChatCitation[]
+  created_at: string | null
+}
+
+export type ChatHistoryResponse = { messages: ChatMessage[] }
+
+/** Событие SSE-потока ответа чата (``POST /api/jobs/{id}/chat``). */
+export type ChatEvent =
+  | { type: 'start' }
+  | { type: 'token'; text: string }
+  | { type: 'done'; content: string; citations: ChatCitation[]; message?: ChatMessage }
+  | { type: 'error'; message: string }
+
+/** История чата по задаче. */
+export async function fetchChatHistory(jobId: string): Promise<ChatHistoryResponse> {
+  return api<ChatHistoryResponse>(`/api/jobs/${jobId}/chat`)
+}
+
+/** Очищает историю чата по задаче; возвращает число удалённых сообщений. */
+export async function clearChatHistory(jobId: string): Promise<{ cleared: number }> {
+  return api<{ cleared: number }>(`/api/jobs/${jobId}/chat`, { method: 'DELETE' })
+}
+
+/**
+ * Отправляет вопрос и читает поток SSE ответа вручную (``fetch`` + reader):
+ * ``EventSource`` умеет только GET, а вопрос уходит телом POST. Кадры вида
+ * ``data: {...}`` разбираются и передаются в `onEvent` по мере поступления.
+ */
+export async function streamChat(
+  jobId: string,
+  message: string,
+  onEvent: (event: ChatEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(`/api/jobs/${jobId}/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message }),
+    signal,
+  })
+  if (!response.ok) {
+    let detail = `${response.status} ${response.statusText}`
+    try {
+      const body = await response.json()
+      if (body && typeof body.detail === 'string') detail = body.detail
+    } catch {
+      // тело не JSON — оставляем статус
+    }
+    throw new Error(detail)
+  }
+  if (!response.body) throw new Error('Сервер не вернул поток ответа')
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let boundary = buffer.indexOf('\n\n')
+    while (boundary >= 0) {
+      const frame = buffer.slice(0, boundary)
+      buffer = buffer.slice(boundary + 2)
+      for (const line of frame.split('\n')) {
+        if (!line.startsWith('data:')) continue
+        const payload = line.slice(5).trim()
+        if (!payload) continue
+        try {
+          onEvent(JSON.parse(payload) as ChatEvent)
+        } catch {
+          // повреждённый кадр пропускаем — поток продолжается
+        }
+      }
+      boundary = buffer.indexOf('\n\n')
+    }
+  }
+}
