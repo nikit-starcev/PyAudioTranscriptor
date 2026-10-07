@@ -33,6 +33,7 @@ import {
   type WebSettings,
 } from './api'
 import GlossaryModal from './components/GlossaryModal'
+import ChatPanel from './components/ChatPanel'
 import EditorPanel from './components/EditorPanel'
 import ModelsModal from './components/ModelsModal'
 import ActionProgressCard from './components/ActionProgressCard'
@@ -1633,6 +1634,8 @@ function App() {
             />
 
             <EditorPanel jobId={activeJobId} onResult={setResult} />
+
+            <ChatPanel jobId={activeJobId} />
 
             <div className="rounded-md border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-800/50">
               <div className="flex flex-wrap items-center gap-3">

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Protocol, runtime_checkable
 
 
@@ -21,4 +22,19 @@ class LlmClient(Protocol):
 
     def close(self) -> None:
         """Освобождает ресурсы (останавливает сервер, если был запущен)."""
+        ...
+
+
+@runtime_checkable
+class StreamingLlmClient(Protocol):
+    """Клиент LLM с потоковой выдачей ответа (для чата по стенограмме).
+
+    Отдельный протокол, а не расширение :class:`LlmClient`: не все реализации
+    и тестовые заглушки умеют стриминг, а ``@runtime_checkable`` проверяет
+    наличие метода. Чат использует этот протокол, а при его отсутствии —
+    мягко деградирует к обычному :meth:`LlmClient.chat`.
+    """
+
+    def chat_stream(self, messages: list[dict[str, str]]) -> Iterator[str]:
+        """Отдаёт ответ модели по мере генерации (последовательность фрагментов)."""
         ...

@@ -71,8 +71,9 @@ from audio_transcriber.diarization.voices import (
     unique_sample_path,
 )
 from audio_transcriber.domain.enums import AsrBackend, ExportFormat
+from audio_transcriber.domain.models import TranscriptionResult
 from audio_transcriber.export.factory import create_exporter
-from audio_transcriber.llm.client import probe_openai_server
+from audio_transcriber.llm.client import create_llm_client, probe_openai_server
 from audio_transcriber.protocol import ProtocolArtifacts, generate_protocol
 from audio_transcriber.storage.glossary_builder import build_active_glossary
 from audio_transcriber.storage.prompts_db import PromptsDB
@@ -102,6 +103,7 @@ from audio_transcriber.web.assets import (
     find_asset,
     resolve_artifact,
 )
+from audio_transcriber.web.chat_api import LlmFactory, register_chat_routes
 from audio_transcriber.web.config import (
     build_job_config,
     env_defaults,
@@ -523,6 +525,7 @@ def create_app(
     pipeline_fn: PipelineFn | None = None,
     config_builder: ConfigBuilder | None = None,
     protocol_fn: ProtocolFn | None = None,
+    llm_factory: LlmFactory | None = None,
     voices_dir: Path | None = None,
     downloader: Downloader | None = None,
     dep_install_runner: InstallRunner | None = None,
@@ -722,6 +725,7 @@ def create_app(
         resolve_voices=resolve_voices,
         config_builder=effective_builder,
         protocol_fn=protocol_fn or generate_protocol,
+        llm_factory=llm_factory or create_llm_client,
         downloads=downloads,
         download_bus=download_bus,
         models_root=resolved_paths.models_dir,
@@ -765,6 +769,7 @@ def register_api(
     resolve_voices: VoicesResolver,
     config_builder: ConfigBuilder,
     protocol_fn: ProtocolFn,
+    llm_factory: LlmFactory,
     downloads: ModelDownloadManager,
     download_bus: DownloadBus,
     models_root: Path,
@@ -867,6 +872,26 @@ def register_api(
 
     register_glossary_routes(router, db_path=_glossary_db_path)
     register_prompts_routes(router, db_path=_prompts_db_path)
+
+    def _chat_db_path() -> Path:
+        return paths.chat_db
+
+    def _chat_transcript(job_id: str) -> TranscriptionResult:
+        job = _require_job(store, job_id)
+        payload = _require_result(paths, job)
+        return result_from_payload(payload, source_path=Path(job.source_path))
+
+    def _chat_config(job_id: str) -> AppConfig:
+        job = _require_job(store, job_id)
+        return config_builder(job_id, Path(job.source_path))
+
+    register_chat_routes(
+        router,
+        db_path=_chat_db_path,
+        resolve_transcript=_chat_transcript,
+        config_for=_chat_config,
+        llm_factory=llm_factory,
+    )
 
     @router.get("/health")
     def health(request: Request) -> dict[str, object]:

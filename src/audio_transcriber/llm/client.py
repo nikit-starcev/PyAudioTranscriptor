@@ -43,6 +43,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -110,6 +111,48 @@ def http_error_hint(code: int, body: str) -> str:
             "или размер входного файла."
         )
     return ""
+
+
+#: Маркер конца потока OpenAI-совместимого SSE.
+_SSE_DONE = "[DONE]"
+
+
+def _iter_stream_deltas(lines: Iterable[bytes]) -> Iterator[str]:
+    """Извлекает фрагменты текста из потока SSE ``chat/completions``.
+
+    Читает строки ``data: {...}``, достаёт ``choices[0].delta.content`` и
+    отдаёт непустые фрагменты. Служебный ``data: [DONE]`` завершает поток.
+    Ошибка сервера в событии (``{"error": ...}``) поднимается как
+    :class:`LlmError`.
+    """
+    for raw in lines:
+        line = raw.decode("utf-8", errors="replace").strip() if isinstance(raw, bytes) else str(raw).strip()
+        if not line or not line.startswith("data:"):
+            continue
+        data = line[len("data:") :].strip()
+        if data == _SSE_DONE:
+            return
+        try:
+            payload = json.loads(data)
+        except ValueError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        error = payload.get("error")
+        if error:
+            raise LlmError(f"LLM вернула ошибку потока: {json.dumps(error, ensure_ascii=False)[:500]}")
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices:
+            continue
+        first = choices[0]
+        if not isinstance(first, dict):
+            continue
+        delta = first.get("delta")
+        if not isinstance(delta, dict):
+            delta = first.get("message") if isinstance(first.get("message"), dict) else {}
+        content = delta.get("content") if isinstance(delta, dict) else None
+        if isinstance(content, str) and content:
+            yield content
 
 
 # ---------------------------------------------------------------------------
@@ -494,6 +537,42 @@ class LlamaServerClient:
                 f"Неожиданный ответ llama-server: {json.dumps(data, ensure_ascii=False)[:500]}"
             ) from exc
 
+    def chat_stream(self, messages: list[dict[str, str]]) -> Iterator[str]:
+        """Отдаёт ответ в потоковом режиме (SSE) — для чата по стенограмме.
+
+        Ошибки запуска/подключения поднимаются как :class:`LlmError` при начале
+        итерации; сбой уже открытого потока прерывает итерацию исключением.
+        """
+        self._ensure_started()
+        assert self._base_url is not None
+
+        payload = json.dumps(
+            {
+                "messages": messages,
+                "temperature": 0.0,
+                "max_tokens": self._max_tokens,
+                "stream": True,
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self._base_url}/v1/chat/completions",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            response = urllib.request.urlopen(request, timeout=self._request_timeout)
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")[-1000:]
+            hint = self._http_error_hint(exc.code, body)
+            raise LlmError(f"llama-server вернул HTTP {exc.code}: {body}{hint}") from exc
+        except (urllib.error.URLError, OSError) as exc:
+            detail = self._stderr.tail() if self._stderr else ""
+            raise LlmError(f"Не удалось обратиться к llama-server: {exc} {detail}") from exc
+
+        with response:
+            yield from _iter_stream_deltas(response)
+
     @staticmethod
     def _http_error_hint(code: int, body: str) -> str:
         """Подсказка пользователю при типичных ошибках запроса к LLM."""
@@ -566,15 +645,18 @@ class OpenAIClient:
         """Кандидаты URL эндпоинта (основной и запасной без ``/v1``)."""
         return list(self._urls)
 
-    def _request(self, url: str, messages: list[dict[str, str]]) -> urllib.request.Request:
-        payload = json.dumps(
-            {
-                "model": self._model_name,
-                "messages": messages,
-                "temperature": 0.0,
-                "max_tokens": self._max_tokens,
-            }
-        ).encode("utf-8")
+    def _request(
+        self, url: str, messages: list[dict[str, str]], *, stream: bool = False
+    ) -> urllib.request.Request:
+        body: dict[str, object] = {
+            "model": self._model_name,
+            "messages": messages,
+            "temperature": 0.0,
+            "max_tokens": self._max_tokens,
+        }
+        if stream:
+            body["stream"] = True
+        payload = json.dumps(body).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
@@ -644,6 +726,59 @@ class OpenAIClient:
                 ) from exc
 
             return self._parse_response(data)
+
+    def chat_stream(self, messages: list[dict[str, str]]) -> Iterator[str]:
+        """Отдаёт ответ внешней LLM в потоковом режиме (SSE).
+
+        Повторные попытки и запасной URL применяются только до открытия потока:
+        после старта итерации сбой рвёт поток, а не повторяется (иначе токены
+        дублировались бы). Ошибки — :class:`LlmError`.
+        """
+        url_index = 0
+        attempt = 0
+        while True:
+            url = self._urls[url_index]
+            request = self._request(url, messages, stream=True)
+            try:
+                response = urllib.request.urlopen(request, timeout=self._request_timeout)
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")[-1000:]
+                if exc.code == 404 and url_index == 0 and len(self._urls) > 1:
+                    logger.debug("LLM: %s не найден, пробую %s", url, self._urls[1])
+                    url_index = 1
+                    continue
+                if exc.code in _RETRYABLE_HTTP_STATUS and attempt < self._max_retries:
+                    attempt += 1
+                    logger.warning(
+                        "Внешняя LLM вернула HTTP %d (%s), повтор %d/%d",
+                        exc.code,
+                        url,
+                        attempt,
+                        self._max_retries,
+                    )
+                    self._sleep_before_retry(attempt)
+                    continue
+                hint = http_error_hint(exc.code, body)
+                raise LlmError(
+                    f"Внешняя LLM вернула HTTP {exc.code} ({url}): {body}{hint}"
+                ) from exc
+            except (urllib.error.URLError, OSError, TimeoutError) as exc:
+                if attempt < self._max_retries:
+                    attempt += 1
+                    logger.warning(
+                        "Не удалось обратиться к внешней LLM (%s): %s — повтор %d/%d",
+                        url,
+                        exc,
+                        attempt,
+                        self._max_retries,
+                    )
+                    self._sleep_before_retry(attempt)
+                    continue
+                raise LlmError(f"Не удалось обратиться к внешней LLM {url}: {exc}") from exc
+
+            with response:
+                yield from _iter_stream_deltas(response)
+            return
 
     def _parse_response(self, data: object) -> str:
         try:
