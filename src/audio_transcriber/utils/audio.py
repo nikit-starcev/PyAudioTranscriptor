@@ -153,6 +153,14 @@ def load_waveform(path: Path, *, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
         for frame in container.decode(stream):
             for resampled in resampler.resample(frame):
                 accumulator.append(resampled.to_ndarray()[0])
+        # Сбрасываем внутренний буфер ресемплера — иначе теряется «хвост»
+        # потока (и всё аудио оказывается сдвинуто на задержку фильтра).
+        # Такое же сбрасывание уже делают ``_iter_decoded_frames`` и
+        # ``resample_waveform``; без него декодированная дорожка короче
+        # исходной, и вычисленные по ней таймкоды не совпадают со шкалой
+        # исходника (#14).
+        for resampled in resampler.resample(None):
+            accumulator.append(resampled.to_ndarray()[0])
     except Exception as exc:
         raise AudioFileError(f"Не удалось декодировать аудиофайл {path}: {exc}") from exc
     finally:
