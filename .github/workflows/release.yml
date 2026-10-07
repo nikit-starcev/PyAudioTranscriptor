@@ -51,10 +51,13 @@ jobs:
       - name: Pytest
         run: uv run --no-sync pytest
 
-      - name: Restore pyproject.toml (clean tree for hatch-vcs)
-        # Ранее `sed` менял pyproject ради CPU-индекса torch; верните файл, иначе
-        # рабочее дерево «грязное» и hatch-vcs даёт dev-версию вместо версии тега.
-        run: git checkout -- pyproject.toml
+      - name: Restore tracked files (clean tree for hatch-vcs)
+        # `sed` менял pyproject ради CPU-индекса, а `uv sync` без --frozen
+        # переписывал uv.lock — из-за «грязного» дерева hatch-vcs даёт
+        # dev-версию вместо версии тега. Возвращаем всё перед сборкой.
+        run: |
+          git checkout -- .
+          git status --porcelain
 
       - name: Build sdist and wheel
         run: uv build
