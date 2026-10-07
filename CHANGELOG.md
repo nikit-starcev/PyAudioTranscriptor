@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Интеграционные тесты на реальных моделях и бинарниках** (#11): каталог
+  `tests/integration/` с маркером `integration` (по умолчанию исключён).
+  `test_asr_whisper_cpp.py` и `test_asr_faster_whisper.py` проверяют непустые
+  сегменты/текст и корректную длительность на 5-с фрагменте; `test_diarization_pyannote.py` —
+  smoke-тест диаризации. Пути берутся из `config.env` или `INTEGRATION_*`; при
+  отсутствии бинарника/модели/токена тест **пропускается** (не падает). Запуск:
+  `pytest -m integration` (документация — `tests/integration/README.md`).
+
 ## [0.5.4] - 2026-10-07
 
 ### Added

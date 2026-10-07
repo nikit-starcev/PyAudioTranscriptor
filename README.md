@@ -1605,6 +1605,7 @@ tests/
 ├── test_web_timings.py     # длительности стадий
 ├── test_jobs_db.py         # БД задач веб-интерфейса
 ├── test_integration.py  # реальный конвейер на tests_jfk.flac (маркер integration)
+├── integration/         # ASR (faster-whisper/whisper.cpp) и pyannote на реальных моделях
 ├── tests_jfk.flac        # тестовая аудиозапись для интеграционного теста
 └── tests_jfk.flac.json   # ожидаемый результат интеграционного теста
 ```
@@ -1752,6 +1753,21 @@ uv run pytest -m integration
 pyannote.audio требуют отдельного токена доступа Hugging Face (см. раздел
 [«Токен доступа для диаризации»](#токен-доступа-для-диаризации)), что не нужно
 для проверки связки распознавание → объединение → склейка → экспорт.
+
+Кроме полного конвейера, в `tests/integration/` лежат точечные тесты на
+**реальных** моделях и бинарниках (issue #11):
+
+- `test_asr_whisper_cpp.py` — распознавание через `whisper-cli`;
+- `test_asr_faster_whisper.py` — распознавание через faster-whisper (модели
+  пробуются от лёгких к тяжёлым);
+- `test_diarization_pyannote.py` — smoke-тест диаризации pyannote.
+
+Они работают на 5-секундном фрагменте (генерируется из `tests/tests_jfk.flac`) и
+проверяют непустые сегменты/текст и корректную длительность. Пути к моделям и
+бинарникам берутся из `config.env` (`WHISPER_CPP_*`, `PYANNOTE_LOCAL_MODEL`,
+`MODEL`, `HF_TOKEN`) или переопределяются переменными `INTEGRATION_*`. Если нужного
+ресурса нет, тест **пропускается** с понятной причиной (а не падает). Подробности —
+в [`tests/integration/README.md`](tests/integration/README.md).
 
 ### Линтер и проверка типов
 
