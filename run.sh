@@ -45,106 +45,25 @@ if [ -z "${HF_TOKEN:-}" ]; then
     echo "Внимание: HF_TOKEN не задан в config.env — определение говорящих завершится ошибкой (см. README)."
 fi
 
-ARGS=(transcribe "$AUDIO_FILE")
-[ -n "${OUTPUT_DIR:-}" ] && ARGS+=(--output-dir "$OUTPUT_DIR")
-[ -n "${MODEL:-}" ] && ARGS+=(--model "$MODEL")
-[ -n "${LANGUAGE:-}" ] && ARGS+=(--language "$LANGUAGE")
-[ -n "${DEVICE:-}" ] && ARGS+=(--device "$DEVICE")
-[ -n "${ASR_BACKEND:-}" ] && ARGS+=(--asr-backend "$ASR_BACKEND")
-[ -n "${WHISPER_CPP_MODEL:-}" ] && ARGS+=(--whisper-cpp-model "$WHISPER_CPP_MODEL")
-[ -n "${WHISPER_CPP_BINARY:-}" ] && ARGS+=(--whisper-cpp-binary "$WHISPER_CPP_BINARY")
-[ -n "${WHISPER_CPP_LIB_PATH:-}" ] && ARGS+=(--whisper-cpp-lib-path "$WHISPER_CPP_LIB_PATH")
-[ -n "${GIGAAM_MODEL:-}" ] && ARGS+=(--gigaam-model "$GIGAAM_MODEL")
-[ -n "${GIGAAM_MODEL_PATH:-}" ] && ARGS+=(--gigaam-model-path "$GIGAAM_MODEL_PATH")
-[ -n "${GIGAAM_QUANTIZATION:-}" ] && ARGS+=(--gigaam-quantization "$GIGAAM_QUANTIZATION")
-[ "${GIGAAM_VAD:-true}" = "false" ] && ARGS+=(--no-gigaam-vad)
-[ "${HYBRID_ASR:-false}" = "true" ] && ARGS+=(--hybrid-asr)
-[ -n "${HYBRID_FALLBACK_BACKEND:-}" ] && ARGS+=(--hybrid-fallback-backend "$HYBRID_FALLBACK_BACKEND")
-[ -n "${HYBRID_LOW_LOGPROB_THRESHOLD:-}" ] && ARGS+=(--hybrid-low-logprob-threshold "$HYBRID_LOW_LOGPROB_THRESHOLD")
-[ -n "${HYBRID_NO_SPEECH_THRESHOLD:-}" ] && ARGS+=(--hybrid-no-speech-threshold "$HYBRID_NO_SPEECH_THRESHOLD")
-[ -n "${HYBRID_SILENCE_RMS_THRESHOLD:-}" ] && ARGS+=(--hybrid-silence-rms-threshold "$HYBRID_SILENCE_RMS_THRESHOLD")
-[ -n "${HYBRID_MIN_SEGMENT_SECONDS:-}" ] && ARGS+=(--hybrid-min-segment-seconds "$HYBRID_MIN_SEGMENT_SECONDS")
-[ -n "${HYBRID_CONTEXT_SECONDS:-}" ] && ARGS+=(--hybrid-context-seconds "$HYBRID_CONTEXT_SECONDS")
-
-if [ -n "${FORMATS:-}" ]; then
-    IFS=',' read -ra FORMAT_LIST <<< "$FORMATS"
-    for fmt in "${FORMAT_LIST[@]}"; do
-        ARGS+=(--format "$(echo "$fmt" | xargs)")
-    done
-fi
-
-[ -n "${NUM_SPEAKERS:-}" ] && ARGS+=(--num-speakers "$NUM_SPEAKERS")
-[ -n "${MIN_SPEAKERS:-}" ] && ARGS+=(--min-speakers "$MIN_SPEAKERS")
-[ -n "${MAX_SPEAKERS:-}" ] && ARGS+=(--max-speakers "$MAX_SPEAKERS")
-[ -n "${DIARIZATION_MIN_DURATION_OFF:-}" ] && ARGS+=(--min-duration-off "$DIARIZATION_MIN_DURATION_OFF")
-[ -n "${DIARIZATION_CLUSTERING_THRESHOLD:-}" ] && ARGS+=(--clustering-threshold "$DIARIZATION_CLUSTERING_THRESHOLD")
-[ -n "${DIARIZATION_CLUSTERING_FB:-}" ] && ARGS+=(--clustering-fb "$DIARIZATION_CLUSTERING_FB")
-
-if [ -n "${SPEAKER_NAMES:-}" ]; then
-    IFS=',' read -ra NAME_LIST <<< "$SPEAKER_NAMES"
-    for name in "${NAME_LIST[@]}"; do
-        ARGS+=(--speaker-name "$(echo "$name" | xargs)")
-    done
-fi
-
-if [ -n "${SPEAKER_REFERENCES:-}" ]; then
-    IFS=',' read -ra REF_LIST <<< "$SPEAKER_REFERENCES"
-    for ref in "${REF_LIST[@]}"; do
-        ARGS+=(--speaker-reference "$(echo "$ref" | xargs)")
-    done
-fi
-[ -n "${ENROLLMENT_MIN_SIMILARITY:-}" ] && ARGS+=(--enrollment-min-similarity "$ENROLLMENT_MIN_SIMILARITY")
-[ -n "${VOICES_DIR:-}" ] && ARGS+=(--voices-dir "$VOICES_DIR")
-[ "${EXPORT_SPEAKER_SAMPLES:-true}" = "false" ] && ARGS+=(--no-speaker-samples)
-
+# Маппинг config.env → флаги CLI живёт в одном месте — в коде
+# (audio_transcriber.cli.env_config): CLI сам читает config.env (как веб и TUI),
+# а флаги лишь переопределяют настройки. Раньше обёртки дублировали этот
+# маппинг, и он расходился (CLEAR_CACHE и env-only WHISPER_CPP_CHUNK_*,
+# issue #90). Поэтому здесь не перечисляем переменные, а передаём только
+# обязательный путь к файлу: остальное подхватит CLI.
+#
+# config.env уже загружен выше (`set -a; source config.env`), поэтому
+# переменные, которые код читает напрямую из окружения
+# (WHISPER_CPP_VAD_MODEL, WHISPER_CPP_CHUNK_* и т.п.), тоже доступны.
+#
 # Секреты (HF_TOKEN, LLM_API_KEY) намеренно НЕ пробрасываются флагами argv:
-# они видны в `ps`/`/proc/<pid>/cmdline`. config.env уже загружен выше
-# (`set -a; source config.env`), поэтому CLI сам берёт их из окружения/файла.
-[ -n "${PYANNOTE_LOCAL_MODEL:-}" ] && ARGS+=(--pyannote-local-model "$PYANNOTE_LOCAL_MODEL")
-[ "${ENABLE_CORRECTION:-false}" = "true" ] && ARGS+=(--enable-correction)
-[ "${CLEAN_ARTIFACTS:-true}" = "false" ] && ARGS+=(--no-clean)
-[ "${COLLAPSE_REPEATS:-true}" = "false" ] && ARGS+=(--no-collapse-repeats)
-[ -n "${REPEAT_MIN_WORDS:-}" ] && ARGS+=(--repeat-min-words "$REPEAT_MIN_WORDS")
-[ -n "${REPEAT_SIMILARITY:-}" ] && ARGS+=(--repeat-similarity "$REPEAT_SIMILARITY")
-[ "${NORMALIZE_TEXT:-true}" = "false" ] && ARGS+=(--no-normalize)
-[ "${MARK_OVERLAP:-true}" = "false" ] && ARGS+=(--no-overlap)
-[ -n "${LOW_CONFIDENCE_THRESHOLD:-}" ] && ARGS+=(--low-confidence-threshold "$LOW_CONFIDENCE_THRESHOLD")
-[ "${DENOISE:-true}" = "false" ] && ARGS+=(--no-denoise)
-[ "${USE_CACHE:-true}" = "false" ] && ARGS+=(--no-cache)
-[ "${CLEAR_CACHE:-false}" = "true" ] && ARGS+=(--clear-cache)
-[ -n "${CACHE_DIR:-}" ] && ARGS+=(--cache-dir "$CACHE_DIR")
-[ "${NOTIFICATIONS:-true}" = "false" ] && ARGS+=(--no-notify)
-[ "${TIMELINE:-true}" = "false" ] && ARGS+=(--no-timeline)
-[ "${WORD_TIMESTAMPS:-true}" = "false" ] && ARGS+=(--no-word-timestamps)
-[ -n "${CORRECTION_MIN_WORD_LENGTH:-}" ] && ARGS+=(--correction-min-word-length "$CORRECTION_MIN_WORD_LENGTH")
-[ -n "${CORRECTION_MIN_SIMILARITY:-}" ] && ARGS+=(--correction-min-similarity "$CORRECTION_MIN_SIMILARITY")
-[ -n "${CORRECTION_MAX_CANDIDATES:-}" ] && ARGS+=(--correction-max-candidates "$CORRECTION_MAX_CANDIDATES")
-[ -n "${HOTWORDS:-}" ] && ARGS+=(--hotwords "$HOTWORDS")
-[ "${VERBOSE:-false}" = "true" ] && ARGS+=(--verbose)
-
-# --- LLM-постобработка (llama.cpp локально или внешний OpenAI-совместимый API) ---
-[ "${LLM_ENABLED:-false}" = "true" ] && ARGS+=(--llm)
-[ -n "${LLM_PROVIDER:-}" ] && ARGS+=(--llm-provider "$LLM_PROVIDER")
-[ -n "${LLM_BASE_URL:-}" ] && ARGS+=(--llm-base-url "$LLM_BASE_URL")
-[ -n "${LLM_MODEL_NAME:-}" ] && ARGS+=(--llm-model-name "$LLM_MODEL_NAME")
-[ -n "${LLM_MODEL:-}" ] && ARGS+=(--llm-model "$LLM_MODEL")
-[ -n "${LLM_BINARY:-}" ] && ARGS+=(--llm-binary "$LLM_BINARY")
-[ -n "${LLM_LIB_PATH:-}" ] && ARGS+=(--llm-lib-path "$LLM_LIB_PATH")
-[ "${LLM_GPU:-true}" = "false" ] && ARGS+=(--llm-cpu)
-[ -n "${LLM_CONTEXT:-}" ] && ARGS+=(--llm-context "$LLM_CONTEXT")
-[ -n "${LLM_REQUEST_TIMEOUT:-}" ] && ARGS+=(--llm-request-timeout "$LLM_REQUEST_TIMEOUT")
-[ "${LLM_EXTRACT_NAMES:-true}" = "false" ] && ARGS+=(--llm-no-names)
-[ "${LLM_SUMMARY:-true}" = "false" ] && ARGS+=(--no-llm-summary)
-[ "${LLM_SUGGEST_TERMS:-false}" = "true" ] && ARGS+=(--llm-suggest-terms)
-[ -n "${LLM_PROMPT_EXTRA:-}" ] && ARGS+=(--llm-prompt-extra "$LLM_PROMPT_EXTRA")
-[ -n "${LLM_PROMPT_FILE:-}" ] && ARGS+=(--llm-prompt-file "$LLM_PROMPT_FILE")
-[ -n "${GLOSSARY_PATH:-}" ] && ARGS+=(--glossary "$GLOSSARY_PATH")
+# они видны в `ps`/`/proc/<pid>/cmdline`. CLI берёт их из окружения/файла сам.
 
 # Для бэкенда whisper-cpp (гибрид на AMD) используется CPU-сборка torch,
 # установленная вручную в .venv. `uv run` сверяется с uv.lock и может
 # переустановить CUDA-сборку torch, поэтому вызываем бинарник напрямую.
 if [ -x ".venv/bin/audio-transcriber" ]; then
-    .venv/bin/audio-transcriber "${ARGS[@]}"
+    .venv/bin/audio-transcriber transcribe "$AUDIO_FILE"
 else
-    uv run audio-transcriber "${ARGS[@]}"
+    uv run audio-transcriber transcribe "$AUDIO_FILE"
 fi

@@ -1021,3 +1021,53 @@ def test_collect_env_kwargs_picks_secrets_from_config_env(tmp_path: Path) -> Non
 
     assert kwargs["hf_token"] == "hf_secret"
     assert kwargs["llm_api_key"] == "sk-secret"
+
+
+def test_collect_env_kwargs_carries_initial_prompt(tmp_path: Path) -> None:
+    """``INITIAL_PROMPT`` из config.env доходит до CLI (issue #90)."""
+    from audio_transcriber.cli.env_config import collect_env_kwargs
+
+    kwargs = collect_env_kwargs(
+        {"INITIAL_PROMPT": "ОИБ, АРМ"},
+        input_file=tmp_path / "audio.mp3",
+        output_dir=tmp_path / "out",
+    )
+
+    assert kwargs["initial_prompt"] == "ОИБ, АРМ"
+
+
+def test_collect_env_kwargs_invalid_numbers_use_appconfig_defaults(tmp_path: Path) -> None:
+    """Некорректные числа откатываются к дефолтам :class:`AppConfig` (issue #90).
+
+    ``cli/env_config.py`` не должен дублировать литералы дефолтов: при мусоре
+    в config.env берётся то же значение, что у поля :class:`AppConfig`.
+    """
+    from audio_transcriber.cli.env_config import collect_env_kwargs
+
+    kwargs = collect_env_kwargs(
+        {
+            "HYBRID_LOW_LOGPROB_THRESHOLD": "not-a-number",
+            "HYBRID_NO_SPEECH_THRESHOLD": "not-a-number",
+            "HYBRID_SILENCE_RMS_THRESHOLD": "not-a-number",
+            "HYBRID_MIN_SEGMENT_SECONDS": "not-a-number",
+            "HYBRID_CONTEXT_SECONDS": "not-a-number",
+            "ENROLLMENT_MIN_SIMILARITY": "not-a-number",
+            "REPEAT_MIN_WORDS": "not-a-number",
+            "REPEAT_SIMILARITY": "not-a-number",
+        },
+        input_file=tmp_path / "audio.mp3",
+        output_dir=tmp_path / "out",
+    )
+
+    fields = AppConfig.__dataclass_fields__
+    for field in (
+        "hybrid_low_logprob_threshold",
+        "hybrid_no_speech_threshold",
+        "hybrid_silence_rms_threshold",
+        "hybrid_min_segment_seconds",
+        "hybrid_context_seconds",
+        "enrollment_min_similarity",
+        "repeat_min_words",
+        "repeat_similarity",
+    ):
+        assert kwargs[field] == fields[field].default, f"дефолт {field} разошёлся с AppConfig"

@@ -284,7 +284,12 @@ class TranscriberApp(App):
                         )
                     with Horizontal():
                         yield Label("Говорящих", classes="field-label")
-                        yield Input(placeholder="пусто = авто", id="num_speakers", type="integer")
+                        yield Input(
+                            value=self._defaults.get("NUM_SPEAKERS", ""),
+                            placeholder="пусто = авто",
+                            id="num_speakers",
+                            type="integer",
+                        )
                     with Horizontal():
                         yield Label("Шумоподавление (денойз)", classes="field-label")
                         yield Switch(

@@ -11,13 +11,53 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
-#: Каталог проекта: ``src/audio_transcriber/utils/config_env.py`` -> parents[3].
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+#: Каталог пакета: ``.../audio_transcriber/utils/config_env.py`` -> parents[1].
+_PACKAGE_DIR = Path(__file__).resolve().parents[1]
+
+
+def _source_checkout_root(package_dir: Path) -> Path | None:
+    """Корень репозитория, если пакет запущен из исходников (``src/``).
+
+    Для layout ``<repo>/src/audio_transcriber`` каталог пакета лежит в ``src``,
+    и корень репозитория — двумя уровнями выше. Для wheel-установки
+    (``site-packages/audio_transcriber``) вернуть нечего: жёсткого «корня репо»
+    там нет, и подставлять ``site-packages``/``lib/pythonX.Y`` нельзя.
+    """
+    if package_dir.parent.name == "src":
+        return package_dir.parent.parent
+    return None
+
+
+def detect_project_root(package_dir: Path, *, cwd: Path | None = None) -> Path:
+    """Определяет каталог для поиска ``config.env`` (тестируемая логика).
+
+    Исходники (``src``-layout) → корень репозитория. Wheel-установка → рабочий
+    каталог: данные (``config.env``) лежат рядом с запуском или рядом с пакетом,
+    но не в жёстко зашитом каталоге репозитория (issue #90).
+    """
+    source_root = _source_checkout_root(Path(package_dir))
+    if source_root is not None:
+        return source_root
+    return Path(cwd) if cwd is not None else Path.cwd()
 
 
 def project_root() -> Path:
     """Возвращает корневой каталог проекта (для поиска ``config.env``)."""
-    return _PROJECT_ROOT
+    return detect_project_root(_PACKAGE_DIR)
+
+
+def _default_roots() -> tuple[Path, ...]:
+    """Каталоги поиска ``config.env``: рабочий каталог, затем корень проекта.
+
+    Порядок: сначала ``cwd`` (там обычно запускают и кладут файл), затем
+    вычисленный :func:`project_root`. Для wheel-установки это ``cwd`` и
+    каталог рядом с пакетом — без несуществующих путей репозитория.
+    """
+    roots: list[Path] = [Path.cwd()]
+    for candidate in (_source_checkout_root(_PACKAGE_DIR), _PACKAGE_DIR.parent):
+        if candidate is not None and candidate not in roots:
+            roots.append(candidate)
+    return tuple(roots)
 
 
 def parse_config_env(text: str) -> dict[str, str]:
@@ -37,8 +77,8 @@ def parse_config_env(text: str) -> dict[str, str]:
 
 
 def find_config_env(candidates: Sequence[Path] | None = None) -> Path | None:
-    """Ищет ``config.env`` в каталоге запуска, затем в корне проекта."""
-    roots = candidates if candidates is not None else (Path.cwd(), _PROJECT_ROOT)
+    """Ищет ``config.env`` в каталоге запуска, затем рядом с проектом/пакетом."""
+    roots = candidates if candidates is not None else _default_roots()
     for root in roots:
         config_path = Path(root) / "config.env"
         if config_path.is_file():

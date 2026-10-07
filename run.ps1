@@ -72,108 +72,19 @@ if (-not $config["HF_TOKEN"]) {
     Write-Host "Внимание: HF_TOKEN не задан в config.env - определение говорящих завершится ошибкой (см. README)."
 }
 
-# Пара «флаг + значение», если значение задано (не пусто).
-function Get-ValueArg([string]$name, [string]$key) {
-    $value = $config[$key]
-    if ($value) {
-        return @($name, $value)
-    }
-    return @()
-}
-
-$cliArgs = @("transcribe", $AudioFile)
-
-$cliArgs += Get-ValueArg "--output-dir" "OUTPUT_DIR"
-$cliArgs += Get-ValueArg "--model" "MODEL"
-$cliArgs += Get-ValueArg "--language" "LANGUAGE"
-$cliArgs += Get-ValueArg "--device" "DEVICE"
-$cliArgs += Get-ValueArg "--asr-backend" "ASR_BACKEND"
-$cliArgs += Get-ValueArg "--whisper-cpp-model" "WHISPER_CPP_MODEL"
-$cliArgs += Get-ValueArg "--whisper-cpp-binary" "WHISPER_CPP_BINARY"
-$cliArgs += Get-ValueArg "--whisper-cpp-lib-path" "WHISPER_CPP_LIB_PATH"
-$cliArgs += Get-ValueArg "--gigaam-model" "GIGAAM_MODEL"
-$cliArgs += Get-ValueArg "--gigaam-model-path" "GIGAAM_MODEL_PATH"
-$cliArgs += Get-ValueArg "--gigaam-quantization" "GIGAAM_QUANTIZATION"
-if ($config["GIGAAM_VAD"] -eq "false") { $cliArgs += "--no-gigaam-vad" }
-if ($config["HYBRID_ASR"] -eq "true") { $cliArgs += "--hybrid-asr" }
-$cliArgs += Get-ValueArg "--hybrid-fallback-backend" "HYBRID_FALLBACK_BACKEND"
-$cliArgs += Get-ValueArg "--hybrid-low-logprob-threshold" "HYBRID_LOW_LOGPROB_THRESHOLD"
-$cliArgs += Get-ValueArg "--hybrid-no-speech-threshold" "HYBRID_NO_SPEECH_THRESHOLD"
-$cliArgs += Get-ValueArg "--hybrid-silence-rms-threshold" "HYBRID_SILENCE_RMS_THRESHOLD"
-$cliArgs += Get-ValueArg "--hybrid-min-segment-seconds" "HYBRID_MIN_SEGMENT_SECONDS"
-$cliArgs += Get-ValueArg "--hybrid-context-seconds" "HYBRID_CONTEXT_SECONDS"
-
-if ($config["FORMATS"]) {
-    foreach ($fmt in $config["FORMATS"].Split(",")) {
-        $cliArgs += @("--format", $fmt.Trim())
-    }
-}
-
-$cliArgs += Get-ValueArg "--num-speakers" "NUM_SPEAKERS"
-$cliArgs += Get-ValueArg "--min-speakers" "MIN_SPEAKERS"
-$cliArgs += Get-ValueArg "--max-speakers" "MAX_SPEAKERS"
-$cliArgs += Get-ValueArg "--min-duration-off" "DIARIZATION_MIN_DURATION_OFF"
-$cliArgs += Get-ValueArg "--clustering-threshold" "DIARIZATION_CLUSTERING_THRESHOLD"
-$cliArgs += Get-ValueArg "--clustering-fb" "DIARIZATION_CLUSTERING_FB"
-
-if ($config["SPEAKER_NAMES"]) {
-    foreach ($name in $config["SPEAKER_NAMES"].Split(",")) {
-        $cliArgs += @("--speaker-name", $name.Trim())
-    }
-}
-
-if ($config["SPEAKER_REFERENCES"]) {
-    foreach ($ref in $config["SPEAKER_REFERENCES"].Split(",")) {
-        $cliArgs += @("--speaker-reference", $ref.Trim())
-    }
-}
-
-$cliArgs += Get-ValueArg "--enrollment-min-similarity" "ENROLLMENT_MIN_SIMILARITY"
-$cliArgs += Get-ValueArg "--voices-dir" "VOICES_DIR"
-if ($config["EXPORT_SPEAKER_SAMPLES"] -eq "false") { $cliArgs += "--no-speaker-samples" }
-
+# Маппинг config.env → флаги CLI живёт в одном месте — в коде
+# (audio_transcriber.cli.env_config): CLI сам читает config.env (как веб и TUI),
+# а флаги лишь переопределяют настройки. Раньше обёртки дублировали этот
+# маппинг, и он расходился (CLEAR_CACHE и env-only WHISPER_CPP_CHUNK_*,
+# issue #90). Поэтому здесь не перечисляем переменные, а передаём только
+# обязательный путь к файлу: остальное подхватит CLI.
+#
+# Значения config.env уже экспортированы в окружение процесса выше, поэтому
+# переменные, которые код читает напрямую из окружения
+# (WHISPER_CPP_VAD_MODEL, WHISPER_CPP_CHUNK_* и т.п.), тоже доступны.
+#
 # Секреты (HF_TOKEN, LLM_API_KEY) намеренно НЕ пробрасываются флагами argv:
-# они видны в списке процессов. config.env уже разобран и экспортирован в
-# окружение выше, поэтому CLI берёт их оттуда сам.
-$cliArgs += Get-ValueArg "--pyannote-local-model" "PYANNOTE_LOCAL_MODEL"
-if ($config["ENABLE_CORRECTION"] -eq "true") { $cliArgs += "--enable-correction" }
-if ($config["CLEAN_ARTIFACTS"] -eq "false") { $cliArgs += "--no-clean" }
-if ($config["COLLAPSE_REPEATS"] -eq "false") { $cliArgs += "--no-collapse-repeats" }
-$cliArgs += Get-ValueArg "--repeat-min-words" "REPEAT_MIN_WORDS"
-$cliArgs += Get-ValueArg "--repeat-similarity" "REPEAT_SIMILARITY"
-if ($config["NORMALIZE_TEXT"] -eq "false") { $cliArgs += "--no-normalize" }
-if ($config["MARK_OVERLAP"] -eq "false") { $cliArgs += "--no-overlap" }
-$cliArgs += Get-ValueArg "--low-confidence-threshold" "LOW_CONFIDENCE_THRESHOLD"
-if ($config["DENOISE"] -eq "false") { $cliArgs += "--no-denoise" }
-if ($config["USE_CACHE"] -eq "false") { $cliArgs += "--no-cache" }
-if ($config["CLEAR_CACHE"] -eq "true") { $cliArgs += "--clear-cache" }
-$cliArgs += Get-ValueArg "--cache-dir" "CACHE_DIR"
-if ($config["NOTIFICATIONS"] -eq "false") { $cliArgs += "--no-notify" }
-if ($config["TIMELINE"] -eq "false") { $cliArgs += "--no-timeline" }
-if ($config["WORD_TIMESTAMPS"] -eq "false") { $cliArgs += "--no-word-timestamps" }
-$cliArgs += Get-ValueArg "--correction-min-word-length" "CORRECTION_MIN_WORD_LENGTH"
-$cliArgs += Get-ValueArg "--correction-min-similarity" "CORRECTION_MIN_SIMILARITY"
-$cliArgs += Get-ValueArg "--correction-max-candidates" "CORRECTION_MAX_CANDIDATES"
-$cliArgs += Get-ValueArg "--hotwords" "HOTWORDS"
-if ($config["VERBOSE"] -eq "true") { $cliArgs += "--verbose" }
-
-# --- LLM-постобработка (llama.cpp локально или внешний OpenAI-совместимый API) ---
-if ($config["LLM_ENABLED"] -eq "true") { $cliArgs += "--llm" }
-$cliArgs += Get-ValueArg "--llm-provider" "LLM_PROVIDER"
-$cliArgs += Get-ValueArg "--llm-base-url" "LLM_BASE_URL"
-$cliArgs += Get-ValueArg "--llm-model-name" "LLM_MODEL_NAME"
-$cliArgs += Get-ValueArg "--llm-model" "LLM_MODEL"
-$cliArgs += Get-ValueArg "--llm-binary" "LLM_BINARY"
-$cliArgs += Get-ValueArg "--llm-lib-path" "LLM_LIB_PATH"
-if ($config["LLM_GPU"] -eq "false") { $cliArgs += "--llm-cpu" }
-$cliArgs += Get-ValueArg "--llm-context" "LLM_CONTEXT"
-$cliArgs += Get-ValueArg "--llm-request-timeout" "LLM_REQUEST_TIMEOUT"
-if ($config["LLM_EXTRACT_NAMES"] -eq "false") { $cliArgs += "--llm-no-names" }
-if ($config["LLM_SUMMARY"] -eq "false") { $cliArgs += "--no-llm-summary" }
-if ($config["LLM_SUGGEST_TERMS"] -eq "true") { $cliArgs += "--llm-suggest-terms" }
-$cliArgs += Get-ValueArg "--llm-prompt-extra" "LLM_PROMPT_EXTRA"
-$cliArgs += Get-ValueArg "--llm-prompt-file" "LLM_PROMPT_FILE"
-$cliArgs += Get-ValueArg "--glossary" "GLOSSARY_PATH"
+# они видны в списке процессов. CLI берёт их из окружения/файла сам.
 
 # Для бэкенда whisper-cpp (гибрид на AMD) используется CPU-сборка torch,
 # установленная вручную в .venv. `uv run` сверяется с uv.lock и может
@@ -181,8 +92,8 @@ $cliArgs += Get-ValueArg "--glossary" "GLOSSARY_PATH"
 # вызываем его напрямую — как в run.sh на Linux/macOS.
 $venvExe = Join-Path $PSScriptRoot ".venv\Scripts\audio-transcriber.exe"
 if (Test-Path $venvExe -PathType Leaf) {
-    & $venvExe @cliArgs
+    & $venvExe transcribe $AudioFile
 } else {
-    uv run audio-transcriber @cliArgs
+    uv run audio-transcriber transcribe $AudioFile
 }
 exit $LASTEXITCODE

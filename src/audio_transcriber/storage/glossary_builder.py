@@ -52,10 +52,16 @@ def build_active_glossary(config: AppConfig) -> Glossary | None:
 
 
 def _assemble_glossary(config: AppConfig) -> Glossary | None:
-    """Общая сборка: миграция текстовых путей в БД и термины включённых записей."""
+    """Общая сборка: миграция текстовых путей в БД и термины включённых записей.
+
+    Миграция текстовых ``glossary_path`` в БД идемпотентна по имени источника
+    (см. :meth:`GlossaryDB.migrate_from_paths`) и привязана к версии схемы, а
+    не к «пустая ли БД»: раньше гейт ``count() == 0`` молча терял текстовый
+    глоссарий, если в БД уже были другие записи (issue #90).
+    """
     db_path = config.resolved_glossary_db()
     with GlossaryDB(db_path) as db:
-        if config.glossary_path and db.count() == 0:
+        if config.glossary_path:
             reports = db.migrate_from_paths(list(config.glossary_path))
             for report in reports:
                 logger.info(

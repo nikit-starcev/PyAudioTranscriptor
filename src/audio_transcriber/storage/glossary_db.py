@@ -39,6 +39,26 @@ logger = logging.getLogger(__name__)
 # Разделитель явной пары «ошибочная форма = канон».
 _PAIR_SEPARATOR = "="
 
+#: Версия схемы БД глоссария (``PRAGMA user_version``). v1 — таблицы
+#: ``sources``/``entries``; v2 — служебная таблица ``meta`` для отметок
+#: миграций. Схема создаётся/дополняется идемпотентно до этой версии.
+SCHEMA_VERSION = 2
+
+#: Ключ в ``meta`` с версией схемы, на которой выполнялась миграция старых
+#: текстовых глоссариев (``GLOSSARY_PATH``) в БД. Сама миграция идемпотентна
+#: по имени источника, поэтому отметка нужна лишь для наблюдаемости.
+LEGACY_GLOSSARY_MIGRATION_KEY = "legacy_glossary_migration"
+
+#: Версия схемы БД глоссария (``PRAGMA user_version``). v1 — таблицы
+#: ``sources``/``entries``; v2 — служебная таблица ``meta`` для отметок
+#: миграций. Схема создаётся/дополняется идемпотентно до этой версии.
+SCHEMA_VERSION = 2
+
+#: Ключ в ``meta`` с версией схемы, на которой выполнялась миграция старых
+#: текстовых глоссариев (``GLOSSARY_PATH``) в БД. Сама миграция идемпотентна
+#: по имени источника, поэтому отметка нужна лишь для наблюдаемости.
+LEGACY_GLOSSARY_MIGRATION_KEY = "legacy_glossary_migration"
+
 # Кодировка чтения текстовых глоссариев (utf-8-sig съедает BOM, если он есть).
 _TEXT_ENCODING = "utf-8-sig"
 
@@ -162,7 +182,8 @@ class GlossaryDB:
     # Жизненный цикл
     # ------------------------------------------------------------------
     def _create_schema(self) -> None:
-        self._conn.executescript(
+        with self._conn:
+            self._conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS sources (
                 id INTEGER PRIMARY KEY,
@@ -189,8 +210,56 @@ class GlossaryDB:
             CREATE INDEX IF NOT EXISTS idx_entries_canonical ON entries(canonical);
             CREATE INDEX IF NOT EXISTS idx_entries_source_id ON entries(source_id);
             """
-        )
-        self._conn.commit()
+            )
+            self._apply_schema_migrations()
+
+    def _apply_schema_migrations(self) -> None:
+        """Идемпотентно доводит схему до :data:`SCHEMA_VERSION`.
+
+        ``CREATE TABLE IF NOT EXISTS`` не меняет уже существующую БД, поэтому
+        версия схемы хранится в ``PRAGMA user_version``: сюда добавляются
+        шаги для баз, созданных более ранними версиями. Повторный вызов на
+        актуальной БД ничего не делает.
+        """
+        version = self.schema_version()
+        if version < 1:
+            # Базовые таблицы уже созданы выше (IF NOT EXISTS) — v1 считаем
+            # применённой и лишь фиксируем версию.
+            version = 1
+        if version < 2:
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS meta ("
+                "key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
+            version = 2
+        if self.schema_version() != version:
+            self._conn.execute(f"PRAGMA user_version = {version}")
+
+    def schema_version(self) -> int:
+        """Версия схемы БД (``PRAGMA user_version``)."""
+        row = self._conn.execute("PRAGMA user_version").fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def _get_meta(self, key: str) -> str | None:
+        row = self._conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return None if row is None else str(row["value"])
+
+    def _set_meta(self, key: str, value: str) -> None:
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO meta(key, value) VALUES(?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+
+    def legacy_migration_version(self) -> int | None:
+        """Версия схемы, на которой выполнена миграция старых глоссариев.
+
+        ``None`` — миграция ещё не выполнялась. См.
+        :data:`LEGACY_GLOSSARY_MIGRATION_KEY`.
+        """
+        raw = self._get_meta(LEGACY_GLOSSARY_MIGRATION_KEY)
+        return int(raw) if raw is not None and raw.isdigit() else None
 
     def close(self) -> None:
         """Закрывает соединение с базой."""
@@ -358,7 +427,8 @@ class GlossaryDB:
 
         Идемпотентно: повторный вызов не создаёт дублей и не перезаписывает
         уже импортированный источник. Несуществующие файлы пропускаются с
-        предупреждением.
+        предупреждением. Версия схемы, на которой выполнена миграция, пишется
+        в ``meta`` (:data:`LEGACY_GLOSSARY_MIGRATION_KEY`).
         """
         reports: list[ImportReport] = []
         for raw_path in paths:
@@ -370,6 +440,7 @@ class GlossaryDB:
                 logger.info("Источник глоссария уже импортирован: %s", file_path.name)
                 continue
             reports.append(self.import_txt(file_path, source=file_path.name, replace=False))
+        self._set_meta(LEGACY_GLOSSARY_MIGRATION_KEY, str(SCHEMA_VERSION))
         return reports
 
     # ------------------------------------------------------------------

@@ -1701,3 +1701,105 @@ def test_tui_protocol_stale_after_name_edits(
 
     assert stale is True
     assert "имена изменены" in status
+
+
+def test_build_config_carries_full_diarization_and_llm_env(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TUI переносит NEMO_SPEECH_*/DIARIZATION_*/HYBRID/ESTIMATE/LLM_* (issue #90).
+
+    У этих настроек нет виджетов — они обязаны подхватываться из ``config.env``
+    так же, как в CLI (общий источник ``collect_env_kwargs``).
+    """
+    defaults = _defaults(tmp_path / "out")
+    defaults.update(
+        {
+            "NEMO_SPEECH_BINARY": "/opt/nemo/nemo-speech",
+            "NEMO_SPEECH_MODEL": "nvidia/diar_streaming_sortformer_4spk-v2",
+            "NEMO_SPEECH_DEVICE": "vulkan",
+            "NEMO_SPEECH_LIB_PATH": "/opt/nemo/lib",
+            "MIN_SPEAKERS": "2",
+            "MAX_SPEAKERS": "5",
+            "DIARIZATION_ENGINE": "nemo-speech",
+            "DIARIZATION_MIN_DURATION_OFF": "0.7",
+            "DIARIZATION_CLUSTERING_THRESHOLD": "0.6",
+            "DIARIZATION_CLUSTERING_FB": "0.2",
+            "DIARIZATION_ESTIMATE_ENABLED": "false",
+            "DIARIZATION_ESTIMATE_SECONDS": "12.5",
+            "DIARIZATION_ESTIMATE_THRESHOLD": "0.42",
+            "DIARIZATION_ESTIMATE_MODEL": "campplus.onnx",
+            "DIARIZATION_ROUTE_MAX_SPEAKERS": "3",
+            "DIARIZATION_HYBRID_ENABLED": "false",
+            "DIARIZATION_HYBRID_WINDOW_SECONDS": "60",
+            "DIARIZATION_HYBRID_OVERLAP_SECONDS": "1.5",
+            "DIARIZATION_HYBRID_MIN_SPEAKER_SECONDS": "2.5",
+            "DIARIZATION_HYBRID_LINKAGE": "ward",
+            "DIARIZATION_HYBRID_THRESHOLD": "1.1",
+            "DIARIZATION_HYBRID_OVERLOAD_SPLIT": "false",
+            "DIARIZATION_HYBRID_SUBWINDOW_SECONDS": "20",
+            "DIARIZATION_HYBRID_MAX_SPLIT_DEPTH": "2",
+            "WORD_TIMESTAMPS": "false",
+            "MERGE_SAME_NAME_SPEAKERS": "false",
+            "LLM_PROVIDER": "openai",
+            "LLM_BASE_URL": "http://localhost:1234/v1",
+            "LLM_MODEL_NAME": "qwen2.5-7b",
+            "LLM_API_KEY": "secret-key",
+            "LLM_REQUEST_TIMEOUT": "123",
+        }
+    )
+    monkeypatch.setattr(tui_app, "_load_env_defaults", lambda: defaults)
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            return app._build_config(audio_file)
+
+    config = asyncio.run(_run())
+
+    assert config.nemo_speech_binary == "/opt/nemo/nemo-speech"
+    assert config.nemo_speech_model == "nvidia/diar_streaming_sortformer_4spk-v2"
+    assert config.nemo_speech_device == "vulkan"
+    assert config.nemo_speech_lib_path == "/opt/nemo/lib"
+    assert config.min_speakers == 2
+    assert config.max_speakers == 5
+    assert config.diarization_engine == "nemo-speech"
+    assert config.diarization_min_duration_off == pytest.approx(0.7)
+    assert config.diarization_clustering_threshold == pytest.approx(0.6)
+    assert config.diarization_clustering_fb == pytest.approx(0.2)
+    assert config.diarization_estimate_enabled is False
+    assert config.diarization_estimate_seconds == pytest.approx(12.5)
+    assert config.diarization_estimate_threshold == pytest.approx(0.42)
+    assert config.diarization_estimate_model == "campplus.onnx"
+    assert config.diarization_route_max_speakers == 3
+    assert config.diarization_hybrid_enabled is False
+    assert config.diarization_hybrid_window_seconds == pytest.approx(60.0)
+    assert config.diarization_hybrid_overlap_seconds == pytest.approx(1.5)
+    assert config.diarization_hybrid_min_speaker_seconds == pytest.approx(2.5)
+    assert config.diarization_hybrid_linkage == "ward"
+    assert config.diarization_hybrid_threshold == pytest.approx(1.1)
+    assert config.diarization_hybrid_overload_split is False
+    assert config.diarization_hybrid_subwindow_seconds == pytest.approx(20.0)
+    assert config.diarization_hybrid_max_split_depth == 2
+    assert config.word_timestamps is False
+    assert config.merge_same_name_speakers is False
+    assert config.llm_provider == "openai"
+    assert config.llm_base_url == "http://localhost:1234/v1"
+    assert config.llm_model_name == "qwen2.5-7b"
+    assert config.llm_api_key == "secret-key"
+    assert config.llm_request_timeout == pytest.approx(123.0)
+
+
+def test_build_config_num_speakers_from_env(
+    tmp_path: Path, audio_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NUM_SPEAKERS из config.env виден в TUI-конфиге (виджет предзаполнен)."""
+    defaults = _defaults(tmp_path / "out")
+    defaults["NUM_SPEAKERS"] = "3"
+    monkeypatch.setattr(tui_app, "_load_env_defaults", lambda: defaults)
+
+    async def _run():
+        app = tui_app.TranscriberApp()
+        async with app.run_test():
+            return app._build_config(audio_file)
+
+    assert asyncio.run(_run()).num_speakers == 3

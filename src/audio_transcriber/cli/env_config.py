@@ -17,6 +17,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from pathlib import Path
 
+from audio_transcriber.cleaning.repetition_filter import (
+    DEFAULT_REPEAT_MIN_WORDS,
+    DEFAULT_REPEAT_SIMILARITY,
+)
+from audio_transcriber.cleaning.repetition_filter import (
+    DEFAULT_REPEAT_MIN_WORDS,
+    DEFAULT_REPEAT_SIMILARITY,
+)
 from audio_transcriber.config.defaults import (
     DEFAULT_DEEP_FILTER_BINARY,
     DEFAULT_DIARIZATION_ESTIMATE_SECONDS,
@@ -31,6 +39,12 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
     DEFAULT_ENROLLMENT_MAX_SAMPLE_SECONDS,
     DEFAULT_ENROLLMENT_MIN_SAMPLE_SECONDS,
+    DEFAULT_ENROLLMENT_MIN_SIMILARITY,
+    DEFAULT_HYBRID_CONTEXT_SECONDS,
+    DEFAULT_HYBRID_LOW_LOGPROB_THRESHOLD,
+    DEFAULT_HYBRID_MIN_SEGMENT_SECONDS,
+    DEFAULT_HYBRID_NO_SPEECH_THRESHOLD,
+    DEFAULT_HYBRID_SILENCE_RMS_THRESHOLD,
     DEFAULT_LLM_REQUEST_TIMEOUT,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
     DEFAULT_REFERENCE_PREPARE,
@@ -181,20 +195,24 @@ def collect_env_kwargs(
             put("hybrid_fallback_backend", AsrBackend(raw))
     if has("HYBRID_LOW_LOGPROB_THRESHOLD"):
         put("hybrid_low_logprob_threshold", as_float(
-            val("HYBRID_LOW_LOGPROB_THRESHOLD"), -1.0
+            val("HYBRID_LOW_LOGPROB_THRESHOLD"), DEFAULT_HYBRID_LOW_LOGPROB_THRESHOLD
         ))
     if has("HYBRID_NO_SPEECH_THRESHOLD"):
-        put("hybrid_no_speech_threshold", as_float(val("HYBRID_NO_SPEECH_THRESHOLD"), 0.6))
+        put("hybrid_no_speech_threshold", as_float(
+            val("HYBRID_NO_SPEECH_THRESHOLD"), DEFAULT_HYBRID_NO_SPEECH_THRESHOLD
+        ))
     if has("HYBRID_SILENCE_RMS_THRESHOLD"):
         put("hybrid_silence_rms_threshold", as_float(
-            val("HYBRID_SILENCE_RMS_THRESHOLD"), 0.003
+            val("HYBRID_SILENCE_RMS_THRESHOLD"), DEFAULT_HYBRID_SILENCE_RMS_THRESHOLD
         ))
     if has("HYBRID_MIN_SEGMENT_SECONDS"):
         put("hybrid_min_segment_seconds", as_float(
-            val("HYBRID_MIN_SEGMENT_SECONDS"), 0.5
+            val("HYBRID_MIN_SEGMENT_SECONDS"), DEFAULT_HYBRID_MIN_SEGMENT_SECONDS
         ))
     if has("HYBRID_CONTEXT_SECONDS"):
-        put("hybrid_context_seconds", as_float(val("HYBRID_CONTEXT_SECONDS"), 0.4))
+        put("hybrid_context_seconds", as_float(
+            val("HYBRID_CONTEXT_SECONDS"), DEFAULT_HYBRID_CONTEXT_SECONDS
+        ))
 
     # --- Язык/устройство/форматы -------------------------------------------
     if has("LANGUAGE"):
@@ -204,6 +222,18 @@ def collect_env_kwargs(
     formats = env_export_formats(env)
     if formats is not None:
         put("export_formats", formats)
+
+    # --- Подсказка ASR (INITIAL_PROMPT) ------------------------------------
+    # Раньше INITIAL_PROMPT проводился только TUI/вебом, а CLI терял его
+    # (issue #90): без флага подсказку из config.env нужно перенести и здесь.
+    if has("INITIAL_PROMPT"):
+        put("initial_prompt", val("INITIAL_PROMPT"))
+
+    # --- Подсказка ASR (INITIAL_PROMPT) ------------------------------------
+    # Раньше INITIAL_PROMPT проводился только TUI/вебом, а CLI терял его
+    # (issue #90): без флага подсказку из config.env нужно перенести и здесь.
+    if has("INITIAL_PROMPT"):
+        put("initial_prompt", val("INITIAL_PROMPT"))
 
     # --- Диаризация: число говорящих и гиперпараметры -----------------------
     if has("NUM_SPEAKERS"):
@@ -317,7 +347,9 @@ def collect_env_kwargs(
             AppConfig.parse_speaker_references(_split_list(val("SPEAKER_REFERENCES"))),
         )
     if has("ENROLLMENT_MIN_SIMILARITY"):
-        put("enrollment_min_similarity", as_float(val("ENROLLMENT_MIN_SIMILARITY"), 0.6))
+        put("enrollment_min_similarity", as_float(
+            val("ENROLLMENT_MIN_SIMILARITY"), DEFAULT_ENROLLMENT_MIN_SIMILARITY
+        ))
     if has("VOICES_DIR"):
         put("voices_dir", Path(val("VOICES_DIR")))
     if has("EXPORT_SPEAKER_SAMPLES"):
@@ -389,9 +421,9 @@ def collect_env_kwargs(
     if has("COLLAPSE_REPEATS"):
         put("collapse_repeats", as_bool(val("COLLAPSE_REPEATS"), default=True))
     if has("REPEAT_MIN_WORDS"):
-        put("repeat_min_words", as_int(val("REPEAT_MIN_WORDS"), 4))
+        put("repeat_min_words", as_int(val("REPEAT_MIN_WORDS"), DEFAULT_REPEAT_MIN_WORDS))
     if has("REPEAT_SIMILARITY"):
-        put("repeat_similarity", as_float(val("REPEAT_SIMILARITY"), 0.9))
+        put("repeat_similarity", as_float(val("REPEAT_SIMILARITY"), DEFAULT_REPEAT_SIMILARITY))
     if has("NORMALIZE_TEXT"):
         put("normalize_text", as_bool(val("NORMALIZE_TEXT"), default=True))
     if has("MARK_OVERLAP"):

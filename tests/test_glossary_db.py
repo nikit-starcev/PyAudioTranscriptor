@@ -14,7 +14,7 @@ import pytest
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.llm.glossary import Glossary
 from audio_transcriber.storage.glossary_builder import build_glossary
-from audio_transcriber.storage.glossary_db import GlossaryDB
+from audio_transcriber.storage.glossary_db import SCHEMA_VERSION, GlossaryDB
 
 
 def _write(path: Path, text: str) -> Path:
@@ -35,6 +35,17 @@ def test_schema_created_idempotently(tmp_path: Path) -> None:
         assert db.count() == 0
 
     assert db_path.is_file()
+
+
+def test_schema_version_is_current_and_idempotent(tmp_path: Path) -> None:
+    """Схема доводится до ``SCHEMA_VERSION`` и переоткрытие её не ломает."""
+    db_path = tmp_path / "glossary.db"
+
+    with GlossaryDB(db_path) as db:
+        assert db.schema_version() == SCHEMA_VERSION
+
+    with GlossaryDB(db_path) as db:
+        assert db.schema_version() == SCHEMA_VERSION
 
 
 # --- Импорт .txt -----------------------------------------------------------
@@ -311,6 +322,45 @@ def test_migrate_from_paths_skips_missing_file(tmp_path: Path) -> None:
         reports = db.migrate_from_paths([missing])
 
     assert reports == []
+
+
+def test_migrate_from_paths_records_schema_version(tmp_path: Path) -> None:
+    """Итог миграции отмечается версией схемы в ``meta`` (issue #90)."""
+    txt = _write(tmp_path / "glossary.txt", "ОИБ\n")
+
+    with GlossaryDB(tmp_path / "glossary.db") as db:
+        assert db.legacy_migration_version() is None
+        db.migrate_from_paths([txt])
+        assert db.legacy_migration_version() == SCHEMA_VERSION
+
+
+def test_build_glossary_migrates_txt_with_existing_db_entries(
+    tmp_path: Path, audio_file: Path
+) -> None:
+    """Текстовый глоссарий импортируется, даже если БД уже непуста (issue #90).
+
+    Раньше миграция запускалась только при ``count() == 0``, поэтому при
+    наличии ручных записей ``GLOSSARY_PATH`` молча игнорировался.
+    """
+    txt = _write(tmp_path / "extra.txt", "КИСУСС\n")
+    db_path = tmp_path / "glossary.db"
+    with GlossaryDB(db_path) as db:
+        db.add_entry("ОИБ", source="manual")
+
+    config = AppConfig(input_file=audio_file, glossary_db=db_path, glossary_path=(txt,))
+    glossary = build_glossary(config)
+
+    assert isinstance(glossary, Glossary)
+    assert "ОИБ" in glossary
+    assert "КИСУСС" in glossary
+    with GlossaryDB(db_path) as db:
+        assert "extra.txt" in [src.name for src in db.list_sources()]
+        assert db.count() == 2
+
+    # Повторная сборка не дублирует источник (идемпотентно).
+    build_glossary(config)
+    with GlossaryDB(db_path) as db:
+        assert db.count() == 2
 
 
 # --- build_glossary --------------------------------------------------------

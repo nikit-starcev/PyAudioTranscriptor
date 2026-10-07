@@ -1321,3 +1321,70 @@ def test_cli_hotwords_from_config_env(
 
     assert result.exit_code == 0
     assert captured["config"].hotwords == "юрист Смирнова"
+
+
+# --- Issue #90: INITIAL_PROMPT и CLEAR_CACHE в едином источнике ------------
+
+
+def test_cli_initial_prompt_from_config_env(
+    audio_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config_env,
+) -> None:
+    """INITIAL_PROMPT из config.env доходит до AppConfig без флага (issue #90)."""
+    captured: dict[str, AppConfig] = {}
+    monkeypatch.setattr(app_module, "run_pipeline", _capturing_pipeline(captured))
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+    config_env({"INITIAL_PROMPT": "ОИБ, АРМ, КИСУСС"})
+
+    result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(tmp_path / "out")])
+
+    assert result.exit_code == 0
+    assert captured["config"].initial_prompt == "ОИБ, АРМ, КИСУСС"
+
+
+def test_cli_clear_cache_from_config_env(
+    audio_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config_env,
+    stub_pipeline,
+) -> None:
+    """CLEAR_CACHE=true в config.env очищает кэш так же, как флаг ``--clear-cache``.
+
+    Раньше это делали обёртки run.sh/run.ps1 (дублирование маппинга, issue #90);
+    теперь единый источник — CLI.
+    """
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+    output_dir = tmp_path / "out"
+    cache_dir = output_dir / ".cache"
+    cache_dir.mkdir(parents=True)
+    stale = cache_dir / "asr-deadbeef.json"
+    stale.write_text("{}", encoding="utf-8")
+    config_env({"CLEAR_CACHE": "true"})
+
+    result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(output_dir)])
+
+    assert result.exit_code == 0
+    assert not stale.exists()
+
+
+def test_cli_clear_cache_disabled_by_default(
+    audio_file: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stub_pipeline,
+) -> None:
+    """Без CLEAR_CACHE/флага кэш не трогается."""
+    monkeypatch.setattr(app_module, "resolve_device", lambda _device: Device.CPU)
+    output_dir = tmp_path / "out"
+    cache_dir = output_dir / ".cache"
+    cache_dir.mkdir(parents=True)
+    kept = cache_dir / "asr-deadbeef.json"
+    kept.write_text("{}", encoding="utf-8")
+
+    result = runner.invoke(app, ["transcribe", str(audio_file), "-o", str(output_dir)])
+
+    assert result.exit_code == 0
+    assert kept.exists()
