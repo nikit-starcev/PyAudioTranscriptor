@@ -476,8 +476,12 @@
   Суть: упростить установку — инсталлятор (PyInstaller/Tauri/Electron) или Docker-образ +
   **автоскачивание моделей** при первом запуске.
   Зачем: сейчас Python 3.14 + uv + бинарники/модели + DeepFilterNet из исходников — высокий порог.
-  Как: начать с Docker-образа; позже — инсталлятор; автозагрузчик уже есть основа (`web/models.py`).
-  Ориентиры: Buzz/Vibe/NoScribe/Meetily, Scriberr, TranscriptionSuite. Сложность: средняя/высокая; зависит от #23.
+  Как (по итогам разведки): Python 3.14 **не** блокер (cp314-колёса есть), блокер — **DeepFilterNet**
+  (`numpy<2`, `DeepFilterLib` ≤cp311) → шаг 0: Rust-CLI `deep-filter` вместо пакета; затем зафиксировать
+  Python `>=3.12,<3.15` (приоритет 3.12/3.13), **Docker** (Linux/Vulkan; GPU только на Linux),
+  portable-бандл (uv+PyInstaller one-dir; ⚠️ pyannote→torchcodec+shared FFmpeg), позже инсталляторы.
+  Intel Mac не поддерживать. Автозагрузчик уже есть основа (`web/models.py`).
+  Ориентиры: Buzz (PyInstaller/.dmg/Flatpak/Snap/AppImage), Ollama/GPT4All/LM Studio. Сложность: средняя/высокая; зависит от #23.
 
 - **Экспорт VTT/Markdown/PDF + подсветка слов.** (#53)
   Суть: новые форматы экспорта — **VTT, Markdown, PDF** — и подсветка слов в SRT/HTML.
