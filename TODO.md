@@ -6,6 +6,19 @@
 
 ## Сделано (недавнее)
 
+- ✅ **Ревью-фиксы веба (#85–#88):** гонка SSE устранена (`JobEventBus.open` — атомарный
+  снимок+подписка, дедуп по `seq` в nemo-модалке); лимиты загрузок и пути (`_resolve_within`,
+  потоковая запись, 413/507, `_result_path` только в `results_dir`); таймауты/реестр subprocess
+  (`run_installer`/nemo-pull + `terminate_all_processes`), SSRF-валидация `base_url` LLM,
+  мягкая CSRF-защита (`Origin`/`Sec-Fetch-Site`); `merge_same_name_speakers` (+ hybrid
+  linkage/threshold) добавлены в `SettingsUpdate`/UI.
+- ✅ **Производительность (#89):** индексация overlap (`_IntervalIndex`), однократный расчёт
+  энергии кадров в whisper, меньше копий N×N в эмбеддингах, индекс samples, кэш длительности
+  `/api/files`, SQL-пагинация глоссария + debounce поиска.
+- ✅ **Единый источник настроек (#90):** обёртки `run.sh`/`run.ps1` делегируют CLI (без дрейфа),
+  `cli/env_config` без хардкода дефолтов, TUI переносит весь набор (`NEMO_SPEECH_*`/`DIARIZATION_*`/
+  `HYBRID`/`ESTIMATE`/`WORD_TIMESTAMPS`/`MERGE_SAME_NAME_SPEAKERS`/`LLM_*`/`INITIAL_PROMPT`),
+  wheel-safe `config_env`, идемпотентная миграция глоссария по версии схемы.
 - ✅ **Надёжность ядра: парсинг вывода, кэш-store, локи, env-мутации, assert** (#91):
   `whisper_cpp_engine` разбирает JSON-вывод через `_parse_whisper_output` — битый/неполный
   вывод даёт понятную `TranscriptionError`, а не сырой `JSONDecodeError`/`KeyError`;
@@ -405,12 +418,6 @@
 
 ## Важно
 
-- **Веб: гонка SSE + дедуп nemo-модалки.** (#85) события между снимком истории и подпиской теряются.
-- **Веб: ограничение путей и размеров загрузок.** (#86) `_explicit_references`/`_result_path`/лимиты загрузок.
-- **Веб: таймауты/реестр subprocess (deps/nemo) + SSRF/CSRF.** (#87)
-- **Веб: настройки неполны в `SettingsUpdate`/UI.** (#88) `merge_same_name_speakers` (+ hybrid linkage/threshold).
-- **Производительность O(n²) и дорогие горячие пути.** (#89) aligner/overlap/кластеризация/листинг/поиск.
-- **Конфиг/обёртки: единый источник настроек (run.*↔config.env↔env_config), TUI, wheel-root.** (#90)
 - **Мелочи из ревью кода (комплект).** (#92)
 
 - **Некорректное время (таймкоды) в расшифровке.** (#14)
