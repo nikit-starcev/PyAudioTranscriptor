@@ -122,14 +122,14 @@ def test_no_free_port_in_range_fails(
 
 
 def test_find_available_port_scans_range(monkeypatch: pytest.MonkeyPatch) -> None:
-    occupied = {8765, 8766}
+    occupied = {net.DEFAULT_WEB_PORT, net.DEFAULT_WEB_PORT + 1}
 
     def is_available(host: str, port: int) -> bool:
         return port not in occupied
 
     monkeypatch.setattr(net, "is_port_available", is_available)
 
-    assert net.find_available_port("127.0.0.1") == 8767
+    assert net.find_available_port("127.0.0.1") == net.DEFAULT_WEB_PORT + 2
 
 
 def test_find_available_port_returns_none_when_exhausted(

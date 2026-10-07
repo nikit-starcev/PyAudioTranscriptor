@@ -44,6 +44,7 @@ import numpy as np
 
 from audio_transcriber.config.defaults import DEFAULT_ENROLLMENT_MIN_SIMILARITY
 from audio_transcriber.diarization import energy
+from audio_transcriber.diarization.embeddings import l2_normalize
 from audio_transcriber.diarization.reference import (
     ReferencePrepareOptions,
     prepare_reference,
@@ -166,15 +167,6 @@ class PyannoteEmbeddingEngine:
         }
         vector = inference(inputs)  # type: ignore[operator]
         return np.asarray(vector, dtype=np.float32).reshape(-1)
-
-
-def l2_normalize(vector: np.ndarray) -> np.ndarray:
-    """L2-нормирует вектор; нулевой вектор возвращается без изменений."""
-    array = np.asarray(vector, dtype=np.float32).reshape(-1)
-    norm = float(np.linalg.norm(array))
-    if norm <= 0.0:
-        return array
-    return array / norm
 
 
 def average_embeddings(vectors: Sequence[np.ndarray]) -> np.ndarray | None:
@@ -640,13 +632,6 @@ def enroll_speakers(
             continue
         best_candidates[speaker_id] = candidate
         name, score = candidate
-        logger.info(
-            "Enrollment: %s — лучший «%s» %.3f < %.2f",
-            speaker_id,
-            name,
-            score,
-            min_similarity,
-        )
         logger.info(
             "Enrollment: кластер %s → без имени (лучший «%s» %.3f < %.2f)",
             speaker_id,

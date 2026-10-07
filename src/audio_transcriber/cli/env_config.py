@@ -54,16 +54,13 @@ from audio_transcriber.correction.defaults import (
 )
 from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
 from audio_transcriber.llm.client import DEFAULT_CONTEXT_SIZE as DEFAULT_LLM_CONTEXT_SIZE
+from audio_transcriber.utils.config_env import parse_bool
 from audio_transcriber.utils.glossary_paths import normalize_glossary_paths_tuple
-
-_TRUE_VALUES = frozenset({"1", "true", "yes", "on", "да"})
 
 
 def as_bool(raw: str | None, default: bool = False) -> bool:
     """Разбирает булево значение ``config.env`` (``true/1/yes/on/да``)."""
-    if raw is None or not raw.strip():
-        return default
-    return raw.strip().casefold() in _TRUE_VALUES
+    return parse_bool(raw, default)
 
 
 def as_int(raw: str | None, default: int) -> int:

@@ -372,7 +372,8 @@ def transcribe(
         case_sensitive=False,
         help=(
             "Движок диаризации: auto (pyannote, если nemo-speech не настроен), "
-            "pyannote или nemo-speech (NeMo-Speech.cpp, GPU через Vulkan). "
+            "pyannote, nemo-speech (NeMo-Speech.cpp, GPU через Vulkan) или "
+            "hybrid (окна nemo-speech + кластеризация эмбеддингов). "
             f"По умолчанию {DEFAULT_DIARIZATION_ENGINE}. "
             f"Допустимо: {', '.join(VALID_DIARIZATION_ENGINES)}."
         ),

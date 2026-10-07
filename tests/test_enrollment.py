@@ -461,7 +461,7 @@ def test_enroll_speakers_reports_best_candidate_when_below_threshold(
     name, score = outcome.best_candidates["SPEAKER_00"]
     assert name == "Иван"
     assert score == pytest.approx(0.5, abs=1e-6)
-    assert "SPEAKER_00 — лучший «Иван» 0.500 < 0.60" in caplog.text
+    assert "Enrollment: кластер SPEAKER_00 → без имени (лучший «Иван» 0.500 < 0.60)" in caplog.text
     assert "Enrollment: сходство SPEAKER_00" in caplog.text
 
 

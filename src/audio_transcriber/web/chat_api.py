@@ -18,9 +18,8 @@ UI переходил к нужному таймкоду и включал во�
 
 from __future__ import annotations
 
-import json
 import sqlite3
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -37,13 +36,8 @@ from audio_transcriber.llm.chat import (
 )
 from audio_transcriber.llm.chunking import chunk_chars_for_context
 from audio_transcriber.storage.chat_db import MAX_MESSAGE_LENGTH, ChatDB, ChatMessage
-
-#: Заголовки SSE: без кэша и без буферизации прокси (как у остальных SSE-роутов).
-SSE_HEADERS = {
-    "Cache-Control": "no-cache",
-    "Connection": "keep-alive",
-    "X-Accel-Buffering": "no",
-}
+from audio_transcriber.web.sse import SSE_HEADERS
+from audio_transcriber.web.sse import sse_frame as _sse
 
 #: Резерв символов промпта под инструкцию, историю диалога и ответ модели.
 _PROMPT_RESERVE_CHARS = 2000
@@ -62,11 +56,6 @@ class ChatRequest(BaseModel):
     """Тело ``POST /api/jobs/{job_id}/chat`` — вопрос пользователя."""
 
     message: str = Field(min_length=1, max_length=MAX_MESSAGE_LENGTH)
-
-
-def _sse(event: Mapping[str, object]) -> str:
-    """Кадр SSE с JSON-пейлоадом события чата."""
-    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
 def _open(db_path: Callable[[], Path]) -> ChatDB:

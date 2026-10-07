@@ -14,6 +14,28 @@ from pathlib import Path
 #: Каталог пакета: ``.../audio_transcriber/utils/config_env.py`` -> parents[1].
 _PACKAGE_DIR = Path(__file__).resolve().parents[1]
 
+#: Строковые значения, считающиеся истиной в ``config.env`` (регистр не важен).
+TRUE_VALUES = frozenset({"1", "true", "yes", "on", "да"})
+#: Строковые значения, считающиеся ложью в ``config.env`` (регистр не важен).
+FALSE_VALUES = frozenset({"0", "false", "no", "off", "нет"})
+
+
+def parse_bool(value: str | None, default: bool = False) -> bool:
+    """Единый разбор булева значения ``config.env``.
+
+    ``None``, пустая строка и неизвестное значение означают «не задано» —
+    возвращается ``default`` (мягкий разбор, как в CLI и вебе). Иначе значение
+    сверяется с :data:`TRUE_VALUES`/:data:`FALSE_VALUES` без учёта регистра.
+    """
+    if value is None or not value.strip():
+        return default
+    stripped = value.strip().casefold()
+    if stripped in TRUE_VALUES:
+        return True
+    if stripped in FALSE_VALUES:
+        return False
+    return default
+
 
 def _source_checkout_root(package_dir: Path) -> Path | None:
     """Корень репозитория, если пакет запущен из исходников (``src/``).

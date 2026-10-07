@@ -11,7 +11,7 @@ from __future__ import annotations
 import socket
 
 #: Порт веб-интерфейса по умолчанию.
-DEFAULT_WEB_PORT = 8765
+DEFAULT_WEB_PORT = 8790
 #: Сколько портов после дефолтного просматривать при автоподборе.
 WEB_PORT_SCAN_LIMIT = 50
 #: Верхняя граница допустимых портов (IANA dynamic/private range).

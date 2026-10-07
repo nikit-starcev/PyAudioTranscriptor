@@ -30,8 +30,17 @@ jobs:
       - name: Set up Python
         run: uv python install 3.14
 
+      - name: Verify uv.lock is up to date
+        run: uv lock --check
+
+      - name: Use CPU-only PyTorch in CI
+        # Сборка релиза не требует CUDA; CUDA-колёса torch лишь замедляют
+        # установку. uv.lock остаётся источником версий (свежесть проверена
+        # выше) — пересобираем окружение под CPU-индекс.
+        run: sed -i 's#https://download.pytorch.org/whl/cu126#https://download.pytorch.org/whl/cpu#' pyproject.toml
+
       - name: Install project and dev tools
-        run: uv sync --group dev --all-extras --frozen
+        run: uv sync --group dev --all-extras
 
       - name: Ruff
         run: uv run ruff check src tests

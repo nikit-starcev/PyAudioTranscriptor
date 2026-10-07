@@ -125,6 +125,10 @@ class DoctorReportCache:
         self._ttl = ttl
         self._clock = clock
         self._lock = threading.Lock()
+        #: Сериализует сам пересчёт, чтобы при истечении TTL несколько
+        #: параллельных запросов не запускали тяжёлые проверки одновременно
+        #: (cache stampede).
+        self._compute_lock = threading.Lock()
         self._cached: dict[str, object] | None = None
         self._cached_at = 0.0
 
@@ -136,21 +140,28 @@ class DoctorReportCache:
         with self._lock:
             if self._cached is not None and (now - self._cached_at) < self._ttl:
                 return self._cached
-        report = doctor_report(config_path, env)
-        with self._lock:
-            self._cached = report
-            self._cached_at = self._clock()
-        return report
+        with self._compute_lock:
+            # Пока ждали лок пересчёта, другой поток мог обновить кэш.
+            now = self._clock()
+            with self._lock:
+                if self._cached is not None and (now - self._cached_at) < self._ttl:
+                    return self._cached
+            report = doctor_report(config_path, env)
+            with self._lock:
+                self._cached = report
+                self._cached_at = self._clock()
+            return report
 
     def refresh(
         self, config_path: Path | None, env: Mapping[str, str]
     ) -> dict[str, object]:
         """Принудительный пересчёт отчёта и обновление кэша."""
-        report = doctor_report(config_path, env)
-        with self._lock:
-            self._cached = report
-            self._cached_at = self._clock()
-        return report
+        with self._compute_lock:
+            report = doctor_report(config_path, env)
+            with self._lock:
+                self._cached = report
+                self._cached_at = self._clock()
+            return report
 
     def invalidate(self) -> None:
         """Сбрасывает кэш (например, после сохранения настроек/секретов)."""

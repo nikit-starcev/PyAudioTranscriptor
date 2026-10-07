@@ -276,6 +276,7 @@ source = { editable = "." }
 dependencies = [
     { name = "av" },
     { name = "faster-whisper" },
+    { name = "numpy" },
     { name = "pyannote-audio" },
     { name = "pymorphy3" },
     { name = "python-docx" },
@@ -313,6 +314,7 @@ requires-dist = [
     { name = "av", specifier = ">=11" },
     { name = "fastapi", marker = "extra == 'web'", specifier = ">=0.115" },
     { name = "faster-whisper", specifier = ">=1.2.1" },
+    { name = "numpy", specifier = ">=2.0" },
     { name = "onnx-asr", extras = ["cpu", "hub"], marker = "extra == 'gigaam'", specifier = ">=0.12,<1" },
     { name = "pyannote-audio", specifier = ">=4.0.7" },
     { name = "pymorphy3", specifier = ">=2.0.6" },

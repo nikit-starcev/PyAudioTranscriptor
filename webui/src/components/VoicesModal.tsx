@@ -3,8 +3,8 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   api,
   errorMessage,
+  formatBytes,
   formatDuration,
-  formatSize,
   type VoiceGroup,
   type VoiceInfo,
 } from '../api'
@@ -332,7 +332,7 @@ function VoicesModal({ open, onClose }: Props) {
                                 className="tabular-nums text-xs text-slate-400 dark:text-slate-500"
                                 title="Размер файла"
                               >
-                                {formatSize(sample.size)}
+                                {formatBytes(sample.size)}
                               </span>
                               <div className="flex items-center gap-1">
                                 <button

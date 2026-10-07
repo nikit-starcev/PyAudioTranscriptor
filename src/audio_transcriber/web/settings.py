@@ -42,6 +42,7 @@ from audio_transcriber.config.defaults import (
     VALID_NEMO_SPEECH_DEVICES,
 )
 from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
+from audio_transcriber.utils.config_env import FALSE_VALUES, TRUE_VALUES
 from audio_transcriber.web.config import (
     _as_bool,
     _as_float,
@@ -668,9 +669,9 @@ def _coerce_bool(value: object, fallback: bool) -> bool:
         return value
     if isinstance(value, str):
         stripped = value.strip().casefold()
-        if stripped in {"1", "true", "yes", "on", "да"}:
+        if stripped in TRUE_VALUES:
             return True
-        if stripped in {"0", "false", "no", "off", "нет"}:
+        if stripped in FALSE_VALUES:
             return False
     return fallback
 

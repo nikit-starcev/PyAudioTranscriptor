@@ -850,12 +850,6 @@ export function formatTime(seconds: number): string {
   return `${minutes}:${rest.toFixed(1).padStart(4, '0')}`
 }
 
-export function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} Б`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КБ`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`
-}
-
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 Б'
   const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ']

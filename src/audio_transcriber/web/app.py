@@ -80,6 +80,7 @@ from audio_transcriber.storage.glossary_builder import build_active_glossary
 from audio_transcriber.storage.prompts_db import PromptsDB
 from audio_transcriber.utils.audio import load_waveform, write_wav
 from audio_transcriber.utils.env import binary_available
+from audio_transcriber.utils.net import DEFAULT_WEB_PORT
 from audio_transcriber.utils.playback import amplitude_envelope, read_duration
 from audio_transcriber.utils.subprocess_registry import terminate_all_processes
 from audio_transcriber.utils.text import sanitize_filename
@@ -182,6 +183,15 @@ from audio_transcriber.web.speakers import (
     make_speaker,
     result_from_payload,
 )
+from audio_transcriber.web.sse import (
+    SSE_HEADERS,
+    parse_last_event_id,
+    sse_response,
+    stream_bus,
+)
+from audio_transcriber.web.sse import (
+    sse_frame as _sse,
+)
 from audio_transcriber.web.storage.jobs_db import (
     STATUS_CANCELLED,
     STATUS_DONE,
@@ -231,13 +241,6 @@ def _is_cross_origin(request: Request) -> bool:
     if not host:
         return False
     return parsed.netloc.casefold() != host.casefold()
-
-#: Заголовки SSE: без кэша и без буферизации прокси.
-SSE_HEADERS = {
-    "Cache-Control": "no-cache",
-    "Connection": "keep-alive",
-    "X-Accel-Buffering": "no",
-}
 
 #: Аудио-расширения, показываемые в списке файлов.
 MEDIA_EXTENSIONS = {
@@ -1134,22 +1137,8 @@ def register_api(
         last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
     ) -> StreamingResponse:
         """SSE-поток загрузки модели Sortformer (история + живой поток)."""
-        after: int | None = None
-        if last_event_id:
-            try:
-                after = int(last_event_id)
-            except ValueError:
-                after = None
-
-        async def stream() -> AsyncIterator[str]:
-            for event in nemo_bus.history(after=after):
-                yield _sse(event)
-            async for update in nemo_bus.subscribe():
-                yield ": ping\n\n" if update is None else _sse(update)
-
-        return StreamingResponse(
-            stream(), media_type="text/event-stream", headers=dict(SSE_HEADERS)
-        )
+        after = parse_last_event_id(last_event_id)
+        return sse_response(stream_bus(nemo_bus, after))
 
     @router.get("/setup")
     def get_setup() -> dict[str, object]:
@@ -1222,22 +1211,8 @@ def register_api(
         last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
     ) -> StreamingResponse:
         """SSE-поток прогресса установки: история (с учётом ``Last-Event-ID``), затем эфир."""
-        after: int | None = None
-        if last_event_id:
-            try:
-                after = int(last_event_id)
-            except ValueError:
-                after = None
-
-        async def stream() -> AsyncIterator[str]:
-            for event in deps_bus.history(after=after):
-                yield _sse(event)
-            async for update in deps_bus.subscribe():
-                yield ": ping\n\n" if update is None else _sse(update)
-
-        return StreamingResponse(
-            stream(), media_type="text/event-stream", headers=dict(SSE_HEADERS)
-        )
+        after = parse_last_event_id(last_event_id)
+        return sse_response(stream_bus(deps_bus, after))
 
     def _prefer_vulkan() -> bool:
         """Vulkan-вариант бинарников выбирается на ветке AMD/Vulkan (whisper-cpp)."""
@@ -1337,22 +1312,8 @@ def register_api(
         last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
     ) -> StreamingResponse:
         """SSE-поток установки внешних ресурсов (общая шина с ``/api/deps``)."""
-        after: int | None = None
-        if last_event_id:
-            try:
-                after = int(last_event_id)
-            except ValueError:
-                after = None
-
-        async def stream() -> AsyncIterator[str]:
-            for event in deps_bus.history(after=after):
-                yield _sse(event)
-            async for update in deps_bus.subscribe():
-                yield ": ping\n\n" if update is None else _sse(update)
-
-        return StreamingResponse(
-            stream(), media_type="text/event-stream", headers=dict(SSE_HEADERS)
-        )
+        after = parse_last_event_id(last_event_id)
+        return sse_response(stream_bus(deps_bus, after))
 
     @router.get("/models")
     def list_models() -> dict[str, object]:
@@ -1383,22 +1344,8 @@ def register_api(
         дублировать уже обработанное. Первое подключение (заголовка нет)
         получает всю историю и видит актуальное состояние загрузок.
         """
-        after: int | None = None
-        if last_event_id:
-            try:
-                after = int(last_event_id)
-            except ValueError:
-                after = None
-
-        async def stream() -> AsyncIterator[str]:
-            for event in download_bus.history(after=after):
-                yield _sse(event)
-            async for update in download_bus.subscribe():
-                yield ": ping\n\n" if update is None else _sse(update)
-
-        return StreamingResponse(
-            stream(), media_type="text/event-stream", headers=dict(SSE_HEADERS)
-        )
+        after = parse_last_event_id(last_event_id)
+        return sse_response(stream_bus(download_bus, after))
 
     @router.post("/models/{model_id}/download", status_code=202)
     def start_model_download(model_id: str) -> dict[str, object]:
@@ -2765,14 +2712,6 @@ def _terminal_message(job: Job) -> str:
     return job.error or "Обработка завершена"
 
 
-def _sse(event: Mapping[str, object]) -> str:
-    # ``seq`` (если есть) идёт как SSE-поле ``id``: браузер сам пришлёт его в
-    # ``Last-Event-ID`` при переподключении. В самом JSON поле тоже остаётся.
-    seq = event.get("seq")
-    prefix = f"id: {seq}\n" if isinstance(seq, int) else ""
-    return f"{prefix}data: {json.dumps(event, ensure_ascii=False)}\n\n"
-
-
 def _require_result(paths: WebPaths, job: Job) -> dict[str, object]:
     """Читает JSON-результат задачи или отвечает 404, если он ещё не готов."""
     result = load_result_file(_result_path(paths, job))
@@ -3555,7 +3494,7 @@ def _parse_range(first: str, last: str, size: int) -> tuple[int, int] | None:
 def serve(
     *,
     host: str = "127.0.0.1",
-    port: int = 8765,
+    port: int = DEFAULT_WEB_PORT,
     open_browser: bool = True,
     reload: bool = False,
 ) -> None:

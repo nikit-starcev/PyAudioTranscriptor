@@ -289,15 +289,16 @@ def normalize_rms(
     return np.clip(samples * gain, -1.0, 1.0).astype(np.float32)
 
 
-def assess_reference(
-    waveform: np.ndarray,
-    sample_rate: int = 16000,
-    *,
-    options: ReferencePrepareOptions | None = None,
-) -> ReferenceQuality:
-    """Оценивает качество образца: длительность речи, RMS, пик, доля речи, флаги."""
-    opts = _default_options(options)
-    samples = np.asarray(waveform, dtype=np.float32).reshape(-1)
+def _assess_reference_with_window(
+    samples: np.ndarray,
+    sample_rate: int,
+    opts: ReferencePrepareOptions,
+) -> tuple[ReferenceQuality, tuple[float, float] | None]:
+    """Качество образца и окно речи за один вызов ``trim_to_speech``.
+
+    ``prepare_reference`` использует и качество, и найденное окно — раньше окно
+    вычислялось дважды (в оценке качества и при обрезке).
+    """
     duration = samples.size / sample_rate if sample_rate > 0 else 0.0
     peak = _peak(samples)
     rms = _rms(samples)
@@ -321,7 +322,7 @@ def assess_reference(
     )
     trimmed_seconds = (window[1] - window[0]) if window is not None else 0.0
 
-    return ReferenceQuality(
+    quality = ReferenceQuality(
         duration_seconds=duration,
         speech_seconds=speech_seconds,
         trimmed_seconds=trimmed_seconds,
@@ -333,6 +334,20 @@ def assess_reference(
         low_energy=_dbfs(rms) < DEFAULT_LOW_ENERGY_DBFS,
         mostly_non_speech=speech_ratio < DEFAULT_MOSTLY_NON_SPEECH_RATIO,
     )
+    return quality, window
+
+
+def assess_reference(
+    waveform: np.ndarray,
+    sample_rate: int = 16000,
+    *,
+    options: ReferencePrepareOptions | None = None,
+) -> ReferenceQuality:
+    """Оценивает качество образца: длительность речи, RMS, пик, доля речи, флаги."""
+    opts = _default_options(options)
+    samples = np.asarray(waveform, dtype=np.float32).reshape(-1)
+    quality, _ = _assess_reference_with_window(samples, sample_rate, opts)
+    return quality
 
 
 def prepare_reference(
@@ -354,7 +369,7 @@ def prepare_reference(
         opts = opts.with_max_seconds(max_seconds)
     samples = np.asarray(waveform, dtype=np.float32).reshape(-1)
 
-    quality = assess_reference(samples, sample_rate, options=opts)
+    quality, window = _assess_reference_with_window(samples, sample_rate, opts)
     if samples.size == 0:
         return PreparedReference(waveform=samples, quality=quality)
 
@@ -363,12 +378,6 @@ def prepare_reference(
         # но качество всё равно оцениваем, чтобы вызывающий мог предупредить.
         return PreparedReference(waveform=samples, quality=quality)
 
-    window = trim_to_speech(
-        samples,
-        sample_rate,
-        max_seconds=opts.max_seconds,
-        pad_seconds=opts.pad_seconds,
-    )
     if window is None:
         # Речи не нашли — не режем (вернём как есть), но качество уже помечено.
         prepared = normalize_rms(

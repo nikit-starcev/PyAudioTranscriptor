@@ -28,7 +28,6 @@ from audio_transcriber.domain.models import (
 from audio_transcriber.merging.aligner import OverlapSegmentMerger
 from audio_transcriber.merging.overlap import (
     apply_overlap_regions,
-    mark_overlap_entries,
     trim_artifact_overlaps,
 )
 from audio_transcriber.pipeline import run_pipeline
@@ -78,38 +77,6 @@ def test_compute_overlap_regions_ignores_degenerate() -> None:
     segments = [SpeakerSegment(start=1.0, end=1.0, speaker_id="SPEAKER_00")]
 
     assert compute_overlap_regions(segments) == []
-
-
-# --- пометка реплик ----------------------------------------------------------
-
-
-def test_mark_overlap_entries_marks_intersecting_entry() -> None:
-    entries = [
-        TranscriptEntry(start=0.0, end=1.0, text="вне"),
-        TranscriptEntry(start=1.0, end=2.0, text="внутри"),
-    ]
-    regions = [SpeakerOverlap(start=0.5, end=1.5)]
-
-    result = mark_overlap_entries(entries, regions)
-
-    assert [entry.overlap for entry in result] == [True, True]
-    assert result[0].text == "вне"
-
-
-def test_mark_overlap_entries_leaves_non_intersecting() -> None:
-    entries = [TranscriptEntry(start=5.0, end=6.0, text="тишина")]
-
-    result = mark_overlap_entries(entries, [SpeakerOverlap(start=0.0, end=1.0)])
-
-    assert result[0].overlap is False
-
-
-def test_mark_overlap_entries_returns_same_list_without_regions() -> None:
-    entries = [TranscriptEntry(start=0.0, end=1.0, text="текст")]
-
-    result = mark_overlap_entries(entries, [])
-
-    assert result is entries
 
 
 # --- движок pyannote ---------------------------------------------------------
@@ -604,30 +571,6 @@ def _many_regions() -> list[SpeakerOverlap]:
         else:
             regions.append(SpeakerOverlap(start=start, end=end))
     return regions
-
-
-def _brute_mark(
-    entries: list[TranscriptEntry], regions: list[SpeakerOverlap]
-) -> list[bool]:
-    return [
-        entry.overlap
-        or any(entry.start < region.end and entry.end > region.start for region in regions)
-        for entry in entries
-    ]
-
-
-def test_mark_overlap_entries_index_matches_brute_force() -> None:
-    regions = _many_regions()
-    entries = [
-        TranscriptEntry(start=value, end=value + 0.6, text=str(index))
-        for index, value in enumerate(
-            [0.0, 9.5, 20.1, 50.0, 100.3, 199.9, 500.0, 1000.0]
-        )
-    ]
-
-    result = mark_overlap_entries(entries, regions)
-
-    assert [entry.overlap for entry in result] == _brute_mark(entries, regions)
 
 
 def _brute_apply(

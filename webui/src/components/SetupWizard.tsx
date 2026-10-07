@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   api,
   errorMessage,
+  formatBytes,
   HF_TOKEN_URL,
   PYANNOTE_MODEL_URL,
   type DoctorReport,
@@ -24,18 +25,6 @@ type Props = {
 }
 
 const STEP_ORDER = ['hardware', 'hf_token', 'models', 'binaries', 'readiness']
-
-function formatSize(size?: number): string {
-  if (!size || size <= 0) return ''
-  const units = ['Б', 'КБ', 'МБ', 'ГБ']
-  let value = size
-  let index = 0
-  while (value >= 1024 && index < units.length - 1) {
-    value /= 1024
-    index += 1
-  }
-  return index === 0 ? `${Math.round(value)} ${units[index]}` : `${value.toFixed(1)} ${units[index]}`
-}
 
 function readinessOk(item: ReadinessItem): boolean {
   return Boolean(item.present ?? item.installed ?? item.available)
@@ -76,7 +65,7 @@ function ReadinessGroup({
                 {ok ? '✓' : '✗'}
               </span>
               <span>{readinessLabel(item)}</span>
-              {size > 0 && <span className="text-slate-400 dark:text-slate-500">~{formatSize(size)}</span>}
+              {size > 0 && <span className="text-slate-400 dark:text-slate-500">~{formatBytes(size)}</span>}
               {path && ok && (
                 <span className="truncate font-mono text-[10px] text-slate-400 dark:text-slate-500" title={path}>
                   {path}
