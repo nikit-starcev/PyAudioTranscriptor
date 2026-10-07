@@ -49,7 +49,7 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 #: Минимально поддерживаемая версия Python (синхронизировано с pyproject.toml).
-MIN_PYTHON = (3, 14)
+MIN_PYTHON = (3, 12)
 
 #: Значения по умолчанию, если ``config.env`` отсутствует.
 DEFAULT_ASR_BACKEND = AsrBackend.FASTER_WHISPER
