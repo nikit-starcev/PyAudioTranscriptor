@@ -126,6 +126,7 @@ from audio_transcriber.web.doctor_api import (
 from audio_transcriber.web.estimates import (
     STAGES,
     StageEstimator,
+    default_weights,
     planned_stages,
     probe_duration,
 )
@@ -929,6 +930,30 @@ def register_api(
             )
             return []
 
+    def file_estimate_fn() -> Callable[[float | None], dict[str, object] | None]:
+        """Оценщик времени файла по текущей конфигурации задач (#107).
+
+        Собирает план стадий и дефолтные веса один раз на запрос списка; сами
+        оценки по файлам считаются дёшево (длительность × веса). Ошибку сборки
+        конфигурации гасим — оценки тогда строятся по полному набору стадий без
+        привязки к устройству, список файлов из-за этого падать не должен.
+        """
+        try:
+            config = config_builder("estimate", paths.input_dir / "estimate")
+            stages = planned_stages(config)
+            defaults = default_weights(config)
+        except Exception:
+            logger.warning(
+                "Не удалось собрать конфигурацию для оценки файлов", exc_info=True
+            )
+            stages = list(STAGES)
+            defaults = default_weights(None)
+
+        def estimate(duration: float | None) -> dict[str, object] | None:
+            return estimator.estimate(duration, stages, defaults=defaults)
+
+        return estimate
+
     register_glossary_routes(router, db_path=_glossary_db_path)
     register_prompts_routes(router, db_path=_prompts_db_path)
 
@@ -1527,9 +1552,14 @@ def register_api(
 
         По умолчанию обработанные файлы (issue #16) скрыты; ``include_processed=
         true`` показывает и их — с полем ``processed``, чтобы UI мог выделить
-        группу «Обработанные» и предложить возврат.
+        группу «Обработанные» и предложить возврат. Каждый файл получает поле
+        ``estimate`` — примерную оценку времени обработки до запуска (#107).
         """
-        return _list_files(paths.input_dir, include_processed=include_processed)
+        return _list_files(
+            paths.input_dir,
+            include_processed=include_processed,
+            estimate_fn=file_estimate_fn(),
+        )
 
     @router.post("/files/upload", status_code=201)
     async def upload_file(file: Annotated[UploadFile, File()]) -> dict[str, object]:
@@ -3162,7 +3192,10 @@ def _resolve_static_file(full_path: str) -> Path | None:
 
 
 def _list_files(
-    input_dir: Path, *, include_processed: bool = False
+    input_dir: Path,
+    *,
+    include_processed: bool = False,
+    estimate_fn: Callable[[float | None], dict[str, object] | None] | None = None,
 ) -> list[dict[str, object]]:
     if not input_dir.is_dir():
         return []
@@ -3174,17 +3207,19 @@ def _list_files(
             processed = is_processed(path)
             if processed and not include_processed:
                 continue
-            # Абсолютный путь: клиент шлёт его обратно в ``POST /api/jobs``,
-            # и он должен приниматься независимо от текущего рабочего каталога.
-            items.append(
-                {
-                    "name": path.name,
-                    "path": str(path.resolve()),
-                    "size": path.stat().st_size,
-                    "duration": _probe_duration(path),
-                    "processed": processed,
-                }
-            )
+            duration = _probe_duration(path)
+            entry: dict[str, object] = {
+                "name": path.name,
+                # Абсолютный путь: клиент шлёт его обратно в ``POST /api/jobs``,
+                # и он должен приниматься независимо от текущего рабочего каталога.
+                "path": str(path.resolve()),
+                "size": path.stat().st_size,
+                "duration": duration,
+                "processed": processed,
+            }
+            if estimate_fn is not None:
+                entry["estimate"] = estimate_fn(duration)
+            items.append(entry)
         except OSError:
             continue
     return items

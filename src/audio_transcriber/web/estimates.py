@@ -30,7 +30,7 @@ import math
 import statistics
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -403,6 +403,112 @@ def eta_by_stage(job: Job, profile: StageProfile) -> dict[str, float] | None:
     return {stage: round(expected * left, 1) for stage, expected, left in plan}
 
 
+#: Дефолтные RTF стадий (секунды обработки на секунду аудио) — грубые ориентиры
+#: для оценки ещё не запущенной задачи, пока нет свежей истории (#107). ASR —
+#: основа нагрузки, диаризация — самая дорогая стадия, merge/clean/export почти
+#: мгновенны. Значения уточняются историей (см. :func:`estimate_run`).
+DEFAULT_STAGE_RTF: dict[str, float] = {
+    "denoise": 0.08,
+    "asr": 0.30,
+    "diarization": 0.45,
+    "merge": 0.01,
+    "clean": 0.01,
+    "correction": 0.02,
+    "llm": 0.05,
+    "export": 0.01,
+}
+
+#: Множитель дефолтного веса ASR для GPU против CPU (#107): на CUDA
+#: распознавание заметно быстрее. Денойз/диаризация всегда на CPU, к ним
+#: множитель не применяется.
+DEFAULT_GPU_ASR_FACTOR = 0.5
+
+
+def default_weights(config: AppConfig | None = None) -> dict[str, float]:
+    """Дефолтные RTF-веса для планируемых стадий (оценка без истории, #107).
+
+    Состав стадий берётся из :func:`planned_stages` (учитывает денойз,
+    диаризацию, очистку, автоисправление и LLM-резюме); при ``config=None``
+    возвращаются веса всех стадий :data:`STAGES`. Для ASR применяется множитель
+    устройства (``cuda`` — :data:`DEFAULT_GPU_ASR_FACTOR`), т.к. распознавание
+    сильнее всего зависит от наличия GPU.
+    """
+    if config is None:
+        stages = list(STAGES)
+        device = ""
+    else:
+        stages = planned_stages(config)
+        device = str(getattr(config, "device", "") or "").casefold()
+    weights = {stage: DEFAULT_STAGE_RTF[stage] for stage in stages}
+    if device == "cuda" and "asr" in weights:
+        weights["asr"] = weights["asr"] * DEFAULT_GPU_ASR_FACTOR
+    return weights
+
+
+@dataclass(slots=True)
+class StageEstimate:
+    """Примерная оценка времени прогона **до** запуска (#107)."""
+
+    #: Полное время обработки в секундах (``None`` — длительность/стадии неизвестны).
+    seconds: float | None
+    #: Разбивка по стадиям (секунды) или ``None``, если оценка невозможна.
+    by_stage: dict[str, float] | None
+    #: ``True``, если оценка построена целиком по свежей истории (уверенная),
+    #: ``False`` — приблизительная (дефолтные веса/частичное покрытие истории).
+    exact: bool
+    #: Есть ли вообще свежая история прогонов — для пояснения в UI.
+    has_history: bool
+
+    def as_dict(self) -> dict[str, object]:
+        """Плоское представление для API."""
+        return {
+            "seconds": self.seconds,
+            "by_stage": self.by_stage,
+            "exact": self.exact,
+            "has_history": self.has_history,
+        }
+
+
+def estimate_run(
+    profile: StageProfile,
+    duration: float | None,
+    stages: Sequence[str],
+    *,
+    defaults: Mapping[str, float] | None = None,
+) -> StageEstimate:
+    """Оценка полного времени обработки для ещё не запущенной задачи (#107).
+
+    Для каждой планируемой стадии берётся RTF-вес (секунды на секунду аудио) и
+    умножается на длительность записи. Приоритет — свежая история (#15): если
+    она покрывает **все** планируемые стадии, оценка помечается ``exact``.
+    Недостающие стадии при частичном покрытии получают консервативный запасной
+    вес из профиля. Если истории нет вовсе, используются дефолтные веса
+    (:func:`default_weights`/:data:`DEFAULT_STAGE_RTF`), а оценка — приблизительная.
+    """
+    planned = [stage for stage in stages if stage in STAGES]
+    if duration is None or duration <= 0 or not planned:
+        return StageEstimate(None, None, False, profile.has_history)
+
+    if profile.has_history:
+        weights = {stage: profile.weight(stage) for stage in planned}
+        exact = all(stage in profile.fresh_stages for stage in planned)
+    else:
+        source: Mapping[str, float] = (
+            defaults if defaults is not None else DEFAULT_STAGE_RTF
+        )
+        fallback = float(source.get("asr") or DEFAULT_STAGE_RTF["asr"])
+        weights = {stage: float(source.get(stage, fallback)) for stage in planned}
+        exact = False
+
+    by_stage = {
+        stage: round(weight * duration, 1) for stage, weight in weights.items()
+    }
+    total = round(sum(by_stage.values()), 1)
+    if total <= 0:
+        return StageEstimate(None, None, False, profile.has_history)
+    return StageEstimate(total, by_stage, exact, profile.has_history)
+
+
 @dataclass(slots=True)
 class Health:
     """«Здоровье» задачи: статус, давность обновления и причина (#36)."""
@@ -684,3 +790,16 @@ class StageEstimator:
             "eta_by_stage": eta_by_stage(job, profile),
             "health": health_payload(job, profile, active=active),
         }
+
+    def estimate(
+        self,
+        duration: float | None,
+        stages: Sequence[str],
+        *,
+        defaults: Mapping[str, float] | None = None,
+    ) -> dict[str, object]:
+        """Примерная оценка прогона для ещё не запущенной задачи (#107)."""
+        estimate = estimate_run(
+            self.profile(), duration, stages, defaults=defaults
+        )
+        return estimate.as_dict()
