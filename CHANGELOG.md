@@ -7,6 +7,47 @@
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-10-08
+
+### Added
+
+- **Редизайн веб-интерфейса** (#103): единая дизайн-система (`webui/src/components/ui/*` —
+  токены `@theme`, Button/IconButton/Input/Textarea/Select/Checkbox/Switch/Field/Card/
+  Badge/Modal/Tabs/Tooltip/Alert/ProgressBar/EmptyState/Spinner, иконки `lucide-react`);
+  оболочка **topbar + левый сайдбар** вместо строки кнопок; **hash-маршруты** (`#/jobs`,
+  `#/jobs/<id>`, `#/models`, `#/binaries`, `#/glossary`, `#/voices`, `#/settings`, `#/wizard`)
+  с deep-link и кнопками браузера; модалки вынесены в отдельные страницы; все панели
+  переведены на дизайн-систему; доступность (`focus-visible`, `aria-label`, label,
+  `tabular-nums`, `prefers-reduced-motion`) и адаптивность 320–1920 (таблица стенограммы →
+  карточки на узких экранах).
+- **Караоке-подсветка текущего слова при воспроизведении** (#101): общий плеер на задачу
+  (`webui/src/app/playback.tsx`, `components/JobPlayer.tsx`) и подсветка активного слова и
+  реплики, синхронизация с `currentTime` через `requestAnimationFrame`, автопрокрутка к
+  активной реплике (с уважением ручного скролла), клик по слову — seek + воспроизведение;
+  fallback на реплику без пословных таймкодов.
+- **Раздел «Бинарные пакеты» в навигации** (#105): страница `#/binaries` со статусом,
+  установкой и обновлением внешних бинарников (`deep-filter`, `llama-server`, `whisper-cli`)
+  поверх `/api/assets` (#98); ранее доступно только из мастера.
+- **Ручная инвалидация кэша из веб-UI** (#100): `GET /api/cache` и `POST /api/cache/clear`
+  (409 при активном прогоне, `force` — принудительно) поверх `StageCache.clear()`; карточка
+  «Кэш обработки» в «Настройках» с подтверждением и отчётом (сколько файлов удалено).
+
+### Fixed
+
+- **Docker (rootless/userns): chown ломал владельца bind-mount** (#104): `entrypoint.sh`
+  определяет режим по `/proc/self/uid_map` и **не выполняет chown** при rootless (контейнерный
+  root = хостовый пользователь), поэтому владелец хостового `./web-data` сохраняется (ранее
+  хостовый сервер получал `OperationalError: attempt to write a readonly database`).
+  `PUID`/`PGID` применяются только в rootful. Регресс-тест `tests/test_entrypoint_chown.sh`.
+
+### Changed
+
+- **Актуализация документации** (#102): README приведён к **Python 3.12+** (бейдж/«Требования»/
+  macOS), денойз описан как внешний CLI `deep-filter`; добавлены разделы про новый UI
+  (навигация, hash-маршруты, вкладки задачи), караоке, чат по стенограмме, очистку кэша,
+  «Бинарные пакеты», разделение реплики/второй говорящий, промпты резюме и `PROTOCOL_AUTO`;
+  дополнены таблица `config.env` и `config.example.env`.
+
 ## [0.5.5] - 2026-10-07
 
 ### Added
