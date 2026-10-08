@@ -34,6 +34,8 @@ export function applyThemeMode(mode: ThemeMode): void {
   const root = document.documentElement
   root.classList.toggle('dark', dark)
   root.style.colorScheme = dark ? 'dark' : 'light'
+  const themeColor = document.querySelector('meta[name="theme-color"]')
+  if (themeColor) themeColor.setAttribute('content', dark ? '#0b0d12' : '#f7f8fa')
   try {
     localStorage.setItem(STORAGE_KEY, mode)
   } catch {

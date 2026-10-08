@@ -7,10 +7,180 @@
  */
 @custom-variant dark (&:where(.dark, .dark *));
 
-html {
-  background-color: #f8fafc;
+:root {
+  color-scheme: light;
+
+  --bg: #f7f8fa;
+  --surface: #ffffff;
+  --surface-2: #f1f5f9;
+  --surface-3: #e9edf3;
+  --border: #e4e7ec;
+  --border-strong: #cbd5e1;
+  --text: #0f172a;
+  --muted: #64748b;
+  --primary: #4f46e5;
+  --primary-hover: #4338ca;
+  --primary-fg: #ffffff;
+  --primary-soft: #eef2ff;
+  --primary-soft-fg: #4338ca;
+  --ring: #6366f1;
+
+  --success: #16a34a;
+  --success-soft: #dcfce7;
+  --success-soft-fg: #15803d;
+  --warn: #d97706;
+  --warn-soft: #fef3c7;
+  --warn-soft-fg: #b45309;
+  --danger: #dc2626;
+  --danger-soft: #fee2e2;
+  --danger-soft-fg: #b91c1c;
+  --info: #0284c7;
+  --info-soft: #e0f2fe;
+  --info-soft-fg: #0369a1;
+  --neutral-soft: #f1f5f9;
+  --neutral-soft-fg: #475569;
+
+  --overlay: rgb(15 23 42 / 0.45);
+
+  --elevation-sm: 0 1px 2px 0 rgb(15 23 42 / 0.06);
+  --elevation-md: 0 2px 8px -1px rgb(15 23 42 / 0.10), 0 1px 3px -1px rgb(15 23 42 / 0.08);
+  --elevation-lg: 0 12px 32px -8px rgb(15 23 42 / 0.20), 0 4px 10px -4px rgb(15 23 42 / 0.12);
 }
 
-html.dark {
-  background-color: #020617;
+.dark {
+  color-scheme: dark;
+
+  --bg: #0b0d12;
+  --surface: #14161d;
+  --surface-2: #1b1e27;
+  --surface-3: #232733;
+  --border: #262a35;
+  --border-strong: #3a4050;
+  --text: #e6e8ee;
+  --muted: #9aa1b1;
+  --primary: #6366f1;
+  --primary-hover: #818cf8;
+  --primary-fg: #ffffff;
+  --primary-soft: #1e1b4b;
+  --primary-soft-fg: #c7d2fe;
+  --ring: #818cf8;
+
+  --success: #34d399;
+  --success-soft: #052e22;
+  --success-soft-fg: #6ee7b7;
+  --warn: #fbbf24;
+  --warn-soft: #3a2c07;
+  --warn-soft-fg: #fcd34d;
+  --danger: #f87171;
+  --danger-soft: #3b1215;
+  --danger-soft-fg: #fca5a5;
+  --info: #38bdf8;
+  --info-soft: #082f49;
+  --info-soft-fg: #7dd3fc;
+  --neutral-soft: #1e222c;
+  --neutral-soft-fg: #cbd5e1;
+
+  --overlay: rgb(0 0 0 / 0.65);
+
+  --elevation-sm: 0 1px 2px 0 rgb(0 0 0 / 0.40);
+  --elevation-md: 0 2px 8px -1px rgb(0 0 0 / 0.50), 0 1px 3px -1px rgb(0 0 0 / 0.40);
+  --elevation-lg: 0 12px 32px -8px rgb(0 0 0 / 0.65), 0 4px 10px -4px rgb(0 0 0 / 0.50);
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-fg: var(--primary-fg);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-soft-fg: var(--primary-soft-fg);
+  --color-ring: var(--ring);
+
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-success-soft-fg: var(--success-soft-fg);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-warn-soft-fg: var(--warn-soft-fg);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-soft-fg: var(--danger-soft-fg);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-info-soft-fg: var(--info-soft-fg);
+  --color-neutral-soft: var(--neutral-soft);
+  --color-neutral-soft-fg: var(--neutral-soft-fg);
+  --color-overlay: var(--overlay);
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  --shadow-sm: var(--elevation-sm);
+  --shadow-md: var(--elevation-md);
+  --shadow-lg: var(--elevation-lg);
+
+  --text-xs: 12px;
+  --text-xs--line-height: 1rem;
+  --text-sm: 14px;
+  --text-sm--line-height: 1.25rem;
+  --text-base: 16px;
+  --text-base--line-height: 1.5rem;
+  --text-lg: 18px;
+  --text-lg--line-height: 1.5rem;
+  --text-xl: 20px;
+  --text-xl--line-height: 1.5rem;
+  --text-2xl: 24px;
+  --text-2xl--line-height: 2rem;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
+@layer base {
+  html {
+    background-color: var(--bg);
+  }
+
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    background-color: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background-color: var(--primary-soft);
+    color: var(--primary-soft-fg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
