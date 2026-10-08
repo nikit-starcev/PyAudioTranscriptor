@@ -208,6 +208,33 @@ def test_files_duration_is_cached_by_mtime_and_size(
     assert len(calls) == 2
 
 
+def test_files_include_estimate(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#107: список файлов несёт примерную оценку времени до запуска."""
+    monkeypatch.setattr("audio_transcriber.web.app.probe_duration", lambda _path: 100.0)
+    _upload(client, "est.mp3", b"abc")
+
+    files = client.get("/api/files").json()
+
+    estimate = files[0]["estimate"]
+    assert estimate["has_history"] is False
+    assert estimate["exact"] is False
+    assert estimate["by_stage"]["asr"] == pytest.approx(30.0)
+    assert estimate["seconds"] == pytest.approx(sum(estimate["by_stage"].values()))
+
+
+def test_files_estimate_is_none_without_duration(client: TestClient) -> None:
+    """#107: без длительности оценка пуста, но поле присутствует (стабильная схема)."""
+    _upload(client, "nodur.mp3", b"abc")
+
+    estimate = client.get("/api/files").json()[0]["estimate"]
+
+    assert estimate["seconds"] is None
+    assert estimate["by_stage"] is None
+    assert estimate["exact"] is False
+
+
 def test_upload_deduplicates_names(client: TestClient) -> None:
     _upload(client, "rec.mp3", b"a")
     second = _upload(client, "rec.mp3", b"b")

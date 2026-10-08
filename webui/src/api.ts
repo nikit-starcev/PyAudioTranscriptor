@@ -20,6 +20,20 @@ export type FileItem = {
   duration: number | null
   /** Файл успешно обработан и убран из основного списка (#16). */
   processed: boolean
+  /** Примерная оценка времени обработки до запуска (#107). */
+  estimate?: EstimateInfo | null
+}
+
+/** Примерная оценка времени обработки файла до запуска (#107). */
+export type EstimateInfo = {
+  /** Полное время обработки, сек (null — длительность/стадии неизвестны). */
+  seconds: number | null
+  /** Разбивка по стадиям, сек, или null. */
+  by_stage: Record<string, number> | null
+  /** true — оценка целиком по свежей истории (уверенная), false — приблизительная. */
+  exact: boolean
+  /** Есть ли свежая история прогонов (для пояснения «примерно»). */
+  has_history: boolean
 }
 
 export type StageTime = {
@@ -890,6 +904,20 @@ export function formatStageTime(seconds: number): string {
   const minutes = Math.floor(seconds / 60)
   const rest = Math.round(seconds - minutes * 60)
   return rest ? `${minutes} мин ${rest} с` : `${minutes} мин`
+}
+
+/**
+ * Компактная оценка времени обработки (#107): «45 с», «12 мин», «1 ч 20 мин».
+ * Значения приблизительные, поэтому вызывающий код добавляет «≈».
+ */
+export function formatEstimate(seconds: number | null): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds <= 0) return '—'
+  if (seconds < 60) return `${Math.round(seconds)} с`
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes} мин`
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  return rest ? `${hours} ч ${rest} мин` : `${hours} ч`
 }
 
 export function speakerName(speakers: SpeakerInfo[], id: string | null): string {

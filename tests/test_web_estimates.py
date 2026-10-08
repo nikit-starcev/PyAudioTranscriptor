@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from audio_transcriber.web.estimates import (
+    DEFAULT_STAGE_RTF,
     HEALTH_OK,
     HEALTH_SLOW,
     HEALTH_STALLED,
@@ -18,6 +19,8 @@ from audio_transcriber.web.estimates import (
     StageProfile,
     build_profile,
     classify_health,
+    default_weights,
+    estimate_run,
     eta_by_stage,
     eta_seconds,
     planned_stages,
@@ -638,6 +641,110 @@ def test_stage_estimator_snapshot_fields() -> None:
     # #36: причина замедления идёт в API/SSE, фронт показывает её в tooltip.
     assert "reason" in health
     assert isinstance(health["reason"], str)
+
+
+# --- #107: примерная оценка до запуска ------------------------------------
+
+
+def test_default_weights_follow_planned_stages_and_device() -> None:
+    """Дефолтные веса — только планируемые стадии; GPU ускоряет ASR."""
+    cpu = _config(denoise=True, diarization_enabled=True)
+    weights = default_weights(cpu)
+
+    assert set(weights) == set(planned_stages(cpu))
+    assert weights["asr"] == pytest.approx(DEFAULT_STAGE_RTF["asr"])
+    assert weights["denoise"] == pytest.approx(DEFAULT_STAGE_RTF["denoise"])
+
+    gpu = _config(denoise=True, diarization_enabled=True)
+    gpu.device = "cuda"
+    assert default_weights(gpu)["asr"] == pytest.approx(
+        DEFAULT_STAGE_RTF["asr"] * 0.5
+    )
+    # Денойз всегда на CPU — множитель GPU к нему не применяется.
+    assert default_weights(gpu)["denoise"] == pytest.approx(
+        DEFAULT_STAGE_RTF["denoise"]
+    )
+
+
+def test_default_weights_without_config_covers_all_stages() -> None:
+    assert set(default_weights(None)) == set(STAGES)
+
+
+def test_estimate_run_uses_history_when_fresh_coverage_is_full() -> None:
+    history = _job(
+        status=STATUS_DONE,
+        duration=100.0,
+        stage_times=[
+            StageTiming("asr", 30.0),
+            StageTiming("merge", 1.0),
+            StageTiming("export", 1.0),
+        ],
+    )
+    profile = build_profile([history])
+
+    estimate = estimate_run(profile, 200.0, ["asr", "merge", "export"])
+
+    assert estimate.exact is True
+    assert estimate.has_history is True
+    assert estimate.by_stage == {"asr": 60.0, "merge": 2.0, "export": 2.0}
+    assert estimate.seconds == pytest.approx(64.0)
+
+
+def test_estimate_run_partial_history_is_approximate() -> None:
+    """Стадия без свежих замеров делает оценку приблизительной, но не пустой."""
+    history = _job(
+        status=STATUS_DONE,
+        duration=100.0,
+        stage_times=[StageTiming("asr", 30.0)],
+    )
+    profile = build_profile([history])
+
+    estimate = estimate_run(profile, 100.0, ["asr", "diarization"])
+
+    assert estimate.exact is False
+    assert estimate.has_history is True
+    # diarization получает консервативный запасной вес профиля (медиана известных = 0.3).
+    assert estimate.by_stage is not None
+    assert estimate.by_stage["asr"] == pytest.approx(30.0)
+    assert estimate.by_stage["diarization"] == pytest.approx(30.0)
+
+
+def test_estimate_run_without_history_uses_defaults() -> None:
+    profile = _profile(dict.fromkeys(STAGES, 1.0), samples=0)
+
+    estimate = estimate_run(
+        profile, 100.0, ["asr", "merge", "export"], defaults=DEFAULT_STAGE_RTF
+    )
+
+    assert estimate.has_history is False
+    assert estimate.exact is False
+    assert estimate.seconds == pytest.approx(32.0)
+    assert estimate.by_stage == {"asr": 30.0, "merge": 1.0, "export": 1.0}
+
+    # Без явных defaults поведение не меняется.
+    assert estimate_run(profile, 100.0, ["asr"]).seconds == pytest.approx(30.0)
+
+
+def test_estimate_run_none_without_duration_or_stages() -> None:
+    profile = _profile(dict.fromkeys(STAGES, 1.0))
+
+    assert estimate_run(profile, None, ["asr"]).seconds is None
+    assert estimate_run(profile, 0.0, ["asr"]).seconds is None
+    assert estimate_run(profile, 10.0, []).seconds is None
+    # Неизвестные стадии отбрасываются — остаётся пустой план.
+    assert estimate_run(profile, 10.0, ["nope"]).seconds is None
+
+
+def test_stage_estimator_estimate_returns_payload() -> None:
+    store = _FakeStore([])
+    estimator = StageEstimator(store, ttl=0.0)
+
+    payload = estimator.estimate(120.0, ["asr", "merge", "export"], defaults=DEFAULT_STAGE_RTF)
+
+    assert set(payload) == {"seconds", "by_stage", "exact", "has_history"}
+    assert payload["has_history"] is False
+    assert payload["exact"] is False
+    assert isinstance(payload["seconds"], float)
 
 
 # --- прочее ---------------------------------------------------------------

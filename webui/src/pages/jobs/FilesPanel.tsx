@@ -1,9 +1,11 @@
 import { useRef } from 'react'
 import { FileAudio, RotateCcw, Trash2, Upload } from 'lucide-react'
 
-import { formatBytes, formatDuration } from '../../api'
+import { formatBytes, formatDuration, formatEstimate, formatStageTime } from '../../api'
+import type { EstimateInfo } from '../../api'
 import { useApp } from '../../app/useApp'
 import { navigateTo } from '../../app/routes'
+import { stageLabel } from '../../components/StageTimes'
 import {
   Badge,
   Button,
@@ -14,7 +16,23 @@ import {
   EmptyState,
   IconButton,
   Input,
+  Tooltip,
 } from '../../components/ui'
+
+/** Подсказка к оценке: уверенность и разбивка по стадиям (#107). */
+function estimateTooltip(estimate: EstimateInfo): string {
+  const head = estimate.exact
+    ? 'Оценка по истории прогонов'
+    : estimate.has_history
+      ? 'Примерная оценка: часть стадий без свежих замеров'
+      : 'Примерная оценка: истории прогонов ещё нет'
+  const parts = estimate.by_stage
+    ? Object.entries(estimate.by_stage).map(
+        ([stage, seconds]) => `${stageLabel(stage)}: ${formatStageTime(seconds)}`,
+      )
+    : []
+  return [head, ...parts].join(' · ')
+}
 
 function FilesPanel() {
   const app = useApp()
@@ -77,6 +95,19 @@ function FilesPanel() {
                       <span className="tabular-nums">{formatBytes(file.size)}</span>
                       <span aria-hidden>·</span>
                       <span className="tabular-nums">{formatDuration(file.duration)}</span>
+                      {file.estimate?.seconds != null && (
+                        <>
+                          <span aria-hidden>·</span>
+                          <Tooltip label={estimateTooltip(file.estimate)}>
+                            <span className="cursor-help tabular-nums">
+                              ≈ {formatEstimate(file.estimate.seconds)}
+                            </span>
+                          </Tooltip>
+                          {!file.estimate.exact && (
+                            <Badge tone="neutral">примерно</Badge>
+                          )}
+                        </>
+                      )}
                       <Badge tone={file.processed ? 'success' : 'neutral'}>
                         {file.processed ? 'Обработан' : 'Не обработан'}
                       </Badge>
