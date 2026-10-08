@@ -466,6 +466,8 @@ export function useAppController() {
         setSamplesMeta({})
         resetTiming()
         await refreshJobs()
+        await api<Job>(`/api/jobs/${job.id}/run`, { method: 'POST' })
+        await refreshJobs()
         return job.id
       } catch (cause) {
         setError(errorMessage(cause))
