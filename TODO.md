@@ -6,6 +6,11 @@
 
 ## Сделано (недавнее)
 
+- ✅ **Управление API-ключом из UI** (#110): карточка «API-ключ» в «Настройках» —
+  статус, **сгенерировать/перегенерировать**, показать/скрыть, копировать, очистить;
+  эндпоинты `GET/POST/DELETE /api/api-key` поверх `web/secrets.py`; ключ перечитывается
+  динамически (действует без рестарта сервера).
+
 - ✅ **OpenAI-совместимый API** (#48): `POST /v1/audio/transcriptions` (multipart:
   `file`/`model`/`language`/`prompt`/`response_format` json|text|srt|vtt|verbose_json;
   синхронно — ждёт прогон) и `GET /v1/models`; **строгая auth** по ключу (`API_KEY` в
