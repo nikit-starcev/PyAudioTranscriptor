@@ -6,6 +6,12 @@
 
 ## Сделано (недавнее)
 
+- ✅ **OpenAI-совместимый API** (#48): `POST /v1/audio/transcriptions` (multipart:
+  `file`/`model`/`language`/`prompt`/`response_format` json|text|srt|vtt|verbose_json;
+  синхронно — ждёт прогон) и `GET /v1/models`; **строгая auth** по ключу (`API_KEY` в
+  `config.env`/секретах, `Authorization: Bearer`, 401 без/с неверным). Ответы — через
+  экспортёры (#53). Webhooks — отдельная задача.
+
 - ✅ **Экспорт VTT/Markdown/PDF + подсветка слов** (#53): `VttExporter`/`MarkdownExporter`/
   `PdfExporter` (fpdf2) + `ExportFormat` `vtt`/`md`/`pdf`, фабрика, CLI `--format`, UI-селект;
   пословная подсветка в SRT/VTT при наличии таймкодов (#45) + флажок «Подсветка слов».
@@ -580,12 +586,6 @@
   Зачем: ниже задержка (для live #44), потенциально лучше перекрытия.
   Как: обёртка как альтернативный `SpeakerDiarizer` (офлайн — pyannote, live — Sortformer).
   Ориентиры: WhisperLiveKit (Sortformer), NVIDIA NeMo. Сложность: средняя/высокая; связано с #44 и #13.
-
-- **OpenAI-совместимый API и webhooks.** (#48)
-  Суть: эндпоинт **`/v1/audio/transcriptions`** (совместимый с OpenAI) + вебхуки о завершении.
-  Зачем: встраивание в Open-WebUI/LM Studio/автоматизации; «наш сервер как drop-in».
-  Как: поверх FastAPI добавить совместимый роут (multipart → задача → ответ/стрим) и `webhook_url` в задаче.
-  Ориентиры: Speaches, WhisperKit, TranscriptionSuite. Сложность: невысокая.
 
 - **Folder watcher: автообработка новых файлов.** (#49)
   Суть: следить за каталогом и автоматически ставить новые файлы в очередь.
