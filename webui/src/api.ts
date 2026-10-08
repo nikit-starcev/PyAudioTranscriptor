@@ -1075,6 +1075,44 @@ export async function clearCache(force = false): Promise<CacheClearResponse> {
   })
 }
 
+// --- Ключ OpenAI-совместимого API (#110) -----------------------------------
+
+/** Статус ключа OpenAI-совместимого API (``GET /api/api-key``). */
+export type ApiKeyStatus = {
+  /** Действующий ключ задан (в секретах или в config.env). */
+  set: boolean
+  /** Откуда взят действующий ключ: сохранён в секретах или из config.env. */
+  source: 'secrets' | 'env' | null
+  /** Ключ сохранён именно в web-data/secrets.json. */
+  secret_set: boolean
+  /** Действующий ключ в открытом виде (сервер локальный) — для показа/копирования. */
+  key: string | null
+  /** Маска ключа для компактного показа. */
+  masked: string | null
+}
+
+/** Читает статус ключа OpenAI-совместимого API. */
+export async function fetchApiKey(): Promise<ApiKeyStatus> {
+  return api<ApiKeyStatus>('/api/api-key')
+}
+
+/**
+ * Генерирует новый случайный ключ (или сохраняет ``key``, если передан).
+ * Генерация по запросу без тела.
+ */
+export async function generateApiKey(key?: string): Promise<ApiKeyStatus> {
+  return api<ApiKeyStatus>('/api/api-key', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(key === undefined ? {} : { key }),
+  })
+}
+
+/** Очищает сохранённый ключ OpenAI-совместимого API. */
+export async function clearApiKey(): Promise<ApiKeyStatus> {
+  return api<ApiKeyStatus>('/api/api-key', { method: 'DELETE' })
+}
+
 // --- Чат по стенограмме (#54/#96) ------------------------------------------
 
 /** Ссылка ответа LLM на реплику стенограммы (таймкод + говорящий + текст). */

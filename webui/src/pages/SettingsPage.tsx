@@ -1,4 +1,5 @@
 import { useApp } from '../app/useApp'
+import ApiKeyPanel from '../components/ApiKeyPanel'
 import CachePanel from '../components/CachePanel'
 import SettingsPanel from '../components/SettingsPanel'
 
@@ -11,6 +12,7 @@ function SettingsPage() {
         <p className="text-sm text-muted">Режимы обработки, модели, диаризация и пути</p>
       </div>
       <SettingsPanel onSaved={app.handleSettingsSaved} />
+      <ApiKeyPanel />
       <CachePanel />
     </div>
   )

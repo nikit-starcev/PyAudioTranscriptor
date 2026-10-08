@@ -30,6 +30,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mappin
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
+from secrets import token_urlsafe
 from typing import Annotated
 from urllib.parse import urlparse
 
@@ -318,6 +319,18 @@ DEFAULT_OPENAI_TIMEOUT = 3600.0
 
 #: Интервал поллинга статуса задачи в синхронном режиме (секунды).
 OPENAI_POLL_INTERVAL = 0.1
+
+#: Префикс сгенерированного ключа OpenAI-совместимого API (#110).
+API_KEY_PREFIX = "sk-"
+
+#: Минимальная длина пользовательского ключа OpenAI-совместимого API (#110).
+API_KEY_MIN_LENGTH = 16
+
+
+def _generate_api_key() -> str:
+    """Случайный ключ OpenAI-совместимого API с префиксом ``sk-`` (#110)."""
+    return f"{API_KEY_PREFIX}{token_urlsafe(32)}"
+
 
 _PLACEHOLDER_HTML = """<!doctype html>
 <html lang="ru">
@@ -611,6 +624,18 @@ class LlmCheckRequest(BaseModel):
     base_url: str | None = None
     model_name: str | None = None
     api_key: str | None = None
+
+
+class ApiKeyUpdate(BaseModel):
+    """Тело ``POST /api/api-key`` (#110): свой ключ либо генерация нового.
+
+    Если ``key`` не передан (``None``) — сервер генерирует случайный ключ с
+    префиксом ``sk-``. Переданный ключ проверяется на минимальную длину
+    (``API_KEY_MIN_LENGTH``); пустая строка отклоняется — для очистки есть
+    ``DELETE /api/api-key``.
+    """
+
+    key: str | None = None
 
 
 def create_app(
@@ -1029,27 +1054,34 @@ def register_openai_api(
     открытый наружу эндпоинт запускал бы обработку кому угодно). Режим
     синхронный: запрос создаёт задачу, запускает её и ждёт завершения, поэтому
     для длинных записей ответ приходит долго (таймаут ``OPENAI_TIMEOUT``).
+
+    Ключ перечитывается на каждом запросе (#110): сгенерированный в веб-UI ключ
+    начинает действовать сразу, без перезапуска сервера. Явный ``api_key``
+    (используется тестами) фиксирует ключ и отключает перечитывание.
     """
-    resolved = api_key if api_key is not None else effective_api_key(secrets_store, env_defaults())
-    resolved_key = resolved.strip() if isinstance(resolved, str) and resolved.strip() else None
     wait_timeout = timeout if timeout is not None else _openai_timeout()
     step = poll_interval if poll_interval is not None else OPENAI_POLL_INTERVAL
 
     def require_api_key(request: Request) -> None:
         """Проверяет ``Authorization: Bearer``; иначе — ``401``."""
-        if not resolved_key:
+        if api_key is not None:
+            current = api_key.strip() or None
+        else:
+            current = effective_api_key(secrets_store, env_defaults())
+            current = current.strip() if isinstance(current, str) and current.strip() else None
+        if not current:
             raise HTTPException(
                 status_code=401,
                 detail=(
-                    "API-ключ не задан. Укажите API_KEY в config.env "
-                    "(или web-data/secrets.json) и перезапустите сервер."
+                    "API-ключ не задан. Сгенерируйте его в веб-интерфейсе "
+                    "(Настройки → API-ключ) или укажите API_KEY в config.env."
                 ),
                 headers={"WWW-Authenticate": "Bearer"},
             )
         scheme, _, token = request.headers.get("authorization", "").partition(" ")
         if scheme.casefold() != "bearer" or not token:
             raise _invalid_bearer()
-        if not hmac.compare_digest(token.encode("utf-8"), resolved_key.encode("utf-8")):
+        if not hmac.compare_digest(token.encode("utf-8"), current.encode("utf-8")):
             raise _invalid_bearer()
 
     @app.exception_handler(HTTPException)
@@ -1407,6 +1439,77 @@ def register_api(
         result["llm_api_key_set"] = api_key is not None
         result["llm_api_key_masked"] = mask_secret(api_key)
         return result
+
+    def _api_key_status() -> dict[str, object]:
+        """Статус ключа OpenAI-совместимого API (#110).
+
+        ``source`` — откуда взят действующий ключ: ``secrets`` (переопределяет
+        ``config.env``) или ``env`` (``API_KEY`` из ``config.env``/окружения).
+        ``key`` отдаётся открыто: сервер локальный и ``/api`` рассчитан на
+        одного пользователя; ответ помечается ``Cache-Control: no-store``.
+        """
+        env_value = (env_defaults().get("API_KEY") or "").strip() or None
+        stored = secrets_store.get_api_key()
+        effective = stored or env_value
+        if stored:
+            source = "secrets"
+        elif env_value:
+            source = "env"
+        else:
+            source = None
+        return {
+            "set": effective is not None,
+            "source": source,
+            "secret_set": stored is not None,
+            "key": effective,
+            "masked": mask_secret(effective),
+        }
+
+    def _api_key_response() -> JSONResponse:
+        return JSONResponse(_api_key_status(), headers={"Cache-Control": "no-store"})
+
+    @router.get("/api-key")
+    def get_api_key() -> Response:
+        """Статус и действующий ключ OpenAI-совместимого API (#110)."""
+        return _api_key_response()
+
+    @router.post("/api-key")
+    def create_api_key(payload: ApiKeyUpdate | None = None) -> Response:
+        """Генерирует случайный ключ или сохраняет переданный (#110)."""
+        requested = payload.key if payload is not None else None
+        if requested is not None:
+            candidate = requested.strip()
+            if not candidate:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Пустой ключ. Для очистки используйте DELETE /api/api-key.",
+                )
+            if len(candidate) < API_KEY_MIN_LENGTH:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Слишком короткий ключ: минимум {API_KEY_MIN_LENGTH} символов."
+                    ),
+                )
+            key = candidate
+        else:
+            key = _generate_api_key()
+        try:
+            secrets_store.set_api_key(key)
+        except SecretsError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        doctor_cache.invalidate()
+        return _api_key_response()
+
+    @router.delete("/api-key")
+    def delete_api_key() -> Response:
+        """Очищает сохранённый ключ OpenAI-совместимого API (#110)."""
+        try:
+            secrets_store.set_api_key(None)
+        except SecretsError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        doctor_cache.invalidate()
+        return _api_key_response()
 
     @router.get("/doctor")
     def get_doctor() -> dict[str, object]:
