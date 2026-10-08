@@ -55,6 +55,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_NEMO_SPEECH_MODEL,
     DEFAULT_REFERENCE_PREPARE,
     DEFAULT_REFERENCE_TARGET_DBFS,
+    DEFAULT_SENTENCE_MERGE_MAX_GAP,
     DEFAULT_VOICES_DIR,
     NEMO_SPEECH_MAX_SPEAKERS,
     VALID_DIARIZATION_ENGINES,
@@ -215,6 +216,7 @@ class AppConfig:
     # говорящего. Безымянные («Спикер N») не сливаются; совпадение имён —
     # точное. По умолчанию включено.
     merge_same_name_speakers: bool = True
+    sentence_merge_max_gap: float = DEFAULT_SENTENCE_MERGE_MAX_GAP
     # Постадийный кэш дорогих этапов (шумоподавление, распознавание, диаризация).
     # При повторном запуске на том же файле с теми же параметрами стадии не
     # пересчитываются — это и ускоряет прогоны, и даёт возобновление после сбоя.
@@ -390,6 +392,15 @@ class AppConfig:
         if not isinstance(self.merge_same_name_speakers, bool):
             raise ConfigurationError(
                 "MERGE_SAME_NAME_SPEAKERS должно быть true или false"
+            )
+
+        if isinstance(self.sentence_merge_max_gap, bool) or not isinstance(
+            self.sentence_merge_max_gap, (int, float)
+        ):
+            raise ConfigurationError("SENTENCE_MERGE_MAX_GAP должно быть числом")
+        if self.sentence_merge_max_gap <= 0.0:
+            raise ConfigurationError(
+                "SENTENCE_MERGE_MAX_GAP должно быть положительным числом"
             )
 
         if not isinstance(self.use_cache, bool):

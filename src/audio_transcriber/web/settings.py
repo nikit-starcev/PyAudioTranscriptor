@@ -35,6 +35,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_NEMO_SPEECH_BINARY,
     DEFAULT_NEMO_SPEECH_DEVICE,
     DEFAULT_NEMO_SPEECH_MODEL,
+    DEFAULT_SENTENCE_MERGE_MAX_GAP,
     DEFAULT_VOICES_DIR,
     VALID_DIARIZATION_ENGINES,
     VALID_DIARIZATION_LINKAGES,
@@ -84,6 +85,7 @@ class WebSettings:
     #: Сводить кластеры с одинаковым уверенным именем в одного говорящего
     #: (enrollment many-to-one). Безымянные «Спикер N» не сливаются.
     merge_same_name_speakers: bool = True
+    sentence_merge_max_gap: float = DEFAULT_SENTENCE_MERGE_MAX_GAP
     normalize_text: bool = True
     clean_artifacts: bool = True
     #: Автоисправление опечаток (стадия ``correction``, ``pymorphy3``): правит
@@ -170,6 +172,7 @@ class WebSettings:
             "DEEP_FILTER_BINARY": self.deep_filter_binary,
             "MARK_OVERLAP": _format_bool(self.mark_overlap),
             "MERGE_SAME_NAME_SPEAKERS": _format_bool(self.merge_same_name_speakers),
+            "SENTENCE_MERGE_MAX_GAP": str(self.sentence_merge_max_gap),
             "NORMALIZE_TEXT": _format_bool(self.normalize_text),
             "CLEAN_ARTIFACTS": _format_bool(self.clean_artifacts),
             "ENABLE_CORRECTION": _format_bool(self.enable_correction),
@@ -243,6 +246,9 @@ def default_settings(defaults: Mapping[str, str] | None = None) -> WebSettings:
         mark_overlap=_as_bool(source.get("MARK_OVERLAP"), default=True),
         merge_same_name_speakers=_as_bool(
             source.get("MERGE_SAME_NAME_SPEAKERS"), default=True
+        ),
+        sentence_merge_max_gap=_as_float(
+            source.get("SENTENCE_MERGE_MAX_GAP"), DEFAULT_SENTENCE_MERGE_MAX_GAP
         ),
         normalize_text=_as_bool(source.get("NORMALIZE_TEXT"), default=True),
         clean_artifacts=_as_bool(source.get("CLEAN_ARTIFACTS"), default=True),
@@ -378,6 +384,9 @@ def settings_from_mapping(
         merge_same_name_speakers=pick_bool(
             "merge_same_name_speakers", current.merge_same_name_speakers
         ),
+        sentence_merge_max_gap=pick_float(
+            "sentence_merge_max_gap", current.sentence_merge_max_gap
+        ),
         normalize_text=pick_bool("normalize_text", current.normalize_text),
         clean_artifacts=pick_bool("clean_artifacts", current.clean_artifacts),
         enable_correction=pick_bool("enable_correction", current.enable_correction),
@@ -494,6 +503,9 @@ def validate_settings(settings: WebSettings) -> None:
     settings.deep_filter_binary = (
         settings.deep_filter_binary.strip() or DEFAULT_DEEP_FILTER_BINARY
     )
+
+    if settings.sentence_merge_max_gap <= 0.0:
+        raise SettingsError("SENTENCE_MERGE_MAX_GAP должно быть положительным числом")
 
     if not isinstance(settings.word_timestamps, bool):
         raise SettingsError("WORD_TIMESTAMPS должно быть true или false")

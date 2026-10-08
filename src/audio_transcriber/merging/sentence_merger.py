@@ -11,14 +11,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from audio_transcriber.config.defaults import DEFAULT_SENTENCE_MERGE_MAX_GAP
 from audio_transcriber.domain.models import Speaker, TranscriptEntry
-
-# Разумная по умолчанию пауза, разрывающая реплику: если между сегментами
-# одного говорящего прошло больше секунд — начинаем новую реплику. На реальном
-# прогоне (#113) внутрирепликовые паузы одного говорящего достигали 4.9 с, а
-# настоящие смены реплик/тишина — 16 с и более; порог 5.0 склеивает первые и
-# сохраняет вторые.
-DEFAULT_MAX_GAP = 5.0
 
 
 def _normalize_text(text: str) -> str:
@@ -79,7 +73,7 @@ class SentenceMerger:
     в атрибуции при склейке не теряется.
     """
 
-    def __init__(self, *, max_gap: float = DEFAULT_MAX_GAP) -> None:
+    def __init__(self, *, max_gap: float = DEFAULT_SENTENCE_MERGE_MAX_GAP) -> None:
         if max_gap < 0:
             raise ValueError("max_gap не может быть отрицательным")
         self._max_gap = max_gap

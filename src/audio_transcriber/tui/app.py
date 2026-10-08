@@ -365,6 +365,12 @@ class TranscriberApp(App):
                             id="low_conf",
                         )
                     with Horizontal():
+                        yield Label("Макс. пауза склейки, с", classes="field-label")
+                        yield Input(
+                            value=self._defaults.get("SENTENCE_MERGE_MAX_GAP", "5.0"),
+                            id="sentence_merge_max_gap",
+                        )
+                    with Horizontal():
                         yield Label("LLM-обработка", classes="field-label")
                         yield Switch(
                             value=_to_bool(self._defaults.get("LLM_ENABLED")),

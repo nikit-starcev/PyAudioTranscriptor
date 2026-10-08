@@ -542,6 +542,7 @@ class SettingsUpdate(BaseModel):
     #: Поле обязано присутствовать и здесь, и в ``WebSettings`` — иначе pydantic
     #: молча отбросит его при ``PUT /api/settings``.
     merge_same_name_speakers: bool | None = None
+    sentence_merge_max_gap: float | None = None
     normalize_text: bool | None = None
     clean_artifacts: bool | None = None
     enable_correction: bool | None = None

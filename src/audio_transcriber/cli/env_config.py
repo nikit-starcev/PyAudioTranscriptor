@@ -45,6 +45,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
     DEFAULT_REFERENCE_PREPARE,
     DEFAULT_REFERENCE_TARGET_DBFS,
+    DEFAULT_SENTENCE_MERGE_MAX_GAP,
 )
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.correction.defaults import (
@@ -420,6 +421,10 @@ def collect_env_kwargs(
     if has("MERGE_SAME_NAME_SPEAKERS"):
         put("merge_same_name_speakers", as_bool(
             val("MERGE_SAME_NAME_SPEAKERS"), default=True
+        ))
+    if has("SENTENCE_MERGE_MAX_GAP"):
+        put("sentence_merge_max_gap", as_float(
+            val("SENTENCE_MERGE_MAX_GAP"), DEFAULT_SENTENCE_MERGE_MAX_GAP
         ))
     if has("LOW_CONFIDENCE_THRESHOLD"):
         put("low_confidence_threshold", as_float(

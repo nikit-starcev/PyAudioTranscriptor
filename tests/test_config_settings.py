@@ -10,6 +10,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
     DEFAULT_DIARIZATION_HYBRID_LINKAGE,
     DEFAULT_DIARIZATION_HYBRID_THRESHOLD,
+    DEFAULT_SENTENCE_MERGE_MAX_GAP,
 )
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
@@ -1106,3 +1107,56 @@ def test_collect_env_kwargs_invalid_numbers_use_appconfig_defaults(tmp_path: Pat
         "repeat_similarity",
     ):
         assert kwargs[field] == fields[field].default, f"дефолт {field} разошёлся с AppConfig"
+
+
+# --- #114: порог склейки реплик (SENTENCE_MERGE_MAX_GAP) ---------------------
+
+
+def test_sentence_merge_max_gap_defaults_to_config_default(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file)
+
+    assert config.sentence_merge_max_gap == DEFAULT_SENTENCE_MERGE_MAX_GAP
+    assert DEFAULT_SENTENCE_MERGE_MAX_GAP == 5.0
+
+
+def test_sentence_merge_max_gap_accepts_override(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file, sentence_merge_max_gap=2.5)
+
+    assert config.sentence_merge_max_gap == pytest.approx(2.5)
+
+
+@pytest.mark.parametrize("value", [0.0, -1.0])
+def test_sentence_merge_max_gap_must_be_positive(audio_file: Path, value: float) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, sentence_merge_max_gap=value)
+
+
+def test_sentence_merge_max_gap_rejects_non_number(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, sentence_merge_max_gap="быстро")  # type: ignore[arg-type]
+
+
+def test_collect_env_kwargs_carries_sentence_merge_max_gap(tmp_path: Path) -> None:
+    from audio_transcriber.cli.env_config import collect_env_kwargs
+
+    kwargs = collect_env_kwargs(
+        {"SENTENCE_MERGE_MAX_GAP": "7.5"},
+        input_file=tmp_path / "audio.mp3",
+        output_dir=tmp_path / "out",
+    )
+
+    assert kwargs["sentence_merge_max_gap"] == pytest.approx(7.5)
+
+
+def test_collect_env_kwargs_invalid_sentence_merge_max_gap_uses_default(
+    tmp_path: Path,
+) -> None:
+    from audio_transcriber.cli.env_config import collect_env_kwargs
+
+    kwargs = collect_env_kwargs(
+        {"SENTENCE_MERGE_MAX_GAP": "not-a-number"},
+        input_file=tmp_path / "audio.mp3",
+        output_dir=tmp_path / "out",
+    )
+
+    assert kwargs["sentence_merge_max_gap"] == DEFAULT_SENTENCE_MERGE_MAX_GAP

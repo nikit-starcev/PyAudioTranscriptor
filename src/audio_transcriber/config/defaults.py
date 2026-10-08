@@ -245,3 +245,5 @@ DEFAULT_HYBRID_MIN_SEGMENT_SECONDS = 0.5
 # Контекст (с) вокруг «плохого» сегмента при нарезке для Whisper: помогает
 # распознать слова на границе. Результат затем обрезается границами сегмента.
 DEFAULT_HYBRID_CONTEXT_SECONDS = 0.4
+
+DEFAULT_SENTENCE_MERGE_MAX_GAP = 5.0

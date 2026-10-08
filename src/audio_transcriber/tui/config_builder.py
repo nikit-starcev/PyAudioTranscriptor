@@ -20,6 +20,7 @@ from audio_transcriber.cli.env_config import collect_env_kwargs
 from audio_transcriber.config.defaults import (
     DEFAULT_ENROLLMENT_MIN_SIMILARITY,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
+    DEFAULT_SENTENCE_MERGE_MAX_GAP,
 )
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
@@ -124,6 +125,11 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
     low_conf_raw = app.query_one("#low_conf", Input).value.strip()
     kwargs["low_confidence_threshold"] = _to_float(
         low_conf_raw or None, DEFAULT_LOW_CONFIDENCE_THRESHOLD
+    )
+
+    sentence_merge_gap_raw = app.query_one("#sentence_merge_max_gap", Input).value.strip()
+    kwargs["sentence_merge_max_gap"] = _to_float(
+        sentence_merge_gap_raw or None, DEFAULT_SENTENCE_MERGE_MAX_GAP
     )
 
     kwargs["llm_enabled"] = app.query_one("#llm", Switch).value

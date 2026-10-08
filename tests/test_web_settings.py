@@ -23,6 +23,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
     DEFAULT_GIGAAM_MODEL,
     DEFAULT_NEMO_SPEECH_MODEL,
+    DEFAULT_SENTENCE_MERGE_MAX_GAP,
 )
 from audio_transcriber.domain.enums import AsrBackend
 from audio_transcriber.storage.glossary_builder import build_glossary
@@ -30,7 +31,12 @@ from audio_transcriber.storage.glossary_db import GlossaryDB
 from audio_transcriber.web.app import create_app
 from audio_transcriber.web.config import build_job_config
 from audio_transcriber.web.paths import WebPaths
-from audio_transcriber.web.settings import default_settings, settings_from_mapping
+from audio_transcriber.web.settings import (
+    SettingsError,
+    default_settings,
+    settings_from_mapping,
+    validate_settings,
+)
 
 
 @pytest.fixture
@@ -1083,3 +1089,76 @@ def test_build_job_config_maps_protocol_auto(
 
     assert disabled.protocol_auto is False
     assert enabled.protocol_auto is True
+
+
+# --- #114: порог склейки реплик (SENTENCE_MERGE_MAX_GAP) ---------------------
+
+
+def test_sentence_merge_max_gap_defaults_to_config_default() -> None:
+    assert default_settings({}).sentence_merge_max_gap == DEFAULT_SENTENCE_MERGE_MAX_GAP
+    assert DEFAULT_SENTENCE_MERGE_MAX_GAP == 5.0
+
+
+def test_sentence_merge_max_gap_settings_from_env() -> None:
+    assert default_settings({"SENTENCE_MERGE_MAX_GAP": "7.5"}).sentence_merge_max_gap == (
+        pytest.approx(7.5)
+    )
+
+
+def test_sentence_merge_max_gap_settings_roundtrip() -> None:
+    base = default_settings({})
+    merged = settings_from_mapping({"sentence_merge_max_gap": 2.5}, base=base)
+
+    assert merged.sentence_merge_max_gap == pytest.approx(2.5)
+    assert merged.env_overrides()["SENTENCE_MERGE_MAX_GAP"] == "2.5"
+
+
+def test_validate_settings_rejects_non_positive_sentence_merge_max_gap() -> None:
+    settings = default_settings({})
+    settings.sentence_merge_max_gap = 0.0
+
+    with pytest.raises(SettingsError):
+        validate_settings(settings)
+
+
+def test_put_settings_persists_sentence_merge_max_gap(client: TestClient) -> None:
+    """Порог не должен молча теряться при PUT (защита от pydantic-дропа)."""
+    assert client.get("/api/settings").json()["sentence_merge_max_gap"] == (
+        pytest.approx(DEFAULT_SENTENCE_MERGE_MAX_GAP)
+    )
+
+    response = client.put("/api/settings", json={"sentence_merge_max_gap": 2.5})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["sentence_merge_max_gap"] == pytest.approx(2.5)
+    saved = client.get("/api/settings").json()
+    assert saved["sentence_merge_max_gap"] == pytest.approx(2.5)
+
+
+def test_put_settings_rejects_non_positive_sentence_merge_max_gap(
+    client: TestClient,
+) -> None:
+    response = client.put("/api/settings", json={"sentence_merge_max_gap": 0.0})
+
+    assert response.status_code == 400
+
+
+def test_build_job_config_maps_sentence_merge_max_gap(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("audio_transcriber.web.config.env_defaults", lambda: {})
+
+    mapped = build_job_config(
+        audio_file,
+        output_dir=tmp_path / "out",
+        data_dir=tmp_path / "data",
+        overrides={"SENTENCE_MERGE_MAX_GAP": "2.5"},
+    )
+    defaulted = build_job_config(
+        audio_file,
+        output_dir=tmp_path / "out",
+        data_dir=tmp_path / "data",
+    )
+
+    assert mapped.sentence_merge_max_gap == pytest.approx(2.5)
+    assert defaulted.sentence_merge_max_gap == DEFAULT_SENTENCE_MERGE_MAX_GAP

@@ -39,6 +39,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_NEMO_SPEECH_MODEL,
     DEFAULT_REFERENCE_PREPARE,
     DEFAULT_REFERENCE_TARGET_DBFS,
+    DEFAULT_SENTENCE_MERGE_MAX_GAP,
 )
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.diarization.reference import ReferencePrepareOptions
@@ -294,6 +295,9 @@ def build_job_config(
         mark_overlap=_as_bool(defaults.get("MARK_OVERLAP"), default=True),
         merge_same_name_speakers=_as_bool(
             defaults.get("MERGE_SAME_NAME_SPEAKERS"), default=True
+        ),
+        sentence_merge_max_gap=_as_float(
+            defaults.get("SENTENCE_MERGE_MAX_GAP"), DEFAULT_SENTENCE_MERGE_MAX_GAP
         ),
         use_cache=_as_bool(defaults.get("USE_CACHE"), default=True),
         cache_dir=data_dir / "cache",
