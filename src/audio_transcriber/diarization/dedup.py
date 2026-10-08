@@ -2,18 +2,23 @@
 
 В каталоге копится «мусор»: один и тот же образец под разными именами
 (``Иван.wav`` и ``Иван Клон.wav``) или с суффиксом ``(N)`` (#19). Модуль ищет
-такие записи в три слоя:
+такие записи в три слоя, но группировку «одной личности» намеренно ограничивает,
+чтобы не склеивать разных людей (issue #116):
 
-1. **Точные дубликаты** — совпадает sha256 содержимого файла (размер и
-   длительность попадают в описание образца и подтверждают совпадение).
-2. **Почти одинаковые по аудио** — спектральный отпечаток (усреднённые
-   лог-энергии в лог-равномерных частотных полосах), сравнение косинусной
-   корреляцией. Инвариантен к громкости и длительности, поэтому один фрагмент
-   разной громкости/шума даёт высокое сходство, а разные голоса — низкое.
-3. **Почти одинаковые по эмбеддингам** — если передан движок speaker-
-   эмбеддингов (CAM++), сравниваются L2-нормированные векторы по косинусу
-   (порог ``embedding_threshold``, по умолчанию 0.9). Работает и без модели:
-   тогда используется только аудиослой.
+1. **Точные дубликаты** — совпадает sha256 содержимого файла. Это единственный
+   слой, который может свести разные имена: одинаковые байты — буквально один
+   и тот же файл, личность тут ни при чём.
+2. **Почти одинаковые по аудио** — спектральный отпечаток сравнивается только
+   для образцов **одного имени** (``Иван.wav`` ↔ ``Иван (2).wav``): это один
+   человек по определению, и отпечаток ловит перекодированные/нормализованные
+   копии. Для разных имён отпечаток **не применяется**: он отражает форму
+   спектра/тембр/канал, а не личность, и разные голоса в одних акустических
+   условиях дают высокую корреляцию (ложные срабатывания #116).
+3. **Почти одинаковые по эмбеддингам** — единственный безопасный способ
+   связать **разные имена** (один человек под разными именами): L2-нормированные
+   speaker-эмбеддинги (CAM++) сравниваются по косинусу с высоким порогом
+   (``embedding_threshold``, по умолчанию 0.95). Если движок эмбеддингов
+   недоступен, кросс-именные группы не предлагаются вовсе.
 
 Дедупликация ничего не удаляет молча: модуль лишь возвращает группы
 дубликатов с оценкой и подсказкой «кого оставить». Удаление/объединение
@@ -32,6 +37,7 @@ import numpy as np
 
 from audio_transcriber.diarization.embeddings import l2_normalize
 from audio_transcriber.diarization.voices import (
+    base_sample_name,
     collect_voice_library,
     sample_index,
 )
@@ -41,10 +47,14 @@ from audio_transcriber.utils.playback import read_duration
 logger = logging.getLogger(__name__)
 
 #: Порог косинусной близости аудио-отпечатков для «почти одинаковых».
+#: Применяется только внутри одного имени: для разных имён форма спектра не
+#: различает личность (issue #116).
 DEFAULT_NEAR_THRESHOLD = 0.9
 
 #: Порог косинусной близости speaker-эмбеддингов для «почти одинаковых».
-DEFAULT_EMBEDDING_THRESHOLD = 0.9
+#: Единственный слой, связывающий разные имена, поэтому порог высокий:
+#: у CAM++ косинус разных людей заметно ниже (issue #116).
+DEFAULT_EMBEDDING_THRESHOLD = 0.95
 
 #: Размер чанка чтения файла при подсчёте хеша (байты).
 _CHUNK_SIZE = 1 << 20
@@ -331,11 +341,20 @@ def find_duplicate_groups(
     """Ищет группы дубликатов в библиотеке ``directory``.
 
     Сначала образцы склеиваются по sha256 в точные кластеры. Затем кластеры
-    сравниваются попарно (по представителю): аудио-отпечаток и/или эмбеддинг.
-    Кластеры, связанные сходством выше порога, объединяются в одну группу —
-    так ловятся и внутригрупповые дубликаты (#19), и «один человек под разными
-    именами». Возвращается отсортированный список: сначала точные, затем по
-    убыванию оценки. Ничего не удаляется — только предложение.
+    сравниваются попарно (по представителю):
+
+    * совпадение **эмбеддингов** (если движок доступен) выше
+      ``embedding_threshold`` связывает кластеры — в том числе под разными
+      именами;
+    * совпадение **аудио-отпечатка** выше ``near_threshold`` связывает кластеры
+      только если у них есть общее имя (один человек под одним именем), иначе
+      отпечаток игнорируется — он не различает личности (issue #116).
+
+    Связанные кластеры объединяются в одну группу (union-find): так ловятся и
+    внутригрупповые дубликаты (#19), и «один человек под разными именами» — но
+    лишь по эмбеддингам. Если эмбеддинги недоступны, кросс-именные группы не
+    предлагаются вовсе. Возвращается отсортированный список: сначала точные,
+    затем по убыванию оценки. Ничего не удаляется — только предложение.
     """
     signatures = load_signatures(
         directory, embedder=embedder, compute_fingerprints=compute_fingerprints
@@ -348,6 +367,9 @@ def find_duplicate_groups(
         by_digest.setdefault(signature.digest, []).append(index)
     clusters = list(by_digest.values())
     reps = [_keeper_index(indices, signatures) for indices in clusters]
+    cluster_names = [
+        {signatures[index].name for index in indices} for indices in clusters
+    ]
 
     union = _UnionFind(len(clusters))
     edge_kind: dict[tuple[int, int], str] = {}
@@ -355,11 +377,17 @@ def find_duplicate_groups(
     for left in range(len(clusters)):
         for right in range(left + 1, len(clusters)):
             a, b = signatures[reps[left]], signatures[reps[right]]
-            audio_score = cosine_similarity(a.fingerprint, b.fingerprint)
             embedding_score = cosine_similarity(a.embedding, b.embedding)
-            if embedding_score >= embedding_threshold:
+            embeddings_ready = a.embedding is not None and b.embedding is not None
+            if embeddings_ready and embedding_score >= embedding_threshold:
                 kind, score = "embedding", embedding_score
-            elif audio_score >= near_threshold:
+            elif (
+                bool(cluster_names[left] & cluster_names[right])
+                and compute_fingerprints
+            ):
+                audio_score = cosine_similarity(a.fingerprint, b.fingerprint)
+                if audio_score < near_threshold:
+                    continue
                 kind, score = "audio", audio_score
             else:
                 continue
@@ -477,8 +505,10 @@ def find_similar_samples(
 ) -> list[SimilarSample]:
     """Похожие на ``target`` образцы библиотеки (для предупреждения при загрузке).
 
-    Точное совпадение (тот же sha256) имеет оценку 1.0 и тип ``exact``; иначе
-    сравниваются аудио-отпечаток и эмбеддинг. Возвращает совпадения по убыванию
+    Точное совпадение (тот же sha256) имеет оценку 1.0 и тип ``exact``.
+    Аудио-отпечаток учитывается только при совпадении имени (тот же человек),
+    эмбеддинг — для любых имён; так предупреждение не срабатывает на разных
+    людей с похожим тембром (issue #116). Возвращает совпадения по убыванию
     оценки. Ошибки чтения файла не роняют вызывающий код — просто нет совпадений.
     """
     target_path = Path(target)
@@ -486,7 +516,7 @@ def find_similar_samples(
         directory, embedder=embedder, compute_fingerprints=True
     )
     target_signature = _read_signature(
-        target_path.stem,
+        base_sample_name(target_path.stem),
         target_path,
         embedder=embedder,
         compute_fingerprint=True,
@@ -522,7 +552,11 @@ def find_similar_samples(
         audio_score = cosine_similarity(
             target_signature.fingerprint, candidate.fingerprint
         )
-        if embedding_score >= embedding_threshold:
+        embeddings_ready = (
+            target_signature.embedding is not None and candidate.embedding is not None
+        )
+        same_name = candidate.name == target_signature.name
+        if embeddings_ready and embedding_score >= embedding_threshold:
             matches.append(
                 SimilarSample(
                     name=candidate.name,
@@ -531,7 +565,7 @@ def find_similar_samples(
                     score=embedding_score,
                 )
             )
-        elif audio_score >= near_threshold:
+        elif same_name and audio_score >= near_threshold:
             matches.append(
                 SimilarSample(
                     name=candidate.name,

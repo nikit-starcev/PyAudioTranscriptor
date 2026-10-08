@@ -2,7 +2,9 @@
 
 Аудио синтетическое (реальные тоны через ``write_wav``): одинаковые файлы дают
 точные дубликаты, тот же тон иной громкости/с шумом — почти одинаковые, разные
-тоны — не совпадают. Speaker-эмбеддинги подменяются лёгким фейком.
+тоны — не совпадают. Аудио-отпечаток связывает только образцы одного имени;
+разные имена — лишь по speaker-эмбеддингам (issue #116). Speaker-эмбеддинги
+подменяются лёгкими фейками.
 """
 
 from __future__ import annotations
@@ -59,6 +61,19 @@ class _FakeEmbedder:
         return np.array([1.0, 0.0] if dominant < 2000 else [0.0, 1.0], dtype=np.float32)
 
 
+class _CorrelatedEmbedder:
+    """Эмбеддер-заглушка с косинусом 0.9 между низкими и высокими частотами."""
+
+    window_seconds = 5.0
+
+    def embed(self, waveform: np.ndarray) -> np.ndarray:
+        samples = np.asarray(waveform, dtype=np.float64).reshape(-1)
+        spectrum = np.abs(np.fft.rfft(samples))
+        dominant = float(np.fft.rfftfreq(samples.size, 1.0 / SAMPLE_RATE)[np.argmax(spectrum)])
+        vector = [1.0, 0.0] if dominant < 2000 else [0.9, 0.4358899]
+        return np.array(vector, dtype=np.float32)
+
+
 # --- низкоуровневые примитивы -------------------------------------------------
 
 
@@ -109,7 +124,7 @@ def test_exact_duplicates_grouped(tmp_path: Path) -> None:
 def test_near_duplicates_grouped_by_audio(tmp_path: Path) -> None:
     voices = tmp_path / "voices"
     _write(voices, "Иван.wav", _tone(220.0))
-    _write(voices, "Иван Клон.wav", _tone(220.0, amplitude=0.3))
+    _write(voices, "Иван (2).wav", _tone(220.0, amplitude=0.3))
     _write(voices, "Мария.wav", _tone(880.0))
 
     groups = find_duplicate_groups(voices)
@@ -117,9 +132,35 @@ def test_near_duplicates_grouped_by_audio(tmp_path: Path) -> None:
     assert len(groups) == 1
     group = groups[0]
     assert group.kind == "audio"
-    assert {member.filename for member in group.members} == {"Иван.wav", "Иван Клон.wav"}
-    # Один человек под разными именами — предлагаем объединение.
-    assert set(group.names) == {"Иван", "Иван Клон"}
+    assert {member.filename for member in group.members} == {"Иван.wav", "Иван (2).wav"}
+    # Один человек под одним именем — предлагаем объединение образцов.
+    assert group.names == ("Иван",)
+
+
+def test_cross_name_audio_similarity_not_grouped(tmp_path: Path) -> None:
+    voices = tmp_path / "voices"
+    # Одинаковая форма спектра (отпечаток инвариантен к громкости), но разные
+    # имена: без эмбеддингов это разные люди — группировать нельзя (#116).
+    _write(voices, "Иван.wav", _tone(220.0))
+    _write(voices, "Мария.wav", _tone(220.0, amplitude=0.3))
+
+    assert find_duplicate_groups(voices) == []
+
+
+def test_exact_duplicates_cross_name_grouped(tmp_path: Path) -> None:
+    voices = tmp_path / "voices"
+    source = _write(voices, "Иван.wav", _tone(220.0))
+    clone = voices / "Мария.wav"
+    clone.write_bytes(source.read_bytes())
+
+    groups = find_duplicate_groups(voices)
+
+    assert len(groups) == 1
+    group = groups[0]
+    assert group.kind == "exact"
+    assert {member.filename for member in group.members} == {"Иван.wav", "Мария.wav"}
+    # Точный дубль сводит имена: одинаковые байты — один и тот же файл.
+    assert set(group.names) == {"Иван", "Мария"}
 
 
 def test_near_duplicates_by_embedding(tmp_path: Path) -> None:
@@ -131,7 +172,6 @@ def test_near_duplicates_by_embedding(tmp_path: Path) -> None:
     groups = find_duplicate_groups(
         voices,
         near_threshold=0.999,
-        embedding_threshold=0.9,
         embedder=_FakeEmbedder(),
     )
 
@@ -139,6 +179,29 @@ def test_near_duplicates_by_embedding(tmp_path: Path) -> None:
     group = groups[0]
     assert group.kind == "embedding"
     assert set(group.names) == {"Иван", "Иван Клон"}
+
+
+def test_cross_name_embedding_respects_raised_threshold(tmp_path: Path) -> None:
+    voices = tmp_path / "voices"
+    _write(voices, "Иван.wav", _tone(220.0))
+    _write(voices, "Мария.wav", _tone(3000.0))
+    embedder = _CorrelatedEmbedder()
+
+    # Косинус 0.9 ниже поднятого порога 0.95 — разные имена не склеиваются.
+    assert (
+        find_duplicate_groups(voices, near_threshold=0.999, embedder=embedder) == []
+    )
+
+    # Явно пониженный порог 0.9 — то же совпадение принимается.
+    grouped = find_duplicate_groups(
+        voices,
+        near_threshold=0.999,
+        embedding_threshold=0.9,
+        embedder=embedder,
+    )
+    assert len(grouped) == 1
+    assert grouped[0].kind == "embedding"
+    assert set(grouped[0].names) == {"Иван", "Мария"}
 
 
 def test_no_false_positives_for_different_voices(tmp_path: Path) -> None:
@@ -164,13 +227,35 @@ def test_find_similar_samples_reports_match(tmp_path: Path) -> None:
     voices = tmp_path / "voices"
     _write(voices, "Иван.wav", _tone(220.0))
     _write(voices, "Мария.wav", _tone(880.0))
-    fresh = _write(tmp_path, "Новый.wav", _tone(220.0, amplitude=0.25))
+    fresh = _write(tmp_path, "Иван (2).wav", _tone(220.0, amplitude=0.25))
 
     similar = find_similar_samples(fresh, voices)
 
     assert [item.filename for item in similar] == ["Иван.wav"]
     assert similar[0].kind == "audio"
     assert similar[0].score >= 0.9
+
+
+def test_find_similar_samples_cross_name_audio_ignored(tmp_path: Path) -> None:
+    voices = tmp_path / "voices"
+    _write(voices, "Иван.wav", _tone(220.0))
+    # Похожий тембр, но другое имя: без эмбеддингов предупреждения нет (#116).
+    fresh = _write(tmp_path, "Мария.wav", _tone(220.0, amplitude=0.3))
+
+    assert find_similar_samples(fresh, voices) == []
+
+
+def test_find_similar_samples_reports_exact_cross_name(tmp_path: Path) -> None:
+    voices = tmp_path / "voices"
+    source = _write(voices, "Иван.wav", _tone(220.0))
+    fresh = tmp_path / "Мария.wav"
+    fresh.write_bytes(source.read_bytes())
+
+    similar = find_similar_samples(fresh, voices)
+
+    assert [item.filename for item in similar] == ["Иван.wav"]
+    assert similar[0].kind == "exact"
+    assert similar[0].score == pytest.approx(1.0)
 
 
 def test_find_similar_samples_ignores_self(tmp_path: Path) -> None:

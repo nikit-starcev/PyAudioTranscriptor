@@ -75,6 +75,8 @@ from audio_transcriber.correction.editorial import (
 from audio_transcriber.correction.morph_corrector import MorphTextCorrector
 from audio_transcriber.diarization import nemo_speech_assets
 from audio_transcriber.diarization.dedup import (
+    DEFAULT_EMBEDDING_THRESHOLD,
+    DEFAULT_NEAR_THRESHOLD,
     find_duplicate_groups,
     find_similar_samples,
 )
@@ -413,12 +415,14 @@ class VoiceDedupRequest(BaseModel):
     """Тело ``POST /api/voices/dedup`` — параметры аудита дубликатов (#39).
 
     ``near_threshold``/``embedding_threshold`` — пороги косинусной близости
-    (аудио-отпечаток и speaker-эмбеддинг). ``embeddings`` включает слой
-    эмбеддингов, если движок доступен; иначе аудит идёт только по аудио.
+    (аудио-отпечаток и speaker-эмбеддинг). Аудио-отпечаток связывает только
+    образцы одного имени, разные имена — лишь по эмбеддингам (issue #116).
+    ``embeddings`` включает слой эмбеддингов, если движок доступен; без него
+    кросс-именные группы не предлагаются.
     """
 
-    near_threshold: float = Field(default=0.9, ge=0.0, le=1.0)
-    embedding_threshold: float = Field(default=0.9, ge=0.0, le=1.0)
+    near_threshold: float = Field(default=DEFAULT_NEAR_THRESHOLD, ge=0.0, le=1.0)
+    embedding_threshold: float = Field(default=DEFAULT_EMBEDDING_THRESHOLD, ge=0.0, le=1.0)
     embeddings: bool = True
 
 
@@ -3348,8 +3352,9 @@ def register_api(
         """Аудит библиотеки: группы дубликатов (точные и почти одинаковые).
 
         Ничего не удаляет — возвращает группы, тип совпадения, оценку и
-        подсказку «кого оставить» (#39). Слой эмбеддингов подключается, только
-        если запрошен и движок CAM++ доступен (иначе аудит идёт по аудио).
+        подсказку «кого оставить» (#39). Аудио-отпечаток связывает только
+        образцы одного имени; разные имена склеиваются лишь по эмбеддингам
+        CAM++, и только если движок доступен (issue #116).
         """
         request = payload or VoiceDedupRequest()
         directory = resolve_voices()
@@ -3602,7 +3607,9 @@ def _with_similar(
     """Добавляет к ответу добавления образца список похожих (предупреждение, #39).
 
     Сравнение идёт по хешу и аудио-отпечатку (без загрузки модели эмбеддингов,
-    чтобы обычная загрузка оставалась быстрой). Ошибки не роняют ответ.
+    чтобы обычная загрузка оставалась быстрой): аудио-отпечаток срабатывает
+    только для образца с тем же именем, поэтому разных людей с похожим тембром
+    предупреждение не задевает (issue #116). Ошибки не роняют ответ.
     """
     try:
         similar = find_similar_samples(target, directory)

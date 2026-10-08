@@ -795,14 +795,27 @@ def test_voices_dedup_reports_groups(client: TestClient, voices_dir: Path) -> No
     groups = body["groups"]
     assert len(groups) == 1
     group = groups[0]
-    assert group["kind"] == "audio"
+    # Точный дубль под одним именем; «Иван Клон» по аудио не склеивается (#116).
+    assert group["kind"] == "exact"
     assert {member["filename"] for member in group["members"]} == {
         "Иван.wav",
         "Иван (2).wav",
-        "Иван Клон.wav",
     }
-    assert set(group["names"]) == {"Иван", "Иван Клон"}
+    assert group["names"] == ["Иван"]
     assert group["keep"] == "Иван.wav"
+
+
+def test_voices_dedup_cross_name_audio_not_grouped(
+    client: TestClient, voices_dir: Path
+) -> None:
+    # Одинаковый тембр (отпечаток инвариантен к громкости), но разные имена:
+    # без эмбеддингов это разные люди — группа не предлагается (#116).
+    _write_tone(voices_dir / "Иван.wav", 220.0)
+    _write_tone(voices_dir / "Мария.wav", 220.0, amplitude=0.3)
+
+    body = client.post("/api/voices/dedup", json={"embeddings": False}).json()
+
+    assert body["groups"] == []
 
 
 def test_voices_dedup_without_duplicates(client: TestClient, voices_dir: Path) -> None:
@@ -849,7 +862,7 @@ def test_voices_upload_warns_about_similar(client: TestClient, voices_dir: Path)
     created = client.post(
         "/api/voices",
         files={"file": ("voice.wav", _tone_bytes(220.0, amplitude=0.3), "audio/wav")},
-        data={"name": "Клон"},
+        data={"name": "Иван"},
     )
 
     assert created.status_code == 201
@@ -857,6 +870,22 @@ def test_voices_upload_warns_about_similar(client: TestClient, voices_dir: Path)
     assert [item["filename"] for item in similar] == ["Иван.wav"]
     assert similar[0]["kind"] == "audio"
     assert similar[0]["score"] >= 0.9
+
+
+def test_voices_upload_no_warning_for_cross_name_audio(
+    client: TestClient, voices_dir: Path
+) -> None:
+    # Тембр похож, но имя другое: без эмбеддингов предупреждения нет (#116).
+    _write_tone(voices_dir / "Иван.wav", 220.0)
+
+    created = client.post(
+        "/api/voices",
+        files={"file": ("voice.wav", _tone_bytes(220.0, amplitude=0.3), "audio/wav")},
+        data={"name": "Клон"},
+    )
+
+    assert created.status_code == 201
+    assert created.json()["similar"] == []
 
 
 def test_voices_upload_no_similar_warning_for_distinct(
