@@ -819,7 +819,7 @@ export type SummaryPromptsResponse = {
   active_id: number | null
 }
 
-export const EXPORT_FORMATS = ['txt', 'docx', 'json', 'srt'] as const
+export const EXPORT_FORMATS = ['txt', 'docx', 'json', 'srt', 'vtt', 'md', 'pdf'] as const
 
 export async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init)

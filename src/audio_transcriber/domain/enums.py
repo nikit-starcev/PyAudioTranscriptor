@@ -30,3 +30,6 @@ class ExportFormat(StrEnum):
     DOCX = "docx"
     JSON = "json"
     SRT = "srt"
+    VTT = "vtt"
+    MARKDOWN = "md"
+    PDF = "pdf"

@@ -8,6 +8,7 @@ _FORMAT_OPTIONS = [
     ("txt", "txt"),
     ("txt + docx", "txt,docx"),
     ("txt + docx + json + srt", "txt,docx,json,srt"),
+    ("txt + docx + json + srt + vtt + md + pdf", "txt,docx,json,srt,vtt,md,pdf"),
 ]
 
 _LANG_OPTIONS = [

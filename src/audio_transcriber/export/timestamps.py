@@ -25,3 +25,13 @@ def format_srt_timestamp(seconds: float) -> str:
     minutes, remainder = divmod(remainder, 60_000)
     secs, milliseconds = divmod(remainder, 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{milliseconds:03d}"
+
+
+def format_vtt_timestamp(seconds: float) -> str:
+    """Форматирует секунды как ``ЧЧ:ММ:СС.ммм`` (формат WebVTT).
+
+    Отличается от SRT только разделителем: в WebVTT миллисекунды отделяются
+    точкой, а не запятой.
+    """
+
+    return format_srt_timestamp(seconds).replace(",", ".")

@@ -18,7 +18,12 @@ from fastapi.testclient import TestClient
 
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.domain.enums import ExportFormat
-from audio_transcriber.domain.models import Speaker, TranscriptEntry, TranscriptionResult
+from audio_transcriber.domain.models import (
+    Speaker,
+    TranscriptEntry,
+    TranscriptionResult,
+    WordTimestamp,
+)
 from audio_transcriber.web.app import create_app
 from audio_transcriber.web.paths import WebPaths
 
@@ -28,6 +33,9 @@ EXPECTED_MEDIA_TYPES = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "json": "application/json",
     "srt": "application/x-subrip",
+    "vtt": "text/vtt",
+    "md": "text/markdown",
+    "pdf": "application/pdf",
 }
 
 
@@ -41,7 +49,14 @@ def fake_pipeline():
     def pipeline(config: AppConfig, *, on_progress=None) -> TranscriptionResult:
         speaker = Speaker(id="SPEAKER_00", display_name="Спикер 1")
         entry = TranscriptEntry(
-            start=0.0, end=1.0, text="привет мир", speaker=speaker
+            start=0.0,
+            end=1.0,
+            text="привет мир",
+            speaker=speaker,
+            words=[
+                WordTimestamp(text="привет", start=0.0, end=0.5, probability=0.9),
+                WordTimestamp(text="мир", start=0.5, end=1.0, probability=0.8),
+            ],
         )
         return TranscriptionResult(
             source_path=config.input_file,
@@ -115,7 +130,7 @@ def _run_job(client: TestClient, path: str) -> str:
     raise AssertionError("задача не завершилась за отведённое время")
 
 
-@pytest.mark.parametrize("fmt", ["txt", "docx", "json", "srt"])
+@pytest.mark.parametrize("fmt", ["txt", "docx", "json", "srt", "vtt", "md", "pdf"])
 def test_export_returns_non_empty_file_for_each_format(
     client: TestClient, fmt: str
 ) -> None:
@@ -183,9 +198,21 @@ def test_export_invalid_format_returns_400(client: TestClient) -> None:
     uploaded = _upload(client)
     job_id = _run_job(client, uploaded["name"])
 
-    response = client.get(f"/api/jobs/{job_id}/export", params={"fmt": "pdf"})
+    response = client.get(f"/api/jobs/{job_id}/export", params={"fmt": "xyz"})
 
     assert response.status_code == 400
+
+
+def test_export_highlight_adds_word_markup_for_subtitles(client: TestClient) -> None:
+    uploaded = _upload(client)
+    job_id = _run_job(client, uploaded["name"])
+
+    response = client.get(
+        f"/api/jobs/{job_id}/export", params={"fmt": "vtt", "highlight": "1"}
+    )
+
+    assert response.status_code == 200
+    assert "<c>привет</c>" in response.content.decode("utf-8")
 
 
 def test_export_unknown_job_returns_404(client: TestClient) -> None:

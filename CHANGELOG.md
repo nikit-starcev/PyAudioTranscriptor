@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Новые форматы экспорта VTT, Markdown и PDF + пословная подсветка** (#53):
+  экспортёры `VttExporter` (WebVTT), `MarkdownExporter` и `PdfExporter` (fpdf2,
+  шрифт с кириллицей), формат `ExportFormat` (`vtt`/`md`/`pdf`), фабрика, CLI
+  `--format`, список веб-экспорта и UI-селект «Формат»; подсветка слов в SRT/VTT
+  при наличии пословных таймкодов (#45) — караоке-теги в VTT, `<font>` в SRT,
+  флажок «Подсветка слов» и параметр `highlight` у `/api/jobs/{id}/export`.
+
+
 ## [0.5.6] - 2026-10-08
 
 ### Added

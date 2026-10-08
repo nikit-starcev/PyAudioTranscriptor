@@ -9,6 +9,7 @@ import {
   Card,
   CardContent,
   CardHeader,
+  Checkbox,
   EmptyState,
   Field,
   Select,
@@ -24,6 +25,10 @@ const LINK_BUTTON =
 function ExportTab({ jobId }: { jobId: string }) {
   const app = useApp()
   const [promptsOpen, setPromptsOpen] = useState(false)
+  const [highlightWords, setHighlightWords] = useState(false)
+
+  const highlightSupported =
+    app.exportFormat === 'srt' || app.exportFormat === 'vtt'
 
   if (!app.result) {
     return (
@@ -113,9 +118,18 @@ function ExportTab({ jobId }: { jobId: string }) {
               ))}
             </Select>
           </Field>
+          {highlightSupported && (
+            <Checkbox
+              label="Подсветка слов"
+              checked={highlightWords}
+              onChange={(event) => setHighlightWords(event.target.checked)}
+            />
+          )}
           <a
             className={LINK_BUTTON}
-            href={`/api/jobs/${jobId}/export?fmt=${app.exportFormat}`}
+            href={`/api/jobs/${jobId}/export?fmt=${app.exportFormat}${
+              highlightSupported && highlightWords ? '&highlight=1' : ''
+            }`}
             download
           >
             <Download aria-hidden className="h-4 w-4" />
