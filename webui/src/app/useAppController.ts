@@ -288,6 +288,8 @@ export function useAppController() {
     setExportFormat(first)
   }, [config])
 
+  const activeJob = jobs.find((job) => job.id === activeJobId) ?? null
+
   useEffect(() => {
     if (!activeJobId) return
     lastEventSeqRef.current = 0
@@ -426,7 +428,15 @@ export function useAppController() {
       clearRetry()
       source?.close()
     }
-  }, [activeJobId, runSeq, refreshJobs, refreshFiles, loadResult, refreshJobTiming])
+  }, [
+    activeJobId,
+    activeJob?.status,
+    runSeq,
+    refreshJobs,
+    refreshFiles,
+    loadResult,
+    refreshJobTiming,
+  ])
 
   const enqueue = useCallback(
     async (path: string): Promise<string | null> => {
@@ -524,6 +534,7 @@ export function useAppController() {
       setSamplesMeta({})
       setProgress(null)
       resetTiming()
+      void refreshJobs()
       try {
         const details = await api<JobDetails>(`/api/jobs/${jobId}`)
         setProgress({
@@ -556,7 +567,7 @@ export function useAppController() {
         setError(errorMessage(cause))
       }
     },
-    [loadResult, resetTiming],
+    [loadResult, refreshJobs, resetTiming],
   )
 
   const deleteJob = useCallback(
@@ -926,8 +937,6 @@ export function useAppController() {
     if (!needle) return result.entries
     return result.entries.filter((entry) => entry.text.toLowerCase().includes(needle))
   }, [result, query])
-
-  const activeJob = jobs.find((job) => job.id === activeJobId) ?? null
 
   const plannedStages = useMemo(() => {
     const server = progress?.planned_stages?.length
