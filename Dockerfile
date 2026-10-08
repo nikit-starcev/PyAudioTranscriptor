@@ -190,6 +190,9 @@ RUN groupadd -g "${GID}" app \
 # Entrypoint стартует как root лишь для того, чтобы выровнять владельца тома
 # /data (Docker Desktop отдаёт bind-mount как root:root), после чего сбрасывает
 # привилегии до `app` через setpriv. Сам веб-сервер и все движки работают как app.
+# В rootless/userns-режиме entrypoint не делает chown (это переписало бы
+# владельца хостовых файлов на subuid) и запускает приложение от контейнерного
+# root, который отображён на хостового пользователя.
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh
 

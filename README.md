@@ -277,12 +277,26 @@ docker run --rm -p 127.0.0.1:8790:8790 \
 
 ### Особенности
 
-- **Непривилегированный пользователь.** Веб-сервер и все движки работают от
-  пользователя `app` (uid 1000). Entrypoint стартует как root лишь чтобы
-  выровнять владельца тома `/data` (на Docker Desktop bind-mount виден как
-  `root:root`) и сразу сбрасывает привилегии через `setpriv`. Если владелец
-  `./web-data` на хосте не 1000, задайте `PUID`/`PGID` (в compose — переменные
-  `PUID`/`PGID`) либо заранее выполните `chown -R 1000:1000 web-data voices`.
+- **Непривилегированный пользователь (rootful).** В обычном (rootful) Docker
+  веб-сервер и все движки работают от пользователя `app` (uid 1000). Entrypoint
+  стартует как root лишь чтобы выровнять владельца тома `/data` (на Docker
+  Desktop bind-mount виден как `root:root`) и сразу сбрасывает привилегии через
+  `setpriv`. Если владелец `./web-data` на хосте не 1000, задайте `PUID`/`PGID`
+  (в compose — переменные `PUID`/`PGID`) либо заранее выполните
+  `chown -R 1000:1000 web-data voices`.
+- **Rootless Docker / userns-remap.** В этом режиме контейнерный uid 0 отображён
+  на хостового пользователя (того, кто запустил демон), а in-container `app`
+  (1000) — на subuid (например, `525287`). Поэтому entrypoint **не делает
+  `chown` тома**: рекурсивный `chown -R app:app /data` переписал бы владельца
+  всех хостовых файлов `web-data` на subuid и сломал бы доступ хостовому
+  серверу (`OperationalError: attempt to write a readonly database` на
+  `PRAGMA journal_mode=WAL`). Вместо этого приложение запускается от
+  контейнерного root — он и есть хостовый пользователь, так что файлы в
+  `web-data` создаются и читаются с правильным владельцем (uid хоста).
+  `PUID`/`PGID` в rootless не применяются (in-container uid всё равно уходит в
+  subuid); режим определяется автоматически по `/proc/self/uid_map`.
+  Требование: каталоги `./web-data` и `./voices` доступны на запись хостовому
+  пользователю (владелец — ваш uid, как при обычном запуске без Docker).
 - **Порт `8790`** (`EXPOSE`), healthcheck — `GET /api/health`.
 - Образ не содержит CUDA-колёс (`torch …+cpu`); на AMD/Intel GPU ускорение даёт
   Vulkan в `whisper.cpp`/`llama.cpp`, на NVIDIA-хосте образ работает на CPU
