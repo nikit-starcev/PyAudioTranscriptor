@@ -374,6 +374,13 @@ class JobRunner:
                 config.num_speakers = job.num_speakers
                 config.min_speakers = job.min_speakers
                 config.max_speakers = job.max_speakers
+                # Поля, заданные OpenAI-совместимым API (#48): язык и начальная
+                # подсказка ASR. Для задач веб-интерфейса оба ``None`` — тогда
+                # действуют значения из настроек.
+                if job.language:
+                    config.language = job.language
+                if job.initial_prompt:
+                    config.initial_prompt = job.initial_prompt
             # План стадий зависит только от конфигурации задачи: фиксируем его
             # в записи, чтобы UI показал сразу все стадии (в т.ч. ожидающие).
             plan = planned_stages(config)

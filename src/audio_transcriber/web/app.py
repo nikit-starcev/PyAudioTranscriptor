@@ -12,7 +12,9 @@ CORS не нужен: фронт и API раздаёт один и тот же o
 
 from __future__ import annotations
 
+import asyncio
 import errno
+import hmac
 import json
 import logging
 import mimetypes
@@ -21,6 +23,7 @@ import shutil
 import sqlite3
 import tempfile
 import threading
+import time
 import uuid
 import webbrowser
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
@@ -31,11 +34,28 @@ from typing import Annotated
 from urllib.parse import urlparse
 
 import numpy as np
-from fastapi import APIRouter, Body, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+)
+from fastapi.exception_handlers import (
+    http_exception_handler,
+    request_validation_exception_handler,
+)
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
     JSONResponse,
+    PlainTextResponse,
     Response,
     StreamingResponse,
 )
@@ -73,7 +93,7 @@ from audio_transcriber.diarization.voices import (
     unique_sample_path,
 )
 from audio_transcriber.domain.enums import AsrBackend, ExportFormat
-from audio_transcriber.domain.models import Speaker, TranscriptionResult
+from audio_transcriber.domain.models import Speaker, TranscriptEntry, TranscriptionResult
 from audio_transcriber.export.factory import create_exporter
 from audio_transcriber.llm.client import create_llm_client, probe_openai_server
 from audio_transcriber.protocol import ProtocolArtifacts, generate_protocol
@@ -159,6 +179,7 @@ from audio_transcriber.web.runner import ConfigBuilder, JobRunner, PipelineFn
 from audio_transcriber.web.secrets import (
     SecretsError,
     SecretsStore,
+    effective_api_key,
     effective_hf_token,
     effective_llm_api_key,
     mask_hf_token,
@@ -284,6 +305,19 @@ _EXPORT_MEDIA_TYPES: dict[str, str] = {
     "md": "text/markdown; charset=utf-8",
     "pdf": "application/pdf",
 }
+
+#: Идентификатор модели, отдаваемый OpenAI-совместимым ``GET /v1/models``.
+OPENAI_MODEL_ID = "whisper-1"
+
+#: Поддерживаемые значения ``response_format`` (OpenAI-совместимый API, #48).
+OPENAI_RESPONSE_FORMATS = frozenset({"json", "text", "srt", "vtt", "verbose_json"})
+
+#: Таймаут синхронного ожидания задачи (секунды): длинная запись обрабатывается
+#: долго, поэтому ограничение щедрое; переопределяется через ``OPENAI_TIMEOUT``.
+DEFAULT_OPENAI_TIMEOUT = 3600.0
+
+#: Интервал поллинга статуса задачи в синхронном режиме (секунды).
+OPENAI_POLL_INTERVAL = 0.1
 
 _PLACEHOLDER_HTML = """<!doctype html>
 <html lang="ru">
@@ -593,6 +627,9 @@ def create_app(
     nemo_pull_runner: PullRunner | None = None,
     nemo_poll_interval: float | None = 0.5,
     heartbeat: float = 15.0,
+    openai_api_key: str | None = None,
+    openai_timeout: float | None = None,
+    openai_poll_interval: float | None = None,
 ) -> FastAPI:
     """Собирает приложение FastAPI с изолированным окружением данных.
 
@@ -604,7 +641,9 @@ def create_app(
     установщика пакетов (#66): в тестах реальные ``uv``/``pip`` не вызываются.
     ``nemo_pull_runner`` — аналогичная заглушка ``nemo-speech pull``; при
     ``nemo_poll_interval=None`` отключается и поток-наблюдатель за размером
-    файла модели (детерминированные тесты).
+    файла модели (детерминированные тесты). ``openai_api_key`` переопределяет
+    ключ доступа OpenAI-совместимого API (#48) для тестов; ``openai_timeout``/
+    ``openai_poll_interval`` — таймаут и шаг поллинга синхронных запросов.
     """
     resolved_paths = paths or WebPaths.default()
     resolved_paths.ensure()
@@ -799,6 +838,19 @@ def create_app(
     )
     app.include_router(router)
 
+    # OpenAI-совместимый API (#48) монтируется в корне и ДО SPA-фолбэка, иначе
+    # catch-all `/{full_path:path}` перехватил бы `/v1/...`.
+    register_openai_api(
+        app,
+        store=store,
+        runner=runner,
+        paths=resolved_paths,
+        secrets_store=secrets_store,
+        api_key=openai_api_key,
+        timeout=openai_timeout,
+        poll_interval=openai_poll_interval,
+    )
+
     @app.get("/", response_class=HTMLResponse)
     def index() -> Response:
         return _index_response()
@@ -807,6 +859,8 @@ def create_app(
     def spa_fallback(full_path: str) -> Response:
         if full_path == "api" or full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Не найдено")
+        if full_path == "v1" or full_path.startswith("v1/"):
+            raise HTTPException(status_code=404, detail="Не найдено")
         if full_path:
             candidate = _resolve_static_file(full_path)
             if candidate is not None:
@@ -814,6 +868,310 @@ def create_app(
         return _index_response()
 
     return app
+
+
+def _openai_timeout() -> float:
+    """Таймаут синхронного ожидания задачи из ``config.env`` (``OPENAI_TIMEOUT``)."""
+    raw = env_defaults().get("OPENAI_TIMEOUT", "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            return DEFAULT_OPENAI_TIMEOUT
+        if value > 0:
+            return value
+    return DEFAULT_OPENAI_TIMEOUT
+
+
+def _openai_error_type(status_code: int) -> str:
+    """Тип ошибки в теле OpenAI-совместимого ответа по HTTP-коду."""
+    if status_code == 401:
+        return "authentication_error"
+    if status_code == 404:
+        return "not_found_error"
+    if status_code >= 500:
+        return "server_error"
+    return "invalid_request_error"
+
+
+def _openai_text(result: TranscriptionResult) -> str:
+    """Склеенный текст стенограммы (как у OpenAI — через пробел)."""
+    return " ".join(entry.text.strip() for entry in result.entries if entry.text.strip())
+
+
+def _openai_segment(
+    entry: TranscriptEntry,
+    index: int,
+    *,
+    include_words: bool,
+    temperature: float | None,
+) -> dict[str, object]:
+    """Один сегмент ``verbose_json`` с доступными полями реплики."""
+    segment: dict[str, object] = {
+        "id": index,
+        "seek": 0,
+        "start": entry.start,
+        "end": entry.end,
+        "text": entry.text,
+        "temperature": temperature if temperature is not None else 0.0,
+        "avg_logprob": entry.avg_logprob,
+    }
+    if entry.speaker is not None or entry.extra_speakers:
+        segment["speaker"] = entry.speaker_label
+    if include_words:
+        segment["words"] = [
+            {"word": word.text, "start": word.start, "end": word.end}
+            for word in entry.words
+        ]
+    return segment
+
+
+def _export_transcript_text(
+    export_format: ExportFormat, result: TranscriptionResult
+) -> str:
+    """Текстовая выгрузка стенограммы существующим экспортёром (во временный файл)."""
+    tmp_dir = Path(tempfile.mkdtemp(prefix="audio-transcriber-openai-"))
+    try:
+        target = tmp_dir / f"transcript.{export_format.value}"
+        create_exporter(export_format).export(result, target)
+        return target.read_text(encoding="utf-8")
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Не удалось экспортировать стенограмму: {exc}"
+        ) from exc
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _openai_response(
+    response_format: str,
+    result: TranscriptionResult,
+    *,
+    model: str,
+    include_words: bool,
+    temperature: float | None,
+) -> Response:
+    """Ответ транскрибации в запрошенном OpenAI-совместимом формате."""
+    text = _openai_text(result)
+    if response_format == "text":
+        return PlainTextResponse(text)
+    if response_format in {"srt", "vtt"}:
+        export_format = ExportFormat(response_format)
+        content = _export_transcript_text(export_format, result)
+        media_type = "application/x-subrip" if response_format == "srt" else "text/vtt"
+        return Response(content=content, media_type=media_type)
+    if response_format == "verbose_json":
+        return JSONResponse(
+            {
+                "task": "transcribe",
+                "language": result.language,
+                "duration": result.duration,
+                "text": text,
+                "model": model,
+                "segments": [
+                    _openai_segment(
+                        entry,
+                        index,
+                        include_words=include_words,
+                        temperature=temperature,
+                    )
+                    for index, entry in enumerate(result.entries)
+                ],
+            }
+        )
+    return JSONResponse({"text": text})
+
+
+async def _await_openai_job(
+    store: JobsDB,
+    job_id: str,
+    *,
+    timeout: float,
+    poll_interval: float,
+) -> Job:
+    """Ждёт терминального статуса задачи (поллинг с таймаутом, #48).
+
+    Синхронный режим: воркер выполняет задачу в отдельном потоке, а запрос
+    ждёт ``done``/``error``/``cancelled``. По истечении таймаута — ``504``.
+    """
+    deadline = time.monotonic() + max(timeout, 0.0)
+    step = max(poll_interval, 0.01)
+    while True:
+        job = store.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=500, detail="Задача обработки не найдена.")
+        if job.is_terminal:
+            return job
+        if time.monotonic() >= deadline:
+            raise HTTPException(
+                status_code=504, detail="Превышено время ожидания обработки."
+            )
+        await asyncio.sleep(step)
+
+
+def register_openai_api(
+    app: FastAPI,
+    *,
+    store: JobsDB,
+    runner: JobRunner,
+    paths: WebPaths,
+    secrets_store: SecretsStore,
+    api_key: str | None,
+    timeout: float | None,
+    poll_interval: float | None,
+) -> None:
+    """Монтирует OpenAI-совместимый API (#48) в корне приложения.
+
+    Реализованы ``POST /v1/audio/transcriptions`` и ``GET /v1/models``.
+    Аутентификация строгая: ``Authorization: Bearer <API_KEY>``. Если ключ не
+    задан (ни в ``config.env``/окружении, ни в ``web-data/secrets.json``), а
+    также при несовпадении — ``401`` (строгий режим выбран намеренно: иначе
+    открытый наружу эндпоинт запускал бы обработку кому угодно). Режим
+    синхронный: запрос создаёт задачу, запускает её и ждёт завершения, поэтому
+    для длинных записей ответ приходит долго (таймаут ``OPENAI_TIMEOUT``).
+    """
+    resolved = api_key if api_key is not None else effective_api_key(secrets_store, env_defaults())
+    resolved_key = resolved.strip() if isinstance(resolved, str) and resolved.strip() else None
+    wait_timeout = timeout if timeout is not None else _openai_timeout()
+    step = poll_interval if poll_interval is not None else OPENAI_POLL_INTERVAL
+
+    def require_api_key(request: Request) -> None:
+        """Проверяет ``Authorization: Bearer``; иначе — ``401``."""
+        if not resolved_key:
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    "API-ключ не задан. Укажите API_KEY в config.env "
+                    "(или web-data/secrets.json) и перезапустите сервер."
+                ),
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        scheme, _, token = request.headers.get("authorization", "").partition(" ")
+        if scheme.casefold() != "bearer" or not token:
+            raise _invalid_bearer()
+        if not hmac.compare_digest(token.encode("utf-8"), resolved_key.encode("utf-8")):
+            raise _invalid_bearer()
+
+    @app.exception_handler(HTTPException)
+    async def _openai_http_error(request: Request, exc: HTTPException) -> Response:
+        if not request.url.path.startswith("/v1/"):
+            return await http_exception_handler(request, exc)
+        return JSONResponse(
+            {
+                "error": {
+                    "message": str(exc.detail),
+                    "type": _openai_error_type(exc.status_code),
+                    "code": None,
+                }
+            },
+            status_code=exc.status_code,
+            headers=exc.headers,
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def _openai_validation_error(
+        request: Request, exc: RequestValidationError
+    ) -> Response:
+        if not request.url.path.startswith("/v1/"):
+            return await request_validation_exception_handler(request, exc)
+        return JSONResponse(
+            {
+                "error": {
+                    "message": "Некорректный запрос.",
+                    "type": "invalid_request_error",
+                    "code": None,
+                }
+            },
+            status_code=400,
+        )
+
+    router = APIRouter(dependencies=[Depends(require_api_key)])
+
+    @router.get("/models")
+    def list_openai_models() -> dict[str, object]:
+        return {
+            "object": "list",
+            "data": [
+                {
+                    "id": OPENAI_MODEL_ID,
+                    "object": "model",
+                    "created": int(time.time()),
+                    "owned_by": "local",
+                }
+            ],
+        }
+
+    @router.post("/audio/transcriptions")
+    async def create_transcription(
+        file: Annotated[UploadFile | None, File()] = None,
+        model: Annotated[str, Form()] = OPENAI_MODEL_ID,
+        language: Annotated[str | None, Form()] = None,
+        prompt: Annotated[str | None, Form()] = None,
+        response_format: Annotated[str, Form()] = "json",
+        temperature: Annotated[float | None, Form()] = None,
+        timestamp_granularities: Annotated[
+            list[str] | None, Form(alias="timestamp_granularities[]")
+        ] = None,
+    ) -> Response:
+        """Создаёт задачу, синхронно ждёт результат и отдаёт его в нужном формате."""
+        if file is None or not (file.filename or "").strip():
+            raise HTTPException(status_code=400, detail="Не передан файл (поле 'file').")
+        fmt = (response_format or "json").strip().casefold()
+        if fmt not in OPENAI_RESPONSE_FORMATS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Неподдерживаемый response_format: {response_format!r}.",
+            )
+        granularities = {
+            item.strip().casefold()
+            for item in (timestamp_granularities or [])
+            if isinstance(item, str) and item.strip()
+        }
+        upload = await _save_upload(file, paths.input_dir)
+        source = Path(str(upload["path"]))
+        job = store.create(
+            uuid.uuid4().hex,
+            source,
+            language=(language.strip() or None) if isinstance(language, str) else None,
+            initial_prompt=(prompt.strip() or None) if isinstance(prompt, str) else None,
+        )
+        if not runner.submit(job.id, source):
+            raise HTTPException(
+                status_code=500, detail="Не удалось поставить задачу в очередь."
+            )
+        final = await _await_openai_job(
+            store, job.id, timeout=wait_timeout, poll_interval=step
+        )
+        if final.status == STATUS_ERROR:
+            raise HTTPException(
+                status_code=500, detail=final.error or "Обработка завершилась ошибкой."
+            )
+        if final.status == STATUS_CANCELLED:
+            raise HTTPException(status_code=500, detail="Обработка отменена.")
+        if final.status != STATUS_DONE:
+            raise HTTPException(status_code=504, detail="Превышено время ожидания обработки.")
+        payload = load_result_file(_result_path(paths, final))
+        if payload is None:
+            raise HTTPException(status_code=500, detail="Результат обработки не найден.")
+        result = result_from_payload(payload, source_path=Path(final.source_path))
+        return _openai_response(
+            fmt,
+            result,
+            model=model,
+            include_words="word" in granularities,
+            temperature=temperature,
+        )
+
+    app.include_router(router, prefix="/v1")
+
+
+def _invalid_bearer() -> HTTPException:
+    """``401`` для отсутствующего/неверного заголовка авторизации."""
+    return HTTPException(
+        status_code=401,
+        detail="Доступ запрещён: неверный или отсутствующий API-ключ.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 def register_api(

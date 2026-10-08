@@ -9,6 +9,15 @@
 
 ### Added
 
+- **OpenAI-совместимый API веб-сервера** (#48): `POST /v1/audio/transcriptions`
+  (multipart; поля `file`/`model`/`language`/`prompt`/`response_format`/
+  `temperature`/`timestamp_granularities[]`) и `GET /v1/models` (модель
+  `whisper-1`). Форматы ответа `json`/`text`/`srt`/`vtt`/`verbose_json`. Режим
+  синхронный: запрос создаёт задачу, запускает её и ждёт завершения (таймаут
+  `OPENAI_TIMEOUT`). Строгая аутентификация по ключу `Authorization: Bearer
+  <API_KEY>`; ключ задаётся в `config.env` (`API_KEY`) или
+  `web-data/secrets.json`; без ключа эндпоинты отвечают `401`. Язык и
+  начальная подсказка задачи сохраняются в записи задачи.
 - **Новые форматы экспорта VTT, Markdown и PDF + пословная подсветка** (#53):
   экспортёры `VttExporter` (WebVTT), `MarkdownExporter` и `PdfExporter` (fpdf2,
   шрифт с кириллицей), формат `ExportFormat` (`vtt`/`md`/`pdf`), фабрика, CLI

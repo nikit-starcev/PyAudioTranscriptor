@@ -1,10 +1,10 @@
 """Секреты веб-интерфейса (``web-data/secrets.json``).
 
-Секреты — токен Hugging Face (нужен для gated-модели pyannote) и API-ключ
-внешней LLM (``LLM_API_KEY``). Они хранятся отдельно от ``settings.json``:
-файл принадлежит только владельцу (права ``0600``) и никогда не отдаётся API —
-наружу выводится лишь флаг наличия и маска. Каталог ``web-data/`` целиком
-исключён из git.
+Секреты — токен Hugging Face (нужен для gated-модели pyannote), API-ключ
+внешней LLM (``LLM_API_KEY``) и ключ OpenAI-совместимого API (``API_KEY``).
+Они хранятся отдельно от ``settings.json``: файл принадлежит только владельцу
+(права ``0600``) и никогда не отдаётся API — наружу выводится лишь флаг
+наличия и маска. Каталог ``web-data/`` целиком исключён из git.
 """
 
 from __future__ import annotations
@@ -22,6 +22,9 @@ HF_TOKEN_FIELD = "hf_token"
 
 #: Имя поля с API-ключом внешней LLM в файле секретов.
 LLM_API_KEY_FIELD = "llm_api_key"
+
+#: Имя поля с ключом OpenAI-совместимого API в файле секретов.
+API_KEY_FIELD = "api_key"
 
 #: Права файла секретов: чтение/запись только владельцу.
 SECRETS_FILE_MODE = 0o600
@@ -115,6 +118,21 @@ class SecretsStore:
         """
         self._set_secret(LLM_API_KEY_FIELD, api_key)
 
+    def get_api_key(self) -> str | None:
+        """Сохранённый ключ OpenAI-совместимого API или ``None``."""
+        raw = self.load().get(API_KEY_FIELD)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+        return None
+
+    def api_key_set(self) -> bool:
+        """Задан ли ключ OpenAI-совместимого API (значение не раскрывается)."""
+        return self.get_api_key() is not None
+
+    def set_api_key(self, api_key: str | None) -> None:
+        """Сохраняет ключ OpenAI-совместимого API (пустая строка/``None`` — удаляет)."""
+        self._set_secret(API_KEY_FIELD, api_key)
+
     def _set_secret(self, field: str, value: str | None) -> None:
         payload = self.load()
         clean = value.strip() if isinstance(value, str) else ""
@@ -165,4 +183,20 @@ def effective_llm_api_key(
         return api_key
     source = defaults or {}
     raw = source.get("LLM_API_KEY") or ""
+    return raw.strip() or None
+
+
+def effective_api_key(
+    store: SecretsStore, defaults: Mapping[str, str] | None = None
+) -> str | None:
+    """Ключ OpenAI-совместимого API из секретов, иначе из ``config.env``/окружения.
+
+    Строгий режим: если ключ не задан нигде, OpenAI-совместимые эндпоинты
+    отвечают ``401`` и не выполняют работу (см. README).
+    """
+    api_key = store.get_api_key()
+    if api_key:
+        return api_key
+    source = defaults or {}
+    raw = source.get("API_KEY") or ""
     return raw.strip() or None

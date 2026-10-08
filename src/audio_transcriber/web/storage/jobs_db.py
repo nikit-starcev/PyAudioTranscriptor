@@ -45,6 +45,7 @@ _UPDATABLE_FIELDS = frozenset(
         "stage_started_at",
         "stage_times",
         "planned_stages",
+        "initial_prompt",
     }
 )
 
@@ -68,6 +69,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     stage_started_at TEXT,
     stage_times TEXT,
     planned_stages TEXT,
+    initial_prompt TEXT,
     updated_at TEXT,
     deleted_at TEXT
 )
@@ -186,6 +188,9 @@ class Job:
     #: Планируемые стадии конвейера в порядке выполнения (по конфигурации задачи).
     #: Пусто у задач до первого прогона или созданных до появления поля.
     planned_stages: list[str] = field(default_factory=list)
+    #: Начальная подсказка ASR (``prompt`` OpenAI-совместимого API, #48).
+    #: ``None`` — подсказка берётся из ``INITIAL_PROMPT`` настроек.
+    initial_prompt: str | None = None
     #: Момент последнего изменения записи (ISO) — для оценки «здоровья» задачи.
     updated_at: str | None = None
     #: Момент мягкого удаления (ISO); ``None`` — задача не удалена (#30).
@@ -251,6 +256,7 @@ class Job:
             "stage_started_at": self.stage_started_at,
             "stage_times": [timing.as_dict() for timing in self.stage_times],
             "planned_stages": list(self.planned_stages),
+            "initial_prompt": self.initial_prompt,
             "updated_at": self.updated_at,
             "deleted": self.deleted,
             "deleted_at": self.deleted_at,
@@ -318,6 +324,8 @@ class JobsDB:
             connection.execute("ALTER TABLE jobs ADD COLUMN stage_times TEXT")
         if "planned_stages" not in columns:
             connection.execute("ALTER TABLE jobs ADD COLUMN planned_stages TEXT")
+        if "initial_prompt" not in columns:
+            connection.execute("ALTER TABLE jobs ADD COLUMN initial_prompt TEXT")
         if "updated_at" not in columns:
             connection.execute("ALTER TABLE jobs ADD COLUMN updated_at TEXT")
         if "deleted_at" not in columns:
@@ -332,6 +340,7 @@ class JobsDB:
         num_speakers: int | None = None,
         min_speakers: int | None = None,
         max_speakers: int | None = None,
+        initial_prompt: str | None = None,
     ) -> Job:
         """Создаёт задачу в статусе ``queued`` и возвращает её."""
         created_at = utc_now_iso()
@@ -339,8 +348,8 @@ class JobsDB:
             connection.execute(
                 "INSERT INTO jobs "
                 "(id, source_path, status, created_at, updated_at, language, "
-                "num_speakers, min_speakers, max_speakers) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "num_speakers, min_speakers, max_speakers, initial_prompt) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     job_id,
                     str(source_path),
@@ -351,6 +360,7 @@ class JobsDB:
                     num_speakers,
                     min_speakers,
                     max_speakers,
+                    initial_prompt,
                 ),
             )
         job = self.get(job_id)
@@ -452,6 +462,7 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         stage_started_at=row["stage_started_at"],
         stage_times=_parse_stage_times(row["stage_times"]),
         planned_stages=_parse_str_list(row["planned_stages"]),
+        initial_prompt=row["initial_prompt"],
         updated_at=row["updated_at"],
         deleted_at=row["deleted_at"],
     )

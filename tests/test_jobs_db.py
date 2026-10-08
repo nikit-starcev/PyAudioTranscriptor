@@ -140,6 +140,51 @@ def test_migration_adds_speaker_range_columns(tmp_path: Path) -> None:
     assert {"min_speakers", "max_speakers"} <= columns
 
 
+def test_create_job_with_initial_prompt(tmp_path: Path) -> None:
+    db = _make_db(tmp_path)
+
+    job = db.create("job-1", tmp_path / "a.mp3", initial_prompt="ОИБ, АРМ")
+
+    assert job.initial_prompt == "ОИБ, АРМ"
+    fetched = db.get("job-1")
+    assert fetched is not None
+    assert fetched.as_dict()["initial_prompt"] == "ОИБ, АРМ"
+
+    cleared = db.update("job-1", initial_prompt=None)
+    assert cleared is not None
+    assert cleared.initial_prompt is None
+
+
+def test_migration_adds_initial_prompt_to_existing_table(tmp_path: Path) -> None:
+    """Старая база без колонки ``initial_prompt`` аккуратно мигрируется (#48)."""
+    path = tmp_path / "jobs.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE jobs ("
+            "id TEXT PRIMARY KEY, source_path TEXT NOT NULL, status TEXT NOT NULL, "
+            "created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, "
+            "language TEXT, duration REAL, error TEXT, result_path TEXT, "
+            "stage TEXT, fraction REAL)"
+        )
+        connection.execute(
+            "INSERT INTO jobs (id, source_path, status, created_at) "
+            "VALUES ('old', '/tmp/old.mp3', 'done', '2020-01-01T00:00:00+00:00')"
+        )
+
+    db = JobsDB(path)
+    db.initialize()
+
+    migrated = db.get("old")
+    assert migrated is not None
+    assert migrated.initial_prompt is None  # колонка есть, у старой записи NULL
+
+    assert db.create("new", tmp_path / "new.mp3", initial_prompt="hi").initial_prompt == "hi"
+
+    with sqlite3.connect(path) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
+    assert "initial_prompt" in columns
+
+
 def test_get_missing_job_returns_none(tmp_path: Path) -> None:
     db = _make_db(tmp_path)
 
