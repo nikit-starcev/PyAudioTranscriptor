@@ -320,11 +320,11 @@ function ChatPanel({ jobId }: Props) {
                   'max-w-[85%] rounded-md px-3 py-2 text-sm',
                   message.role === 'user'
                     ? 'ml-auto bg-primary-soft text-primary-soft-fg'
-                    : 'mr-auto bg-surface-3 text-text',
+                    : 'mr-auto border border-border bg-surface-3 text-text',
                 )}
               >
-                <p className="mb-0.5 text-[10px] uppercase text-muted">
-                  {message.role === 'user' ? 'Вы' : 'Ассистент'}
+                <p className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">
+                  {message.role === 'user' ? 'Вы' : 'LLM'}
                   {message.pending ? ' · печатает…' : ''}
                 </p>
                 {message.failed ? (

@@ -80,6 +80,27 @@ v4-утилиты от семантических токенов (см. `webui/s
 </Select>
 ```
 
+### FileInput
+
+Стилизованный выбор файла: кнопка + имя выбранного файла и кнопка сброса.
+Нативный `<input type="file">` скрыт, но доступен (фокус/`aria-label`).
+
+```tsx
+<Field label="Файл" htmlFor="import-file">
+  <FileInput
+    id="import-file"
+    accept=".txt,.csv"
+    value={file}
+    onChange={setFile}
+    buttonLabel="Выбрать файл"
+  />
+</Field>
+```
+
+Пропсы: `value?: File | null`, `onChange(file: File | null)`, `accept?`,
+`disabled?`, `buttonLabel?`, `placeholder?`, `clearLabel?`, `className?`,
+`id?`, `aria-label?`.
+
 ### Field
 
 Обёртка «подпись + контрол + подсказка/ошибка». Использовать для доступных форм.

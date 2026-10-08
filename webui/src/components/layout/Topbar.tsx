@@ -34,7 +34,7 @@ function Topbar({ version, asrDevice, onOpenNav }: Props) {
 
         <a
           href="#/jobs"
-          className="flex min-w-0 items-center gap-2 rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
         >
           <span
             aria-hidden
@@ -45,7 +45,7 @@ function Topbar({ version, asrDevice, onOpenNav }: Props) {
           <span className="truncate text-sm font-semibold">AudioTranscriber</span>
         </a>
 
-        <div className="ml-auto flex min-w-0 items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           {asrDevice && (
             <div className="hidden min-w-0 lg:block">
               <Tooltip label={asrTitle} className="min-w-0">

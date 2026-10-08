@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { ArrowRight } from 'lucide-react'
 
 import {
   collectSpeakers,
@@ -324,9 +325,10 @@ function SpeakersPanel({
                         size="sm"
                         disabled={!mergeTarget[speaker.id] || busy}
                         aria-label="Объединить"
+                        icon={<ArrowRight aria-hidden className="h-4 w-4" />}
                         onClick={() => merge(speaker.id)}
                       >
-                        →
+                        Объединить
                       </Button>
                     </div>
                   )}

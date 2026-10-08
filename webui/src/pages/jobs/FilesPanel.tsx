@@ -70,7 +70,7 @@ function FilesPanel() {
               <li key={file.path} className="rounded-md border border-border p-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="truncate text-sm" title={file.name}>
+                    <p className="line-clamp-2 break-words text-sm" title={file.name}>
                       {file.name}
                     </p>
                     <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">

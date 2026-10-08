@@ -716,8 +716,8 @@ function TranscriptTable({
 
       <Card className="overflow-hidden">
         <div className="max-h-[28rem] overflow-auto">
-          <table className="w-full border-collapse text-sm">
-            <thead className="sticky top-0 z-10 bg-surface-3 text-left text-xs uppercase text-muted">
+          <table className="block w-full border-collapse text-sm md:table">
+            <thead className="sticky top-0 z-10 hidden bg-surface-3 text-left text-xs uppercase text-muted md:table-header-group">
               <tr>
                 {onAssignSpeaker && (
                   <th className="w-8 px-2 py-2 font-medium" aria-label="Выделить реплику" />
@@ -729,7 +729,7 @@ function TranscriptTable({
                 <th className="px-3 py-2 font-medium">Текст</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="block md:table-row-group">
               {entries.map((entry, index) => {
                 const key = entryKey(entry, index)
                 const playing = playingKey === key
@@ -742,7 +742,8 @@ function TranscriptTable({
                   <tr
                     key={key}
                     className={cn(
-                      'group border-t border-border',
+                      'group mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border p-3',
+                      'md:mb-0 md:table-row md:rounded-none md:border-x-0 md:border-b-0 md:border-t md:p-0',
                       playing && 'bg-info-soft',
                       !playing && selected && 'bg-warn-soft',
                     )}
@@ -779,10 +780,10 @@ function TranscriptTable({
                     <td className="whitespace-nowrap px-3 py-1.5 font-mono text-xs tabular-nums text-muted">
                       {formatTime(entry.start)}
                     </td>
-                    <td className="px-3 py-1.5">
+                    <td className="order-2 min-w-0 basis-full px-3 py-1.5 md:order-none md:basis-auto">
                       <div className="flex items-start gap-1.5">
                         <div
-                          className="max-w-36 whitespace-normal break-words leading-snug sm:max-w-64"
+                          className="min-w-0 whitespace-normal break-words leading-snug sm:max-w-64"
                           title={pieces.map((piece) => piece.name).join(' + ')}
                         >
                           {pieces.map((piece, pieceIndex) => (
@@ -825,7 +826,7 @@ function TranscriptTable({
                         )}
                       </div>
                     </td>
-                    <td className="whitespace-nowrap px-3 py-1.5">
+                    <td className="order-1 whitespace-nowrap px-3 py-1.5 md:order-none">
                       <span className="inline-flex items-center gap-1.5">
                         {entry.low_confidence && (
                           <Mark markKey="low_confidence" label="низкая уверенность" />
@@ -836,7 +837,10 @@ function TranscriptTable({
                         {entry.overlap && <Mark markKey="overlap" label="наложение речи" />}
                       </span>
                     </td>
-                    <td className="px-3 py-1.5" onContextMenu={(event) => openContextMenu(event)}>
+                    <td
+                      className="order-3 min-w-0 basis-full px-3 py-1.5 md:order-none md:basis-auto"
+                      onContextMenu={(event) => openContextMenu(event)}
+                    >
                       {editing ? (
                         <div className="space-y-1">
                           <Textarea

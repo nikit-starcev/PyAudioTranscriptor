@@ -23,8 +23,8 @@ export function Field({
   className,
 }: FieldProps) {
   return (
-    <div className={cn('flex flex-col gap-1.5', className)}>
-      <label htmlFor={htmlFor} className="text-xs font-medium text-text">
+    <div className={cn('flex min-w-0 flex-col gap-1.5', className)}>
+      <label htmlFor={htmlFor} className="break-words text-xs font-medium text-text">
         {label}
         {required && (
           <span aria-hidden className="ml-0.5 text-danger">

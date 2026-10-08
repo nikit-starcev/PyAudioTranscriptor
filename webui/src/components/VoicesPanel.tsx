@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { ChevronDown, ChevronRight } from 'lucide-react'
+import { ChevronDown, ChevronRight, Pencil, Trash2 } from 'lucide-react'
 
 import {
   api,
@@ -18,9 +18,11 @@ import {
   CardHeader,
   EmptyState,
   Field,
+  FileInput,
   IconButton,
   Input,
   Spinner,
+  Tooltip,
 } from './ui'
 
 function sampleAudioUrl(filename: string): string {
@@ -189,12 +191,11 @@ function VoicesPanel() {
               />
             </Field>
             <Field label="Файл" htmlFor="voice-file">
-              <input
+              <FileInput
                 id="voice-file"
-                type="file"
                 accept="audio/*,.wav"
-                onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-                className="block w-full text-xs text-muted file:mr-3 file:rounded-md file:border-0 file:bg-surface-2 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                value={file}
+                onChange={setFile}
               />
             </Field>
             <Button variant="primary" loading={busy} onClick={() => void upload()}>
@@ -248,9 +249,10 @@ function VoicesPanel() {
                       </span>
                       <Badge tone="neutral">{group.count} обр.</Badge>
                       <Button
-                        variant="ghost"
+                        variant="danger"
                         size="sm"
                         className="ml-auto"
+                        icon={<Trash2 aria-hidden className="h-3.5 w-3.5" />}
                         disabled={busy}
                         onClick={() => void removePerson(group.name, group.count)}
                       >
@@ -306,6 +308,7 @@ function VoicesPanel() {
                                 <Button
                                   variant="secondary"
                                   size="sm"
+                                  icon={<Pencil aria-hidden className="h-3.5 w-3.5" />}
                                   onClick={() =>
                                     setEdit({
                                       filename: sample.filename,
@@ -316,14 +319,17 @@ function VoicesPanel() {
                                 >
                                   Переименовать
                                 </Button>
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  disabled={busy}
-                                  onClick={() => void removeSample(sample.filename)}
-                                >
-                                  Удалить
-                                </Button>
+                                <Tooltip label="Удалить образец">
+                                  <IconButton
+                                    aria-label={`Удалить образец ${sample.filename}`}
+                                    size="sm"
+                                    className="text-danger"
+                                    disabled={busy}
+                                    onClick={() => void removeSample(sample.filename)}
+                                  >
+                                    <Trash2 aria-hidden className="h-4 w-4" />
+                                  </IconButton>
+                                </Tooltip>
                               </div>
                             </div>
                             <audio

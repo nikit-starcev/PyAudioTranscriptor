@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { ChevronLeft, ChevronRight, Search } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Pencil, Search, Trash2 } from 'lucide-react'
 
 import {
   api,
@@ -20,10 +20,12 @@ import {
   Checkbox,
   EmptyState,
   Field,
+  FileInput,
   IconButton,
   Input,
   Select,
   Spinner,
+  Tooltip,
 } from './ui'
 
 type Props = {
@@ -260,15 +262,17 @@ function GlossaryPanel({ onChanged }: Props) {
                       {source.path}
                     </span>
                   )}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="ml-auto"
-                    disabled={busy}
-                    onClick={() => void deleteSource(source)}
-                  >
-                    Удалить
-                  </Button>
+                  <Tooltip label="Удалить источник" align="right" className="ml-auto">
+                    <IconButton
+                      aria-label={`Удалить источник ${source.name}`}
+                      size="sm"
+                      className="text-danger"
+                      disabled={busy}
+                      onClick={() => void deleteSource(source)}
+                    >
+                      <Trash2 aria-hidden className="h-4 w-4" />
+                    </IconButton>
+                  </Tooltip>
                 </li>
               ))}
             </ul>
@@ -281,12 +285,11 @@ function GlossaryPanel({ onChanged }: Props) {
         <CardContent className="space-y-3">
           <div className="flex flex-wrap items-end gap-3">
             <Field label="Файл" htmlFor="glossary-import-file" className="min-w-48 flex-1">
-              <input
+              <FileInput
                 id="glossary-import-file"
-                type="file"
                 accept=".txt,.csv,text/plain,text/csv"
-                onChange={(event) => setImportFile(event.target.files?.[0] ?? null)}
-                className="block w-full text-xs text-muted file:mr-3 file:rounded-md file:border-0 file:bg-surface-2 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                value={importFile}
+                onChange={setImportFile}
               />
             </Field>
             <Field label="Имя источника" htmlFor="glossary-import-source">
@@ -503,10 +506,11 @@ function GlossaryPanel({ onChanged }: Props) {
                             </Button>
                           </span>
                         ) : (
-                          <span className="flex justify-end gap-1">
+                          <span className="flex items-center justify-end gap-1">
                             <Button
                               variant="secondary"
                               size="sm"
+                              icon={<Pencil aria-hidden className="h-3.5 w-3.5" />}
                               onClick={() =>
                                 setEdit({
                                   id: entry.id,
@@ -518,14 +522,17 @@ function GlossaryPanel({ onChanged }: Props) {
                             >
                               Правка
                             </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              disabled={busy}
-                              onClick={() => void deleteEntry(entry)}
-                            >
-                              Удалить
-                            </Button>
+                            <Tooltip label="Удалить запись" align="right">
+                              <IconButton
+                                aria-label={`Удалить запись ${entry.canonical}`}
+                                size="sm"
+                                className="text-danger"
+                                disabled={busy}
+                                onClick={() => void deleteEntry(entry)}
+                              >
+                                <Trash2 aria-hidden className="h-4 w-4" />
+                              </IconButton>
+                            </Tooltip>
                           </span>
                         )}
                       </td>

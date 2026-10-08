@@ -43,7 +43,9 @@ export function CardHeader({ title, description, actions, className, id }: CardH
         </h2>
         {description != null && <p className="mt-0.5 text-xs text-muted">{description}</p>}
       </div>
-      {actions != null && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
+      {actions != null && (
+        <div className="flex flex-wrap items-center justify-end gap-2">{actions}</div>
+      )}
     </div>
   )
 }

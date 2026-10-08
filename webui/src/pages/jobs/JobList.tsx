@@ -69,24 +69,29 @@ function JobList() {
                     job.deleted && 'opacity-70',
                   )}
                 >
-                  <a
-                    href={`#/jobs/${encodeURIComponent(job.id)}`}
-                    className="min-w-0 flex-1 rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
-                  >
-                    <p
-                      className={cn('truncate text-sm', job.deleted && 'line-through')}
-                      title={job.name}
+                  <div className="min-w-0 basis-full sm:flex-1">
+                    <a
+                      href={`#/jobs/${encodeURIComponent(job.id)}`}
+                      className="block rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
                     >
-                      {job.name}
-                    </p>
-                    <p className="text-xs tabular-nums text-muted">
-                      {job.stage ? `${job.stage} · ` : ''}
-                      {job.fraction != null ? `${Math.round(job.fraction * 100)}%` : '—'}
-                      {job.duration != null ? ` · запись ${formatClock(job.duration)}` : ''}
-                      {' · говорящих: '}
-                      {formatSpeakerSetting(job)}
-                    </p>
-                  </a>
+                      <p
+                        className={cn(
+                          'line-clamp-2 break-words text-sm',
+                          job.deleted && 'line-through',
+                        )}
+                        title={job.name}
+                      >
+                        {job.name}
+                      </p>
+                      <p className="text-xs tabular-nums text-muted">
+                        {job.stage ? `${job.stage} · ` : ''}
+                        {job.fraction != null ? `${Math.round(job.fraction * 100)}%` : '—'}
+                        {job.duration != null ? ` · запись ${formatClock(job.duration)}` : ''}
+                        {' · говорящих: '}
+                        {formatSpeakerSetting(job)}
+                      </p>
+                    </a>
+                  </div>
 
                   {job.deleted ? (
                     <Badge tone="danger">Удалено</Badge>
@@ -97,7 +102,7 @@ function JobList() {
                   )}
 
                   {job.deleted ? (
-                    <div className="flex shrink-0 items-center gap-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <Button
                         variant="secondary"
                         size="sm"
@@ -115,7 +120,7 @@ function JobList() {
                       </Button>
                     </div>
                   ) : (
-                    <div className="flex shrink-0 items-center gap-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       {live && (
                         <Button
                           variant="secondary"

@@ -268,9 +268,9 @@ function ModelsPanel({ requiredIds = [], onChanged }: Props) {
             const isRequired = requiredIds.includes(model.id)
             return (
               <li key={model.id} className="py-3">
-                <div className="flex items-start gap-3">
+                <div className="flex flex-wrap items-start gap-3">
                   <Checkbox
-                    className="mt-1"
+                    className="mt-0.5"
                     checked={selected.has(model.id)}
                     onChange={() => toggle(model.id)}
                     aria-label={`Выбрать ${model.title}`}
@@ -309,7 +309,7 @@ function ModelsPanel({ requiredIds = [], onChanged }: Props) {
                       <p className="mt-0.5 text-xs text-danger">{model.download.error}</p>
                     )}
                   </div>
-                  <div className="flex shrink-0 flex-col items-end gap-1">
+                  <div className="flex w-full flex-wrap items-center justify-end gap-1.5 sm:w-auto sm:shrink-0">
                     {downloading ? (
                       <Button
                         variant="secondary"
@@ -333,6 +333,7 @@ function ModelsPanel({ requiredIds = [], onChanged }: Props) {
                       <Button
                         variant="ghost"
                         size="sm"
+                        className="text-danger"
                         disabled={busy !== null}
                         onClick={() => void remove(model)}
                       >
