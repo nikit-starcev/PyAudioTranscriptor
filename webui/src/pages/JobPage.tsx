@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { ArrowLeft, Play, RefreshCw, Square, Trash2 } from 'lucide-react'
 
-import { formatClock } from '../api'
+import { formatClock, isTerminal } from '../api'
 import { formatSpeakerSetting, isLiveJob, STATUS_LABELS, statusTone } from '../app/jobUtils'
 import { PlaybackProvider } from '../app/playback'
 import { navigateTo } from '../app/routes'
@@ -34,7 +34,7 @@ const TABS = [
 function JobPage({ jobId }: { jobId: string }) {
   const app = useApp()
   const { openJob } = app
-  const [tab, setTab] = useState('transcript')
+  const [chosen, setChosen] = useState<{ jobId: string; tab: string } | null>(null)
 
   useEffect(() => {
     void openJob(jobId)
@@ -48,6 +48,12 @@ function JobPage({ jobId }: { jobId: string }) {
     loaded &&
     !isLiveJob({ status, active: app.progress?.active ?? job?.active ?? true })
   const canDelete = !live
+  const autoTab = isTerminal(status) ? 'transcript' : 'stages'
+  const tab = chosen?.jobId === jobId ? chosen.tab : loaded ? autoTab : 'transcript'
+
+  const changeTab = (next: string) => {
+    setChosen({ jobId, tab: next })
+  }
 
   return (
     <PlaybackProvider jobId={jobId}>
@@ -142,7 +148,7 @@ function JobPage({ jobId }: { jobId: string }) {
 
         {app.result && <JobPlayer />}
 
-        <Tabs aria-label="Секции задачи" value={tab} onChange={setTab} items={TABS} />
+        <Tabs aria-label="Секции задачи" value={tab} onChange={changeTab} items={TABS} />
 
         <TabPanel value="transcript" active={tab} className="pt-4">
           <TranscriptTab jobId={jobId} />
