@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
-import { ChevronDown, ChevronRight, Pencil, Trash2 } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, GitMerge, Pencil, Search, Trash2 } from 'lucide-react'
 
 import {
   api,
   errorMessage,
   formatBytes,
   formatDuration,
+  type VoiceDedupReport,
+  type VoiceDuplicateGroup,
+  type VoiceDuplicateKind,
   type VoiceGroup,
   type VoiceInfo,
 } from '../api'
@@ -29,6 +32,25 @@ function sampleAudioUrl(filename: string): string {
   return `/api/voices/samples/${encodeURIComponent(filename)}/audio`
 }
 
+const DUP_KIND_LABEL: Record<VoiceDuplicateKind, string> = {
+  exact: 'Точные',
+  embedding: 'По голосу',
+  audio: 'Похожие',
+}
+
+const DUP_KIND_TONE: Record<VoiceDuplicateKind, 'danger' | 'info' | 'warn'> = {
+  exact: 'danger',
+  embedding: 'info',
+  audio: 'warn',
+}
+
+function dedupKey(group: VoiceDuplicateGroup): string {
+  return group.members
+    .map((member) => member.filename)
+    .sort()
+    .join('|')
+}
+
 function VoicesPanel() {
   const [groups, setGroups] = useState<VoiceGroup[]>([])
   const [loading, setLoading] = useState(false)
@@ -40,6 +62,9 @@ function VoicesPanel() {
   const [file, setFile] = useState<File | null>(null)
   const [edit, setEdit] = useState<{ filename: string; name: string; value: string } | null>(null)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  const [dedup, setDedup] = useState<VoiceDedupReport | null>(null)
+  const [dedupBusy, setDedupBusy] = useState(false)
+  const [dedupKeep, setDedupKeep] = useState<Record<string, string>>({})
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -76,10 +101,21 @@ function VoicesPanel() {
       body.append('name', name)
       const created = await api<VoiceInfo>('/api/voices', { method: 'POST', body })
       const warnings = created.quality?.warnings ?? []
+      const similar = created.similar ?? []
+      const notes: string[] = []
+      if (similar.length > 0) {
+        const names = similar
+          .map((item) => `«${item.name}» (~${Math.round(item.score * 100)}%)`)
+          .join(', ')
+        notes.push(`похожий образец уже есть: ${names}`)
+      }
       if (warnings.length > 0) {
         const speech = created.quality?.speech_seconds
-        const speechNote = typeof speech === 'number' ? ` Речь: ${speech.toFixed(1)} с.` : ''
-        setWarning(`Загружено: ${created.filename}.${speechNote} ${warnings.join('; ')}.`)
+        const speechNote = typeof speech === 'number' ? `речь ${speech.toFixed(1)} с` : ''
+        notes.push([speechNote, warnings.join('; ')].filter(Boolean).join('; '))
+      }
+      if (notes.length > 0) {
+        setWarning(`Загружено: ${created.filename}. ${notes.join('. ')}.`)
         setStatus(null)
       } else {
         setStatus(`Загружено: ${created.filename}`)
@@ -159,6 +195,74 @@ function VoicesPanel() {
     }
   }
 
+  const runDedup = useCallback(async () => {
+    setDedupBusy(true)
+    setError(null)
+    try {
+      const report = await api<VoiceDedupReport>('/api/voices/dedup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ embeddings: true }),
+      })
+      setDedup(report)
+      setDedupKeep({})
+    } catch (cause) {
+      setError(errorMessage(cause))
+    } finally {
+      setDedupBusy(false)
+    }
+  }, [])
+
+  const resolveGroup = async (group: VoiceDuplicateGroup, keep: string) => {
+    const victims = group.members
+      .map((member) => member.filename)
+      .filter((filename) => filename !== keep)
+    if (victims.length === 0) return
+    if (!window.confirm(`Удалить дубликатов: ${victims.length}, оставив «${keep}»?`)) return
+    setBusy(true)
+    setError(null)
+    try {
+      for (const filename of victims) {
+        await api<{ deleted: string }>(`/api/voices/samples/${encodeURIComponent(filename)}`, {
+          method: 'DELETE',
+        })
+      }
+      setStatus(`Удалено дубликатов: ${victims.length}`)
+      await refresh()
+      await runDedup()
+    } catch (cause) {
+      setError(errorMessage(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const mergeGroup = async (group: VoiceDuplicateGroup, keep: string) => {
+    const keeper = group.members.find((member) => member.filename === keep) ?? group.members[0]
+    const target = keeper.name
+    const sources = group.names.filter((name) => name !== target)
+    if (sources.length === 0) return
+    if (!window.confirm(`Перенести образцы «${sources.join(', ')}» в «${target}»?`)) return
+    setBusy(true)
+    setError(null)
+    try {
+      for (const source of sources) {
+        await api<{ count: number }>('/api/voices/dedup/merge', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source, target }),
+        })
+      }
+      setStatus(`Объединено под именем «${target}»`)
+      await refresh()
+      await runDedup()
+    } catch (cause) {
+      setError(errorMessage(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div className="space-y-5">
       {error && (
@@ -206,6 +310,115 @@ function VoicesPanel() {
             WAV сохраняется как есть, другие форматы конвертируются в 16 кГц моно. Повторная
             загрузка к тому же имени добавит образец «(2)», «(3)» и т.д.
           </p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Дубликаты"
+          description={
+            dedup
+              ? `Проверено образцов: ${dedup.scanned}`
+              : 'Точные и похожие записи: проверьте перед удалением'
+          }
+          actions={
+            <Button
+              variant="secondary"
+              loading={dedupBusy}
+              icon={<Search aria-hidden className="h-4 w-4" />}
+              onClick={() => void runDedup()}
+            >
+              Найти дубликаты
+            </Button>
+          }
+        />
+        <CardContent className="space-y-3">
+          {dedup?.error && (
+            <Alert tone="warn" live onDismiss={() => setDedup(null)}>
+              {dedup.error}
+            </Alert>
+          )}
+          {dedup && !dedup.error && dedup.groups.length === 0 && (
+            <p className="text-sm text-muted">Дубликаты не найдены.</p>
+          )}
+          {dedup &&
+            dedup.groups.map((group) => {
+              const key = dedupKey(group)
+              const keep = dedupKeep[key] ?? group.keep
+              return (
+                <div key={key} className="rounded-md border border-border p-3">
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <Badge tone={DUP_KIND_TONE[group.kind]}>{DUP_KIND_LABEL[group.kind]}</Badge>
+                    <span className="text-xs text-muted">
+                      совпадение {Math.round(group.score * 100)}%
+                    </span>
+                    <span className="min-w-0 truncate text-sm text-text">
+                      {group.names.join(' / ')}
+                    </span>
+                    <span className="text-xs text-muted">· {group.members.length} обр.</span>
+                  </div>
+                  <ul className="divide-y divide-border">
+                    {group.members.map((member) => {
+                      const isKeep = member.filename === keep
+                      return (
+                        <li
+                          key={member.filename}
+                          className="flex flex-wrap items-center gap-2 py-2"
+                        >
+                          <button
+                            type="button"
+                            aria-label={`Оставить ${member.filename}`}
+                            aria-pressed={isKeep}
+                            title="Оставить этот образец"
+                            className={`inline-flex h-6 w-6 items-center justify-center rounded-full border transition-colors ${
+                              isKeep
+                                ? 'border-primary bg-primary text-primary-fg'
+                                : 'border-border-strong text-transparent hover:border-primary'
+                            }`}
+                            onClick={() => setDedupKeep((prev) => ({ ...prev, [key]: member.filename }))}
+                          >
+                            <Check aria-hidden className="h-3.5 w-3.5" />
+                          </button>
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-xs text-text" title={member.filename}>
+                              {member.name} — {member.filename}
+                            </p>
+                          </div>
+                          <span className="tabular-nums text-xs text-muted" title="Длительность">
+                            {formatDuration(member.duration)}
+                          </span>
+                          <span className="tabular-nums text-xs text-muted" title="Размер файла">
+                            {formatBytes(member.size)}
+                          </span>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      icon={<Trash2 aria-hidden className="h-3.5 w-3.5" />}
+                      disabled={busy || dedupBusy}
+                      onClick={() => void resolveGroup(group, keep)}
+                    >
+                      Удалить дубликаты
+                    </Button>
+                    {group.names.length > 1 && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        icon={<GitMerge aria-hidden className="h-3.5 w-3.5" />}
+                        disabled={busy || dedupBusy}
+                        onClick={() => void mergeGroup(group, keep)}
+                      >
+                        Объединить имена
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
         </CardContent>
       </Card>
 

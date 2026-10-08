@@ -74,6 +74,15 @@ from audio_transcriber.correction.editorial import (
 )
 from audio_transcriber.correction.morph_corrector import MorphTextCorrector
 from audio_transcriber.diarization import nemo_speech_assets
+from audio_transcriber.diarization.dedup import (
+    find_duplicate_groups,
+    find_similar_samples,
+)
+from audio_transcriber.diarization.embeddings import (
+    SpeakerEmbedder,
+    embedder_available,
+    resolve_embedding_model,
+)
 from audio_transcriber.diarization.reference import (
     ReferencePrepareOptions,
     ReferenceQuality,
@@ -89,6 +98,7 @@ from audio_transcriber.diarization.voices import (
     collect_voice_library,
     delete_voice_sample,
     delete_voice_samples,
+    merge_voice_people,
     save_reference_sample,
     save_speaker_sample,
     unique_sample_path,
@@ -230,6 +240,7 @@ from audio_transcriber.web.voices import (
     find_voice_sample,
     find_voice_sample_file,
     list_voice_groups,
+    list_voice_samples,
 )
 
 #: Функция формирования протокола (совместима с ``generate_protocol``).
@@ -396,6 +407,30 @@ class ToLibraryRequest(BaseModel):
     name: str
     start: float | None = None
     end: float | None = None
+
+
+class VoiceDedupRequest(BaseModel):
+    """Тело ``POST /api/voices/dedup`` — параметры аудита дубликатов (#39).
+
+    ``near_threshold``/``embedding_threshold`` — пороги косинусной близости
+    (аудио-отпечаток и speaker-эмбеддинг). ``embeddings`` включает слой
+    эмбеддингов, если движок доступен; иначе аудит идёт только по аудио.
+    """
+
+    near_threshold: float = Field(default=0.9, ge=0.0, le=1.0)
+    embedding_threshold: float = Field(default=0.9, ge=0.0, le=1.0)
+    embeddings: bool = True
+
+
+class VoiceMergeRequest(BaseModel):
+    """Тело ``POST /api/voices/dedup/merge`` — объединить людей под одним именем.
+
+    Все образцы ``source`` переносятся в группу ``target`` (один человек под
+    разными именами → одно имя).
+    """
+
+    source: str
+    target: str
 
 
 class ReassignRequest(BaseModel):
@@ -2991,7 +3026,10 @@ def register_api(
                 raise HTTPException(
                     status_code=500, detail=f"Не удалось сохранить образец: {exc}"
                 ) from exc
-            return VoiceSample(name=base_sample_name(target.stem), path=target).as_dict(quality)
+            payload_out = VoiceSample(
+                name=base_sample_name(target.stem), path=target
+            ).as_dict(quality)
+            return _with_similar(payload_out, target, directory)
 
         relative = _result_samples(result).get(speaker_id)
         sample_path = _sample_path(paths, relative) if relative else None
@@ -3005,7 +3043,8 @@ def register_api(
             raise HTTPException(
                 status_code=500, detail=f"Не удалось сохранить образец: {exc}"
             ) from exc
-        return VoiceSample(name=base_sample_name(target.stem), path=target).as_dict(quality)
+        payload_out = VoiceSample(name=base_sample_name(target.stem), path=target).as_dict(quality)
+        return _with_similar(payload_out, target, directory)
 
     @router.post("/jobs/{job_id}/speakers/{speaker_id}/reassign")
     def reassign_speaker(
@@ -3233,7 +3272,8 @@ def register_api(
         except HTTPException:
             target.unlink(missing_ok=True)
             raise
-        return VoiceSample(name=base_sample_name(target.stem), path=target).as_dict(quality)
+        payload = VoiceSample(name=base_sample_name(target.stem), path=target).as_dict(quality)
+        return _with_similar(payload, target, directory)
 
     @router.get("/voices/samples/{filename}/audio")
     def voice_sample_audio(filename: str) -> Response:
@@ -3302,6 +3342,62 @@ def register_api(
         if not delete_voice_sample(sample.path, resolve_voices()):
             raise HTTPException(status_code=404, detail="Образец не найден")
         return {"deleted": sample.filename}
+
+    @router.post("/voices/dedup")
+    def voices_dedup(payload: VoiceDedupRequest | None = None) -> dict[str, object]:
+        """Аудит библиотеки: группы дубликатов (точные и почти одинаковые).
+
+        Ничего не удаляет — возвращает группы, тип совпадения, оценку и
+        подсказку «кого оставить» (#39). Слой эмбеддингов подключается, только
+        если запрошен и движок CAM++ доступен (иначе аудит идёт по аудио).
+        """
+        request = payload or VoiceDedupRequest()
+        directory = resolve_voices()
+        embedder = _voice_embedder() if request.embeddings else None
+        error: str | None = None
+        try:
+            groups = find_duplicate_groups(
+                directory,
+                near_threshold=request.near_threshold,
+                embedding_threshold=request.embedding_threshold,
+                embedder=embedder,
+            )
+        except Exception as exc:  # noqa: BLE001 — аудит не должен ронять сервер
+            logger.warning("Аудит дубликатов голосов недоступен: %s", exc)
+            groups = []
+            error = f"Поиск дубликатов недоступен: {exc}"
+        return {
+            "groups": [group.as_dict() for group in groups],
+            "scanned": len(list_voice_samples(directory)),
+            "embeddings": embedder is not None,
+            "near_threshold": request.near_threshold,
+            "embedding_threshold": request.embedding_threshold,
+            "error": error,
+        }
+
+    @router.post("/voices/dedup/merge")
+    def voices_dedup_merge(payload: VoiceMergeRequest) -> dict[str, object]:
+        """Объединяет образцы ``source`` в группу имени ``target`` (#39).
+
+        Один человек под разными именами сводится к одному имени: файлы
+        переносятся в свободные ``target.wav``/``target (N).wav``. Существующие
+        образцы цели не перезаписываются.
+        """
+        source = base_sample_name(payload.source.strip())
+        target = base_sample_name(payload.target.strip())
+        if not source or not target:
+            raise HTTPException(status_code=400, detail="Укажите оба имени")
+        if source == target:
+            raise HTTPException(status_code=400, detail="Имена совпадают")
+        moved = merge_voice_people(resolve_voices(), source, target)
+        if not moved:
+            raise HTTPException(status_code=404, detail="Образцы исходного имени не найдены")
+        return {
+            "source": source,
+            "target": target,
+            "count": len(moved),
+            "moved": [{"from": old.name, "to": new.name} for old, new in moved],
+        }
 
 
 def _format_size(num_bytes: int) -> str:
@@ -3480,6 +3576,41 @@ def _local_model_path() -> Path | None:
     """Локальный каталог модели эмбеддингов из настроек (``PYANNOTE_LOCAL_MODEL``)."""
     raw = env_defaults().get("PYANNOTE_LOCAL_MODEL", "").strip()
     return Path(raw) if raw else None
+
+
+def _voice_embedder() -> SpeakerEmbedder | None:
+    """Движок CAM++ для дедупа голосов или ``None``, если он недоступен.
+
+    Модель **не** скачивается: аудит деградирует к сравнению по аудио, а не
+    тянет гигабайты из сети по нажатию кнопки.
+    """
+    try:
+        if not embedder_available():
+            return None
+        model = resolve_embedding_model(download=False)
+    except Exception as exc:  # noqa: BLE001 — эмбеддер опционален
+        logger.warning("Дедуп голосов: эмбеддер недоступен: %s", exc)
+        return None
+    if model is None:
+        return None
+    return SpeakerEmbedder(model)
+
+
+def _with_similar(
+    payload: dict[str, object], target: Path, directory: Path
+) -> dict[str, object]:
+    """Добавляет к ответу добавления образца список похожих (предупреждение, #39).
+
+    Сравнение идёт по хешу и аудио-отпечатку (без загрузки модели эмбеддингов,
+    чтобы обычная загрузка оставалась быстрой). Ошибки не роняют ответ.
+    """
+    try:
+        similar = find_similar_samples(target, directory)
+    except Exception as exc:  # noqa: BLE001 — предупреждение не критично
+        logger.warning("Дедуп голосов: не удалось найти похожие для %s: %s", target, exc)
+        similar = []
+    payload["similar"] = [item.as_dict() for item in similar]
+    return payload
 
 
 def _apply_names_error(
