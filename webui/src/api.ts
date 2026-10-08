@@ -327,6 +327,7 @@ export type WebSettings = {
   mark_overlap: boolean
   /** Сводить кластеры с одинаковым уверенным именем в одного говорящего. */
   merge_same_name_speakers: boolean
+  sentence_merge_max_gap: number
   normalize_text: boolean
   clean_artifacts: boolean
   /** Автоисправление опечаток (стадия correction, pymorphy3). */

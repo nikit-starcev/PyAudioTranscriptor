@@ -531,7 +531,9 @@ def run_pipeline(
     # ``extra_speakers`` в объединителе: при выключенном режиме реплики остаются
     # с одним говорящим, как раньше.
     merger = merger or OverlapSegmentMerger(mark_overlap=config.mark_overlap)
-    sentence_merger = sentence_merger or SentenceMerger()
+    sentence_merger = sentence_merger or SentenceMerger(
+        max_gap=config.sentence_merge_max_gap
+    )
     # Автоматический аналог ручного «разделить» (#93): режет реплику, если
     # внутри неё диаризация видит смену говорящего (в т.ч. короткую вставку).
     speaker_splitter = speaker_splitter or SpeakerChangeSplitter(

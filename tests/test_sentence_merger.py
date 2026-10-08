@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from audio_transcriber.config.defaults import DEFAULT_SENTENCE_MERGE_MAX_GAP
 from audio_transcriber.domain.models import Speaker, TranscriptEntry
 from audio_transcriber.merging.sentence_merger import SentenceMerger
 
@@ -149,6 +150,11 @@ def test_empty_list_returns_empty() -> None:
 def test_negative_max_gap_rejected() -> None:
     with pytest.raises(ValueError):
         SentenceMerger(max_gap=-1.0)
+
+
+def test_default_max_gap_comes_from_config() -> None:
+    # #114: дефолт вынесен в конфиг; разрыв Series не должен разойтись.
+    assert DEFAULT_SENTENCE_MERGE_MAX_GAP == 5.0
 
 
 _SPEAKER_3 = Speaker(id="SPEAKER_02", display_name="Спикер 3")

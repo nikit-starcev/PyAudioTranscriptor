@@ -1156,3 +1156,61 @@ def test_run_pipeline_runs_enrollment_for_eend_engines(
     assert calls[0]["references"] == {"Иван": (reference,)}
     assert result.entries[0].speaker is not None
     assert result.entries[0].speaker.display_name == "Иван"
+
+
+# --- #114: порог склейки реплик из конфига доходит до SentenceMerger ---------
+
+
+class WideGapMerger:
+    """Две реплики одного говорящего с паузой 3 с между ними."""
+
+    def merge(self, transcription_segments, speaker_segments, known_speakers=None):
+        speaker = Speaker(id="SPEAKER_00", display_name="Иван")
+        entries = [
+            TranscriptEntry(start=0.0, end=1.0, text="привет", speaker=speaker),
+            TranscriptEntry(start=4.0, end=5.0, text="мир", speaker=speaker),
+        ]
+        return entries, [speaker]
+
+
+def test_run_pipeline_uses_configured_sentence_merge_max_gap(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+        diarization_enabled=False,
+        sentence_merge_max_gap=2.0,
+    )
+
+    result = run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=FakeRecognizer(),
+        merger=WideGapMerger(),
+    )
+
+    # Пауза 3 с > конфигурного порога 2 с — реплики не склеиваются.
+    assert [entry.text for entry in result.entries] == ["привет", "мир"]
+
+
+def test_run_pipeline_default_sentence_merge_max_gap_merges(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+        diarization_enabled=False,
+    )
+
+    result = run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=FakeRecognizer(),
+        merger=WideGapMerger(),
+    )
+
+    # Дефолтный порог 5 с > паузы 3 с — прежнее поведение сохраняется.
+    assert [entry.text for entry in result.entries] == ["привет мир"]

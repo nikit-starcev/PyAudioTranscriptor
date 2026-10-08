@@ -115,6 +115,7 @@ const HYBRID_LINKAGES = ['ward', 'complete', 'average'] as const
 
 /** Числовые поля раздела «Диаризация» — редактируются как текст ради дробей. */
 type NumericKey =
+  | 'sentence_merge_max_gap'
   | 'diarization_estimate_seconds'
   | 'diarization_estimate_threshold'
   | 'diarization_route_max_speakers'
@@ -124,6 +125,7 @@ type NumericKey =
   | 'diarization_hybrid_threshold'
 
 const NUMERIC_KEYS: NumericKey[] = [
+  'sentence_merge_max_gap',
   'diarization_estimate_seconds',
   'diarization_estimate_threshold',
   'diarization_route_max_speakers',
@@ -292,6 +294,14 @@ function SettingsPanel({ onSaved }: Props) {
     setStatus(null)
     try {
       const nums = numericDraft ?? numericDrafts(settings)
+      const sentenceMergeMaxGap = parseNumber(
+        nums.sentence_merge_max_gap,
+        settings.sentence_merge_max_gap,
+      )
+      if (!Number.isFinite(sentenceMergeMaxGap) || sentenceMergeMaxGap <= 0) {
+        setError('Макс. пауза для склейки реплик должна быть положительным числом')
+        return
+      }
       const payload = {
         glossary_enabled: settings.glossary_enabled,
         glossary_db: settings.glossary_db,
@@ -302,6 +312,7 @@ function SettingsPanel({ onSaved }: Props) {
         denoise: settings.denoise,
         mark_overlap: settings.mark_overlap,
         merge_same_name_speakers: settings.merge_same_name_speakers,
+        sentence_merge_max_gap: sentenceMergeMaxGap,
         normalize_text: settings.normalize_text,
         clean_artifacts: settings.clean_artifacts,
         enable_correction: settings.enable_correction,
@@ -494,6 +505,27 @@ function SettingsPanel({ onSaved }: Props) {
               }
             />
           ))}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader title="Склейка реплик" />
+        <CardContent className="space-y-3">
+          <Field
+            label="Макс. пауза для склейки реплик, с"
+            htmlFor="settings-sentence-merge-max-gap"
+            hint="Соседние реплики одного говорящего с паузой не больше этого значения склеиваются в одну. Значение должно быть больше нуля."
+          >
+            <Input
+              id="settings-sentence-merge-max-gap"
+              inputMode="decimal"
+              value={numbers?.sentence_merge_max_gap ?? ''}
+              onChange={(event) =>
+                updateNumber('sentence_merge_max_gap', event.target.value)
+              }
+              placeholder="5"
+            />
+          </Field>
         </CardContent>
       </Card>
 
