@@ -229,3 +229,44 @@ def delete_voice_samples(directory: Path | None, name: str) -> int:
         if delete_voice_sample(path, directory):
             deleted += 1
     return deleted
+
+
+def merge_voice_people(
+    directory: Path | None, source: str, target: str
+) -> list[tuple[Path, Path]]:
+    """Переносит все образцы человека ``source`` в группу имени ``target``.
+
+    Файлы переименовываются в свободные ``<target>.wav``/``<target> (N).wav``
+    (существующие образцы цели не перезаписываются), поэтому после операции
+    библиотека содержит одного человека под одним именем. Имена нормализуются
+    (:func:`base_sample_name`). Возвращает пары ``(старый, новый)`` только для
+    успешно перенесённых файлов; при совпадении/отсутствии имён — пустой список.
+    Ошибки ввода-вывода по отдельному файлу пропускаются (остальные переносятся).
+    """
+    source_name = base_sample_name(source)
+    target_name = base_sample_name(target)
+    if not source_name or not target_name or source_name == target_name:
+        return []
+    if directory is None:
+        return []
+    root = Path(directory)
+    paths = collect_voice_library(directory).get(source_name, ())
+    if not paths:
+        return []
+    moved: list[tuple[Path, Path]] = []
+    for path in paths:
+        new_path = unique_sample_path(root, target_name)
+        try:
+            path.rename(new_path)
+        except OSError as exc:
+            logger.warning("Библиотека голосов: не удалось перенести %s: %s", path, exc)
+            continue
+        moved.append((path, new_path))
+    if moved:
+        logger.info(
+            "Библиотека голосов: образцы «%s» объединены с «%s» (%d файл(ов))",
+            source_name,
+            target_name,
+            len(moved),
+        )
+    return moved

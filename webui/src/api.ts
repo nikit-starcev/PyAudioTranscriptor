@@ -163,12 +163,52 @@ export type VoiceQuality = {
   warnings: string[]
 }
 
+/** Тип совпадения дубликатов (#39): побайтово, по аудио или по эмбеддингу. */
+export type VoiceDuplicateKind = 'exact' | 'audio' | 'embedding'
+
+/** Участник группы дубликатов. */
+export type VoiceDuplicateMember = {
+  name: string
+  filename: string
+  duration: number
+  size: number
+}
+
+/** Группа дубликатов с подсказкой «кого оставить» (#39). */
+export type VoiceDuplicateGroup = {
+  kind: VoiceDuplicateKind
+  score: number
+  names: string[]
+  keep: string
+  members: VoiceDuplicateMember[]
+}
+
+/** Отчёт аудита библиотеки голосов (``POST /api/voices/dedup``). */
+export type VoiceDedupReport = {
+  groups: VoiceDuplicateGroup[]
+  scanned: number
+  embeddings: boolean
+  near_threshold: number
+  embedding_threshold: number
+  error: string | null
+}
+
+/** Похожий образец, найденный при добавлении нового (#39). */
+export type VoiceSimilar = {
+  name: string
+  filename: string
+  kind: string
+  score: number
+}
+
 export type VoiceInfo = {
   name: string
   filename: string
   duration: number
   size: number
   quality?: VoiceQuality
+  /** Предупреждение о похожих образцах при добавлении (#39). */
+  similar?: VoiceSimilar[]
 }
 
 /** Группа образцов одного человека (имя → список образцов). */

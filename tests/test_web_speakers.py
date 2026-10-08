@@ -743,3 +743,133 @@ def test_reassign_validation_errors(client: TestClient) -> None:
     )
     assert no_overlap.status_code == 400
 
+
+# --- дедупликация образцов (#39) --------------------------------------------
+
+
+def _tone_waveform(frequency: float, seconds: float = 3.0, amplitude: float = 0.5):
+    import numpy as np
+
+    from audio_transcriber.utils.audio import SAMPLE_RATE
+
+    times = np.arange(round(seconds * SAMPLE_RATE)) / SAMPLE_RATE
+    return (amplitude * np.sin(2 * np.pi * frequency * times)).astype("float32")
+
+
+def _write_tone(path: Path, frequency: float, *, amplitude: float = 0.5) -> None:
+    from audio_transcriber.utils.audio import write_wav
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_wav(path, _tone_waveform(frequency, amplitude=amplitude))
+
+
+def _tone_bytes(frequency: float, *, amplitude: float = 0.5) -> bytes:
+    import io
+    import wave
+
+    from audio_transcriber.utils.audio import SAMPLE_RATE
+
+    samples = (_tone_waveform(frequency, amplitude=amplitude) * 32767).astype("<i2")
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(SAMPLE_RATE)
+        handle.writeframes(samples.tobytes())
+    return buffer.getvalue()
+
+
+def test_voices_dedup_reports_groups(client: TestClient, voices_dir: Path) -> None:
+    _write_tone(voices_dir / "Иван.wav", 220.0)
+    _write_tone(voices_dir / "Иван (2).wav", 220.0)
+    _write_tone(voices_dir / "Иван Клон.wav", 220.0, amplitude=0.3)
+    _write_tone(voices_dir / "Мария.wav", 880.0)
+
+    response = client.post("/api/voices/dedup", json={"embeddings": False})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["error"] is None
+    assert body["scanned"] == 4
+    assert body["embeddings"] is False
+    groups = body["groups"]
+    assert len(groups) == 1
+    group = groups[0]
+    assert group["kind"] == "audio"
+    assert {member["filename"] for member in group["members"]} == {
+        "Иван.wav",
+        "Иван (2).wav",
+        "Иван Клон.wav",
+    }
+    assert set(group["names"]) == {"Иван", "Иван Клон"}
+    assert group["keep"] == "Иван.wav"
+
+
+def test_voices_dedup_without_duplicates(client: TestClient, voices_dir: Path) -> None:
+    _write_tone(voices_dir / "Иван.wav", 220.0)
+    _write_tone(voices_dir / "Мария.wav", 880.0)
+
+    body = client.post("/api/voices/dedup", json={"embeddings": False}).json()
+
+    assert body["groups"] == []
+
+
+def test_voices_dedup_merge_people(client: TestClient, voices_dir: Path) -> None:
+    _write_tone(voices_dir / "Иван.wav", 220.0)
+    _write_tone(voices_dir / "Иван Клон.wav", 220.0, amplitude=0.3)
+
+    merged = client.post(
+        "/api/voices/dedup/merge", json={"source": "Иван Клон", "target": "Иван"}
+    )
+
+    assert merged.status_code == 200
+    assert merged.json()["count"] == 1
+    groups = client.get("/api/voices").json()
+    assert [group["name"] for group in groups] == ["Иван"]
+    assert groups[0]["count"] == 2
+    assert sorted(sample["filename"] for sample in groups[0]["samples"]) == [
+        "Иван (2).wav",
+        "Иван.wav",
+    ]
+
+
+def test_voices_dedup_merge_validation(client: TestClient) -> None:
+    same = client.post("/api/voices/dedup/merge", json={"source": "Иван", "target": "Иван"})
+    assert same.status_code == 400
+
+    absent = client.post(
+        "/api/voices/dedup/merge", json={"source": "Никого", "target": "Иван"}
+    )
+    assert absent.status_code == 404
+
+
+def test_voices_upload_warns_about_similar(client: TestClient, voices_dir: Path) -> None:
+    _write_tone(voices_dir / "Иван.wav", 220.0)
+
+    created = client.post(
+        "/api/voices",
+        files={"file": ("voice.wav", _tone_bytes(220.0, amplitude=0.3), "audio/wav")},
+        data={"name": "Клон"},
+    )
+
+    assert created.status_code == 201
+    similar = created.json()["similar"]
+    assert [item["filename"] for item in similar] == ["Иван.wav"]
+    assert similar[0]["kind"] == "audio"
+    assert similar[0]["score"] >= 0.9
+
+
+def test_voices_upload_no_similar_warning_for_distinct(
+    client: TestClient, voices_dir: Path
+) -> None:
+    _write_tone(voices_dir / "Иван.wav", 220.0)
+
+    created = client.post(
+        "/api/voices",
+        files={"file": ("voice.wav", _tone_bytes(880.0), "audio/wav")},
+        data={"name": "Мария"},
+    )
+
+    assert created.status_code == 201
+    assert created.json()["similar"] == []
+
