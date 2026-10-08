@@ -9,23 +9,50 @@ import {
   type BinaryRequirement,
   type DependencyEvent,
 } from '../api'
-import { Alert, Badge, Button, ProgressBar } from './ui'
+import { Alert, Badge, Button, ProgressBar, Spinner } from './ui'
 
 type Props = {
-  /** Требования шага «Бинарники/Пакеты» из плана мастера. */
-  requirements: BinaryRequirement[]
+  /**
+   * Требования шага «Бинарники/Пакеты» из плана мастера. Если не передан —
+   * компонент работает автономно (страница «Бинарные пакеты», #105): список
+   * строится из единого реестра ``/api/assets``.
+   */
+  requirements?: BinaryRequirement[]
   /** Вызывается после успешной установки — чтобы пересобрать план мастера. */
   onChanged?: () => void
 }
 
+/** Строит запись требования из ресурса реестра (автономный режим, #105). */
+function requirementFromAsset(asset: AssetInfo): BinaryRequirement {
+  return {
+    key: asset.key,
+    label: asset.label,
+    needed: !asset.optional,
+    available: asset.installed,
+    status: asset.installed ? 'ok' : 'fail',
+    instructions: asset.note,
+    links: [],
+    asset_key: asset.key,
+    kind: asset.kind,
+    downloadable: asset.downloadable,
+    platform: asset.platform,
+    artifact: asset.artifact,
+    setting_key: asset.settings_field,
+    installed_path: asset.path,
+    optional: asset.optional,
+  }
+}
+
 /**
- * Список внешних компонентов мастера (#98). Бинарники (whisper-cli,
- * llama-server, deep-filter) скачиваются кнопкой «Скачать» — по allowlist
- * фиксированных URL с проверкой sha256; pip-пакеты (#66) ставятся кнопкой
- * «Установить». Прогресс и статусы приходят по SSE ``/api/assets/events``.
+ * Список внешних компонентов мастера (#98) и страницы «Бинарные пакеты»
+ * (#105). Бинарники (whisper-cli, llama-server, deep-filter) скачиваются
+ * кнопкой «Скачать» — по allowlist фиксированных URL с проверкой sha256;
+ * pip-пакеты (#66) ставятся кнопкой «Установить». Прогресс и статусы приходят
+ * по SSE ``/api/assets/events``.
  */
 function BinaryRequirements({ requirements, onChanged }: Props) {
   const [assets, setAssets] = useState<Record<string, AssetInfo>>({})
+  const [loaded, setLoaded] = useState(false)
   const [installer, setInstaller] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
@@ -48,6 +75,8 @@ function BinaryRequirements({ requirements, onChanged }: Props) {
       setError(null)
     } catch (cause) {
       setError(errorMessage(cause))
+    } finally {
+      setLoaded(true)
     }
   }, [])
 
@@ -111,14 +140,18 @@ function BinaryRequirements({ requirements, onChanged }: Props) {
   }
 
   const canInstallPip = installer !== null
-  const summary = useMemo(
-    () =>
-      requirements.map((requirement) => ({
+  // Требования: либо из плана мастера, либо — автономно — из реестра ресурсов.
+  const summary = useMemo(() => {
+    if (requirements) {
+      return requirements.map((requirement) => ({
         requirement,
         assetKey: requirement.asset_key ?? requirement.dep_key ?? requirement.key,
-      })),
-    [requirements],
-  )
+      }))
+    }
+    return Object.values(assets)
+      .map((asset) => ({ requirement: requirementFromAsset(asset), assetKey: asset.key }))
+      .sort((a, b) => a.requirement.label.localeCompare(b.requirement.label, 'ru'))
+  }, [requirements, assets])
 
   return (
     <div className="space-y-3">
@@ -132,8 +165,14 @@ function BinaryRequirements({ requirements, onChanged }: Props) {
           {error}
         </Alert>
       )}
-      {requirements.length === 0 ? (
+      {requirements != null && requirements.length === 0 ? (
         <Alert tone="success">Для выбранного режима отдельные компоненты не требуются.</Alert>
+      ) : requirements == null && !loaded ? (
+        <div className="flex items-center justify-center py-6">
+          <Spinner size={20} label="Загрузка списка компонентов" />
+        </div>
+      ) : summary.length === 0 ? (
+        <Alert tone="info">Список внешних компонентов пуст.</Alert>
       ) : (
         <ul className="space-y-2">
           {summary.map(({ requirement, assetKey }) => {
@@ -204,6 +243,17 @@ function BinaryRequirements({ requirements, onChanged }: Props) {
                   )}
                   {!installed && !isBinary && !canInstallPip && (
                     <span className="text-warn">Не найден установщик (uv/pip)</span>
+                  )}
+                  {installed && canAct && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      loading={busy === assetKey || running}
+                      disabled={busy !== null || running}
+                      onClick={() => asset && void install(asset)}
+                    >
+                      {running ? 'Обновление…' : 'Обновить'}
+                    </Button>
                   )}
                   {requirement.links.map((link) => (
                     <a

@@ -2,6 +2,7 @@ import {
   BookText,
   Cpu,
   ListChecks,
+  Package,
   Settings,
   Volume2,
   Wand2,
@@ -22,6 +23,13 @@ const NAV: {
 }[] = [
   { id: 'jobs', label: 'Задачи', hash: '#/jobs', Icon: ListChecks, match: ['jobs', 'job'] },
   { id: 'models', label: 'Модели', hash: '#/models', Icon: Cpu, match: ['models'] },
+  {
+    id: 'binaries',
+    label: 'Бинарные пакеты',
+    hash: '#/binaries',
+    Icon: Package,
+    match: ['binaries'],
+  },
   { id: 'voices', label: 'Голоса', hash: '#/voices', Icon: Volume2, match: ['voices'] },
   { id: 'glossary', label: 'Глоссарий', hash: '#/glossary', Icon: BookText, match: ['glossary'] },
   { id: 'wizard', label: 'Мастер', hash: '#/wizard', Icon: Wand2, match: ['wizard'] },

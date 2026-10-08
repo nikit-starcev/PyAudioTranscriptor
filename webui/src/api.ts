@@ -1005,6 +1005,46 @@ export async function activateSummaryPrompt(
   )
 }
 
+// --- Постадийный кэш обработки (#100) --------------------------------------
+
+/** Состояние общего постадийного кэша конвейера (``GET /api/cache``). */
+export type CacheInfo = {
+  /** Каталог кэша (``web-data/cache``). */
+  directory: string
+  /** Число файлов кэша. */
+  files: number
+  /** Суммарный размер кэша в байтах. */
+  bytes: number
+  /** Задачи, которые воркер ведёт прямо сейчас (в очереди или в работе). */
+  active_jobs: string[]
+}
+
+/** Ответ ``POST /api/cache/clear`` — сколько файлов удалено. */
+export type CacheClearResponse = {
+  removed: number
+  directory: string
+  active_jobs: string[]
+  /** Очистка выполнена принудительно, несмотря на активные задачи. */
+  forced: boolean
+}
+
+/** Читает состояние постадийного кэша. */
+export async function fetchCacheInfo(): Promise<CacheInfo> {
+  return api<CacheInfo>('/api/cache')
+}
+
+/**
+ * Чистит постадийный кэш. ``force=true`` разрешает очистку во время активного
+ * прогона (сервер иначе отвечает 409).
+ */
+export async function clearCache(force = false): Promise<CacheClearResponse> {
+  return api<CacheClearResponse>('/api/cache/clear', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ force }),
+  })
+}
+
 // --- Чат по стенограмме (#54/#96) ------------------------------------------
 
 /** Ссылка ответа LLM на реплику стенограммы (таймкод + говорящий + текст). */

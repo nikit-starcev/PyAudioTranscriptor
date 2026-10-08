@@ -43,6 +43,7 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from audio_transcriber import __version__
+from audio_transcriber.cache.store import StageCache
 from audio_transcriber.config.defaults import DEFAULT_ENROLLMENT_MIN_SIMILARITY
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.correction.editorial import (
@@ -530,6 +531,16 @@ class SettingsUpdate(BaseModel):
     gigaam_model_path: str | None = None
     gigaam_quantization: str | None = None
     gigaam_vad: bool | None = None
+
+
+class CacheClearRequest(BaseModel):
+    """Тело ``POST /api/cache/clear`` (#100): ручная очистка постадийного кэша.
+
+    ``force=True`` разрешает очистку, даже когда идёт активный прогон (по
+    умолчанию такие запросы отклоняются, чтобы не сбивать работающую задачу).
+    """
+
+    force: bool = False
 
 
 class ProtocolRequest(BaseModel):
@@ -1314,6 +1325,69 @@ def register_api(
         """SSE-поток установки внешних ресурсов (общая шина с ``/api/deps``)."""
         after = parse_last_event_id(last_event_id)
         return sse_response(stream_bus(deps_bus, after))
+
+    def _cache_stats() -> tuple[int, int]:
+        """Число файлов и суммарный размер общего постадийного кэша.
+
+        Каталог кэша плоский: по одному ``<stage>-<key>.json`` (и, для денойза,
+        ``.wav``) на запись. Ошибки доступа не роняют эндпоинт — считаем, что
+        файлов нет.
+        """
+        directory = paths.cache_dir
+        files = 0
+        total = 0
+        try:
+            entries = list(directory.glob("*"))
+        except OSError:
+            return 0, 0
+        for entry in entries:
+            try:
+                if entry.is_file():
+                    files += 1
+                    total += entry.stat().st_size
+            except OSError:
+                continue
+        return files, total
+
+    @router.get("/cache")
+    def get_cache() -> dict[str, object]:
+        """Состояние общего постадийного кэша конвейера (#100)."""
+        files, total = _cache_stats()
+        return {
+            "directory": str(paths.cache_dir),
+            "files": files,
+            "bytes": total,
+            "active_jobs": sorted(runner.active_job_ids()),
+        }
+
+    @router.post("/cache/clear")
+    def clear_cache(payload: CacheClearRequest | None = None) -> dict[str, object]:
+        """Очищает общий постадийный кэш конвейера (#100).
+
+        По умолчанию не трогает кэш, пока воркер ведёт хотя бы одну задачу:
+        очистка во время прогона заставит активную задачу пересчитывать стадии
+        заново. ``force=true`` снимает это ограничение. Возвращает число
+        удалённых файлов (``StageCache.clear``).
+        """
+        force = bool(payload.force) if payload is not None else False
+        active = sorted(runner.active_job_ids())
+        if active and not force:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Идёт обработка задач ({len(active)}). Очистка кэша сбросит "
+                    "промежуточные результаты активного прогона — дождитесь "
+                    "завершения или подтвердите принудительную очистку."
+                ),
+            )
+        removed = StageCache(paths.cache_dir).clear()
+        logger.info("Кэш очищен через веб-интерфейс: удалено %d файл(ов)", removed)
+        return {
+            "removed": removed,
+            "directory": str(paths.cache_dir),
+            "active_jobs": active,
+            "forced": force,
+        }
 
     @router.get("/models")
     def list_models() -> dict[str, object]:
