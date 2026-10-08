@@ -36,13 +36,48 @@ def test_ensure_output_dir_creates_directory(tmp_path: Path, audio_file: Path) -
     assert output_dir.is_dir()
 
 
-def test_llm_enabled_without_model_warns(
-    audio_file: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    with caplog.at_level("WARNING"):
+def test_llm_enabled_without_model_raises(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError, match="локальная модель"):
         AppConfig(input_file=audio_file, llm_enabled=True)
 
-    assert any("модель не задана" in record.message for record in caplog.records)
+
+def test_llm_enabled_with_model_accepted(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file, llm_enabled=True, llm_model=Path("llm.gguf"))
+
+    assert config.llm_model == Path("llm.gguf")
+
+
+def test_llm_enabled_openai_without_base_url_raises(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError, match="LLM_BASE_URL"):
+        AppConfig(
+            input_file=audio_file,
+            llm_enabled=True,
+            llm_provider="openai",
+            llm_model_name="llama3.1",
+        )
+
+
+def test_llm_enabled_openai_without_model_name_raises(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError, match="LLM_MODEL_NAME"):
+        AppConfig(
+            input_file=audio_file,
+            llm_enabled=True,
+            llm_provider="openai",
+            llm_base_url="http://localhost:11434/v1",
+        )
+
+
+def test_llm_enabled_openai_with_params_accepted(audio_file: Path) -> None:
+    config = AppConfig(
+        input_file=audio_file,
+        llm_enabled=True,
+        llm_provider="openai",
+        llm_base_url="http://localhost:11434/v1",
+        llm_model_name="llama3.1",
+    )
+
+    assert config.llm_provider == "openai"
+    assert config.llm_model_name == "llama3.1"
 
 
 def test_missing_input_file_raises(tmp_path: Path) -> None:
@@ -691,7 +726,7 @@ def test_llm_provider_normalized_and_validated(audio_file: Path) -> None:
 def test_llm_provider_blank_fields_normalized_to_none(audio_file: Path) -> None:
     config = AppConfig(
         input_file=audio_file,
-        llm_enabled=True,
+        llm_enabled=False,
         llm_provider="openai",
         llm_base_url="  ",
         llm_model_name="  ",
