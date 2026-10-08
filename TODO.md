@@ -483,14 +483,16 @@
   применён в очистке артефактов и нормализации — слова удалённых пометок выкидываются, а при
   невозможности точного соответствия (правка слова/числа токенов) `words` инвалидируются (пусто).
 
-## Баги
+- ✅ **Docker (rootless): entrypoint `chown -R /data` ломал владельца bind-mount `web-data`** (#104):
+  entrypoint различает rootful и rootless по `/proc/self/uid_map`: если контейнерный root
+  отображён на ненулевой хостовый uid (rootless Docker, userns-remap), `chown` не выполняется,
+  и приложение запускается от контейнерного root — он и есть хостовый пользователь, поэтому
+  владелец `./web-data` на хосте больше не переписывается на subuid (525287) и хостовый сервер
+  не получает `OperationalError: attempt to write a readonly database`. Rootful-поведение
+  сохранено (chown только если `app` не может писать), `PUID`/`PGID` применяются только в
+  rootful. Ограничение задокументировано в README (раздел «Docker»).
 
-- **Docker (rootless): entrypoint `chown -R /data` ломает владельца bind-mount `web-data`** (#104):
-  при rootless Docker контейнерный root мапится на subuid пользователя (uid 525287), и chown при
-  старте переписывает владельца всех файлов `./web-data` → хостовый сервер (uid 1000) получает
-  `OperationalError: attempt to write a readonly database` на `PRAGMA journal_mode=WAL`. Лечение:
-  `sudo chown -R 1000:1000 web-data`. Фикс — не chown'ить уже записываемый каталог (или только
-  подкаталоги, создаваемые контейнером), определять применимость по доступу; задокументировать.
+## Баги
 
 ## Желательно
 
