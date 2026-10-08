@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Download, HardDrive } from 'lucide-react'
 
 import {
   api,
@@ -8,6 +9,16 @@ import {
   type ModelInfo,
   type ModelsResponse,
 } from '../api'
+import {
+  Alert,
+  Badge,
+  Button,
+  Checkbox,
+  EmptyState,
+  ProgressBar,
+  Spinner,
+  type BadgeTone,
+} from './ui'
 
 type Props = {
   /** Идентификаторы моделей, нужных выбранному режиму (предвыбор). */
@@ -24,24 +35,14 @@ const KIND_LABELS: Record<string, string> = {
   sherpa: 'Диаризация (эмбеддинги, sherpa-onnx)',
 }
 
-function statusBadge(model: ModelInfo) {
+function statusBadge(model: ModelInfo): { label: string; tone: BadgeTone } {
   const download = model.download.status
-  if (download === 'downloading') {
-    return { label: 'Скачивание…', className: 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300' }
-  }
-  if (download === 'error') {
-    return { label: 'Ошибка', className: 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300' }
-  }
-  if (download === 'cancelled') {
-    return { label: 'Отменено', className: 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300' }
-  }
-  if (model.status.present) {
-    return { label: 'Загружена', className: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300' }
-  }
-  if (model.status.partial) {
-    return { label: 'Частично', className: 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300' }
-  }
-  return { label: 'Не загружена', className: 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400' }
+  if (download === 'downloading') return { label: 'Скачивание…', tone: 'info' }
+  if (download === 'error') return { label: 'Ошибка', tone: 'danger' }
+  if (download === 'cancelled') return { label: 'Отменено', tone: 'warn' }
+  if (model.status.present) return { label: 'Загружена', tone: 'success' }
+  if (model.status.partial) return { label: 'Частично', tone: 'warn' }
+  return { label: 'Не загружена', tone: 'neutral' }
 }
 
 function ModelsPanel({ requiredIds = [], onChanged }: Props) {
@@ -79,7 +80,11 @@ function ModelsPanel({ requiredIds = [], onChanged }: Props) {
     if (initialized.current || !data) return
     const wanted = new Set(requiredIds)
     setSelected(
-      new Set(data.models.filter((model) => wanted.has(model.id) && !model.status.present).map((model) => model.id)),
+      new Set(
+        data.models
+          .filter((model) => wanted.has(model.id) && !model.status.present)
+          .map((model) => model.id),
+      ),
     )
     initialized.current = true
   }, [data, requiredIds])
@@ -115,7 +120,13 @@ function ModelsPanel({ requiredIds = [], onChanged }: Props) {
                   },
                   status:
                     event.status === 'done'
-                      ? { ...model.status, present: true, size: event.bytes_done, missing_files: [], partial: false }
+                      ? {
+                          ...model.status,
+                          present: true,
+                          size: event.bytes_done,
+                          missing_files: [],
+                          partial: false,
+                        }
                       : model.status,
                 }
               : model,
@@ -156,7 +167,10 @@ function ModelsPanel({ requiredIds = [], onChanged }: Props) {
   }
 
   const downloadSelected = async () => {
-    const ids = data?.models.filter((model) => selected.has(model.id) && !model.status.present).map((model) => model.id) ?? []
+    const ids =
+      data?.models
+        .filter((model) => selected.has(model.id) && !model.status.present)
+        .map((model) => model.id) ?? []
     if (ids.length === 0) return
     setBusy('__selected__')
     setError(null)
@@ -200,44 +214,53 @@ function ModelsPanel({ requiredIds = [], onChanged }: Props) {
     }
   }
 
-  const selectedModels = data?.models.filter((model) => selected.has(model.id) && !model.status.present) ?? []
+  const selectedModels =
+    data?.models.filter((model) => selected.has(model.id) && !model.status.present) ?? []
   const selectedSize = selectedModels.reduce((total, model) => total + model.approx_size, 0)
   const diskFree = data?.disk.free ?? 0
 
   return (
     <div className="space-y-3">
       {error && (
-        <p className="rounded-md bg-red-50 px-3 py-1.5 text-xs text-red-700 dark:bg-red-950/50 dark:text-red-300">
+        <Alert tone="danger" live>
           {error}
-        </p>
+        </Alert>
       )}
 
-      <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
-        <button
-          type="button"
-          onClick={() => void downloadSelected()}
+      <div className="flex flex-wrap items-center gap-3 text-xs text-muted">
+        <Button
+          variant="primary"
+          size="sm"
+          icon={<Download aria-hidden className="h-4 w-4" />}
+          loading={busy === '__selected__'}
           disabled={busy !== null || selectedModels.length === 0}
-          className="rounded-md bg-slate-800 px-3 py-1.5 text-sm text-white hover:bg-slate-700 disabled:opacity-40 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-white"
+          onClick={() => void downloadSelected()}
         >
           Скачать выбранные ({selectedModels.length})
-        </button>
+        </Button>
         <span>
-          Объём выбранных: <strong>{formatBytes(selectedSize)}</strong>
+          Объём выбранных: <strong className="text-text">{formatBytes(selectedSize)}</strong>
         </span>
         {diskFree > 0 && (
-          <span>
-            Свободно на диске: <strong>{formatBytes(diskFree)}</strong>
+          <span className="inline-flex items-center gap-1">
+            <HardDrive aria-hidden className="h-3.5 w-3.5" />
+            Свободно на диске: <strong className="text-text">{formatBytes(diskFree)}</strong>
           </span>
         )}
       </div>
-      <p className="text-xs text-amber-700 dark:text-amber-400">
-        Внимание: модели большие (несколько ГБ). Скачивание идёт с Hugging Face; нужен запас места на диске.
+      <p className="text-xs text-warn">
+        Внимание: модели большие (несколько ГБ). Скачивание идёт с Hugging Face; нужен запас
+        места на диске.
       </p>
 
       {!data ? (
-        <p className="py-4 text-center text-sm text-slate-400 dark:text-slate-500">Загрузка списка…</p>
+        <div className="flex items-center justify-center py-6">
+          <Spinner size={20} label="Загрузка списка моделей" />
+        </div>
+      ) : data.models.length === 0 ? (
+        <EmptyState title="Модели не найдены" description="Список моделей пуст" />
       ) : (
-        <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+        <ul className="divide-y divide-border">
           {data.models.map((model) => {
             const badge = statusBadge(model)
             const downloading = model.download.status === 'downloading'
@@ -246,8 +269,7 @@ function ModelsPanel({ requiredIds = [], onChanged }: Props) {
             return (
               <li key={model.id} className="py-3">
                 <div className="flex items-start gap-3">
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     className="mt-1"
                     checked={selected.has(model.id)}
                     onChange={() => toggle(model.id)}
@@ -255,74 +277,67 @@ function ModelsPanel({ requiredIds = [], onChanged }: Props) {
                   />
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <p className="text-sm font-medium">{model.title}</p>
-                      {isRequired && (
-                        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] uppercase text-slate-500 dark:bg-slate-800 dark:text-slate-400">
-                          нужна
-                        </span>
-                      )}
-                      <span className={`rounded-full px-2 py-0.5 text-xs ${badge.className}`}>{badge.label}</span>
+                      <p className="text-sm font-medium text-text">{model.title}</p>
+                      {isRequired && <Badge tone="neutral">нужна</Badge>}
+                      <Badge tone={badge.tone}>{badge.label}</Badge>
                     </div>
-                    <p className="text-xs text-slate-400 dark:text-slate-500">
+                    <p className="text-xs text-muted">
                       {KIND_LABELS[model.kind] ?? model.kind} · ~{formatBytes(model.approx_size)} ·{' '}
                       <a
                         href={`https://huggingface.co/${model.repo}`}
                         target="_blank"
                         rel="noreferrer noopener"
-                        className="text-blue-600 underline hover:text-blue-500 dark:text-blue-400 dark:hover:text-blue-300"
+                        className="text-primary underline hover:opacity-80"
                       >
                         {model.repo}
                       </a>
                     </p>
-                    {model.note && (
-                      <p className="text-xs text-slate-500 dark:text-slate-400">{model.note}</p>
-                    )}
+                    {model.note && <p className="text-xs text-muted">{model.note}</p>}
                     {downloading && (
                       <div className="mt-1">
-                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
-                          <div
-                            className="h-full rounded-full bg-blue-500 transition-all"
-                            style={{ width: `${Math.round(fraction * 100)}%` }}
-                          />
-                        </div>
-                        <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                        <ProgressBar
+                          size="sm"
+                          value={fraction * 100}
+                          label={`Скачивание: ${model.title}`}
+                        />
+                        <p className="mt-0.5 text-[11px] tabular-nums text-muted">
                           {formatBytes(model.download.bytes_done)} / {formatBytes(model.download.total)}
                         </p>
                       </div>
                     )}
                     {model.download.error && (
-                      <p className="mt-0.5 text-xs text-red-600 dark:text-red-400">{model.download.error}</p>
+                      <p className="mt-0.5 text-xs text-danger">{model.download.error}</p>
                     )}
                   </div>
                   <div className="flex shrink-0 flex-col items-end gap-1">
                     {downloading ? (
-                      <button
-                        type="button"
-                        onClick={() => void cancel(model.id)}
+                      <Button
+                        variant="secondary"
+                        size="sm"
                         disabled={busy !== null}
-                        className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:hover:bg-slate-800"
+                        onClick={() => void cancel(model.id)}
                       >
                         Отменить
-                      </button>
+                      </Button>
                     ) : (
-                      <button
-                        type="button"
-                        onClick={() => void download(model.id)}
+                      <Button
+                        variant="secondary"
+                        size="sm"
                         disabled={busy !== null}
-                        className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:hover:bg-slate-800"
+                        onClick={() => void download(model.id)}
                       >
                         {model.status.partial ? 'Докачать' : 'Скачать'}
-                      </button>
+                      </Button>
                     )}
                     {model.status.present && !downloading && (
-                      <button
-                        type="button"
-                        onClick={() => void remove(model)}
+                      <Button
+                        variant="ghost"
+                        size="sm"
                         disabled={busy !== null}
-                        className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-40 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-red-950/50 dark:hover:text-red-300"
+                        onClick={() => void remove(model)}
                       >
                         Удалить
-                      </button>
+                      </Button>
                     )}
                   </div>
                 </div>

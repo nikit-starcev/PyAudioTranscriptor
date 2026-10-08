@@ -9,6 +9,7 @@ import {
   type TranscriptResult,
 } from '../api'
 import { useActionProgress } from '../actionProgress'
+import { Alert, Button, Card, CardHeader, Checkbox } from './ui'
 import ActionProgressCard from './ActionProgressCard'
 
 type Props = {
@@ -195,159 +196,135 @@ function EditorPanel({ jobId, onResult }: Props) {
   const busy = checkBusy || applyBusy || glossaryBusy
 
   return (
-    <div className="space-y-3 rounded-md border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-800/50">
-      <div className="flex flex-wrap items-center gap-3">
-        <button
-          type="button"
-          onClick={() => void applyGlossary()}
-          disabled={glossaryBusy}
-          title="Применить матчер глоссария к текущей стенограмме без повторного распознавания"
-          className="rounded-md border border-emerald-300 px-3 py-1.5 text-sm text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-950/50"
-        >
-          {glossaryBusy ? 'Применяю глоссарий…' : 'Применить глоссарий'}
-        </button>
-        <label className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
-          <input
-            type="checkbox"
+    <Card>
+      <CardHeader
+        title="Редактор текста"
+        description="Глоссарий и проверка орфографии по готовой стенограмме"
+      />
+      <div className="space-y-4 p-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            variant="secondary"
+            loading={glossaryBusy}
+            title="Применить матчер глоссария к текущей стенограмме без повторного распознавания"
+            onClick={() => void applyGlossary()}
+          >
+            Применить глоссарий
+          </Button>
+          <Checkbox
+            label="Не трогать реплики, изменённые вручную"
             checked={respectGlossaryEdits}
             onChange={(event) => setRespectGlossaryEdits(event.target.checked)}
           />
-          Не трогать реплики, изменённые вручную
-        </label>
-      </div>
-      {glossaryNotice && (
-        <p
-          role="status"
-          className={`rounded-md px-3 py-1.5 text-xs ${
-            glossaryNotice.kind === 'error'
-              ? 'bg-red-50 text-red-700 dark:bg-red-950/50 dark:text-red-300'
-              : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300'
-          }`}
-        >
-          {glossaryNotice.text}
-        </p>
-      )}
+        </div>
+        {glossaryNotice && (
+          <Alert tone={glossaryNotice.kind === 'error' ? 'danger' : 'success'} live>
+            {glossaryNotice.text}
+          </Alert>
+        )}
 
-      <div className="border-t border-slate-200 pt-3 dark:border-slate-700">
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            onClick={() => void checkText()}
-            disabled={busy || (!fixCommon && !checkSpelling)}
-            title="Найти опечатки и частые ошибки в текущей стенограмме"
-            className="rounded-md border border-sky-300 px-3 py-1.5 text-sm text-sky-700 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-sky-800 dark:text-sky-300 dark:hover:bg-sky-950/50"
-          >
-            {checkBusy ? 'Проверяю текст…' : 'Проверить текст'}
-          </button>
-          <label className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
-            <input
-              type="checkbox"
+        <div className="border-t border-border pt-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              variant="secondary"
+              loading={checkBusy}
+              disabled={busy || (!fixCommon && !checkSpelling)}
+              title="Найти опечатки и частые ошибки в текущей стенограмме"
+              onClick={() => void checkText()}
+            >
+              Проверить текст
+            </Button>
+            <Checkbox
+              label="Частые ошибки"
               checked={fixCommon}
               onChange={(event) => setFixCommon(event.target.checked)}
             />
-            Частые ошибки
-          </label>
-          <label className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
-            <input
-              type="checkbox"
+            <Checkbox
+              label="Орфография"
               checked={checkSpelling}
               onChange={(event) => setCheckSpelling(event.target.checked)}
             />
-            Орфография
-          </label>
-          <label className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
-            <input
-              type="checkbox"
+            <Checkbox
+              label="Не трогать изменённые вручную"
               checked={respectEdits}
               onChange={(event) => setRespectEdits(event.target.checked)}
             />
-            Не трогать изменённые вручную
-          </label>
-        </div>
-
-        {editError && (
-          <p className="mt-2 rounded-md bg-red-50 px-3 py-1.5 text-xs text-red-700 dark:bg-red-950/50 dark:text-red-300">
-            {editError}
-          </p>
-        )}
-        {appliedNotice && (
-          <p
-            role="status"
-            className={`mt-2 rounded-md px-3 py-1.5 text-xs ${
-              appliedNotice.kind === 'error'
-                ? 'bg-red-50 text-red-700 dark:bg-red-950/50 dark:text-red-300'
-                : 'bg-sky-50 text-sky-700 dark:bg-sky-950/50 dark:text-sky-300'
-            }`}
-          >
-            {appliedNotice.text}
-          </p>
-        )}
-
-        {suggestions.length > 0 && (
-          <div className="mt-3 space-y-2">
-            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
-              <span>
-                Найдено правок: {suggestions.length} · выбрано: {selected.length}
-              </span>
-              <button
-                type="button"
-                onClick={() => setRejected(new Set())}
-                className="rounded border border-slate-300 px-2 py-0.5 hover:bg-slate-100 dark:border-slate-600 dark:hover:bg-slate-800"
-              >
-                Принять все
-              </button>
-              <button
-                type="button"
-                onClick={() => setRejected(new Set(suggestions.map((item) => item.id)))}
-                className="rounded border border-slate-300 px-2 py-0.5 hover:bg-slate-100 dark:border-slate-600 dark:hover:bg-slate-800"
-              >
-                Отклонить все
-              </button>
-              <button
-                type="button"
-                onClick={() => void applySelected()}
-                disabled={applyBusy || selected.length === 0}
-                className="ml-auto rounded-md bg-slate-800 px-3 py-1 text-white hover:bg-slate-700 disabled:opacity-40 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-white"
-              >
-                {applyBusy ? 'Применяю…' : `Применить выбранные (${selected.length})`}
-              </button>
-            </div>
-            <ul className="max-h-64 space-y-1 overflow-auto rounded-md border border-slate-200 bg-white p-2 text-sm dark:border-slate-700 dark:bg-slate-900">
-              {suggestions.map((item) => {
-                const accepted = !rejected.has(item.id)
-                return (
-                  <li key={item.id} className="flex items-start gap-2">
-                    <input
-                      type="checkbox"
-                      checked={accepted}
-                      onChange={() => toggleSuggestion(item.id)}
-                      className="mt-1"
-                      aria-label="Применить правку"
-                    />
-                    <span className="min-w-0 flex-1 break-words">
-                      <span className="mr-2 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] uppercase text-slate-500 dark:bg-slate-800 dark:text-slate-400">
-                        {kindLabel(item.kind)}
-                      </span>
-                      <span className="rounded bg-red-50 px-1 text-red-700 line-through dark:bg-red-950/40 dark:text-red-300">
-                        {item.before}
-                      </span>
-                      <span className="mx-1 text-slate-400">→</span>
-                      <span className="rounded bg-emerald-50 px-1 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
-                        {item.after}
-                      </span>
-                      <span className="ml-2 text-xs text-slate-400 dark:text-slate-500">
-                        реплика #{item.index + 1} · {item.reason}
-                      </span>
-                    </span>
-                  </li>
-                )
-              })}
-            </ul>
           </div>
-        )}
+
+          {editError && (
+            <Alert tone="danger" live className="mt-2">
+              {editError}
+            </Alert>
+          )}
+          {appliedNotice && (
+            <Alert tone="info" live className="mt-2">
+              {appliedNotice.text}
+            </Alert>
+          )}
+
+          {suggestions.length > 0 && (
+            <div className="mt-3 space-y-2">
+              <div className="flex flex-wrap items-center gap-3 text-xs text-muted">
+                <span>
+                  Найдено правок: {suggestions.length} · выбрано: {selected.length}
+                </span>
+                <Button variant="secondary" size="sm" onClick={() => setRejected(new Set())}>
+                  Принять все
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setRejected(new Set(suggestions.map((item) => item.id)))}
+                >
+                  Отклонить все
+                </Button>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  className="ml-auto"
+                  loading={applyBusy}
+                  disabled={selected.length === 0}
+                  onClick={() => void applySelected()}
+                >
+                  Применить выбранные ({selected.length})
+                </Button>
+              </div>
+              <ul className="max-h-64 space-y-1 overflow-auto rounded-md border border-border bg-surface-2/40 p-2 text-sm">
+                {suggestions.map((item) => {
+                  const accepted = !rejected.has(item.id)
+                  return (
+                    <li key={item.id} className="flex items-start gap-2">
+                      <Checkbox
+                        className="mt-1"
+                        checked={accepted}
+                        onChange={() => toggleSuggestion(item.id)}
+                        aria-label="Применить правку"
+                      />
+                      <span className="min-w-0 flex-1 break-words">
+                        <span className="mr-2 rounded bg-surface-3 px-1.5 py-0.5 text-[10px] uppercase text-muted">
+                          {kindLabel(item.kind)}
+                        </span>
+                        <span className="rounded bg-danger-soft px-1 text-danger-soft-fg line-through">
+                          {item.before}
+                        </span>
+                        <span className="mx-1 text-muted">→</span>
+                        <span className="rounded bg-success-soft px-1 text-success-soft-fg">
+                          {item.after}
+                        </span>
+                        <span className="ml-2 text-xs text-muted">
+                          реплика #{item.index + 1} · {item.reason}
+                        </span>
+                      </span>
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+          )}
+        </div>
       </div>
       <ActionProgressCard run={actionRun} onClose={resetActionProgress} />
-    </div>
+    </Card>
   )
 }
 

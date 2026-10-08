@@ -5,9 +5,11 @@
 // итоговым текстом (успех/ошибка) и кнопкой закрытия.
 
 import { useEffect, useState } from 'react'
+import { Loader2, X } from 'lucide-react'
 
 import { formatClock } from '../api'
 import { ACTION_STEPS, ACTION_TITLES, type ActionRun } from '../actionProgress'
+import { Card, IconButton, ProgressBar, cn } from './ui'
 
 type Props = {
   run: ActionRun | null
@@ -15,6 +17,24 @@ type Props = {
 }
 
 type StepState = 'done' | 'active' | 'error' | 'pending'
+
+function StepMarker({ state }: { state: StepState }) {
+  if (state === 'active') {
+    return <Loader2 aria-hidden className="h-3.5 w-3.5 animate-spin text-primary" />
+  }
+  const glyph = state === 'done' ? '✓' : state === 'error' ? '✕' : '·'
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        'w-3.5 text-center text-xs',
+        state === 'done' ? 'text-success' : state === 'error' ? 'text-danger' : 'text-muted',
+      )}
+    >
+      {glyph}
+    </span>
+  )
+}
 
 function ProgressStep({
   label,
@@ -25,31 +45,17 @@ function ProgressStep({
   state: StepState
   message: string | null
 }) {
-  const marker =
-    state === 'done' ? '✓' : state === 'error' ? '✕' : state === 'active' ? '◐' : '·'
-  const markerClass =
-    state === 'done'
-      ? 'text-emerald-500 dark:text-emerald-400'
-      : state === 'error'
-        ? 'text-red-500 dark:text-red-400'
-        : state === 'active'
-          ? 'animate-pulse text-blue-500 dark:text-blue-400'
-          : 'text-slate-300 dark:text-slate-600'
-  const labelClass =
-    state === 'pending'
-      ? 'text-slate-400 dark:text-slate-500'
-      : 'text-slate-700 dark:text-slate-200'
   return (
     <li className="flex items-start gap-2">
-      <span aria-hidden="true" className={`mt-0.5 w-3 shrink-0 text-center ${markerClass}`}>
-        {marker}
+      <span className="mt-0.5 shrink-0">
+        <StepMarker state={state} />
       </span>
       <span className="min-w-0">
-        <span className={`block text-sm ${labelClass}`}>{label}</span>
+        <span className={cn('block text-sm', state === 'pending' ? 'text-muted' : 'text-text')}>
+          {label}
+        </span>
         {state === 'active' && message && (
-          <span className="block break-words text-xs text-slate-500 dark:text-slate-400">
-            {message}
-          </span>
+          <span className="block break-words text-xs text-muted">{message}</span>
         )}
       </span>
     </li>
@@ -88,38 +94,31 @@ function ActionProgressCard({ run, onClose }: Props) {
   }
 
   return (
-    <div
+    <Card
       role="status"
       aria-live="polite"
-      className="fixed bottom-4 right-4 z-50 w-80 max-w-[calc(100vw-2rem)] rounded-lg border border-slate-200 bg-white/95 p-3 shadow-lg backdrop-blur dark:border-slate-700 dark:bg-slate-900/95"
+      className="fixed bottom-4 right-4 z-50 w-80 max-w-[calc(100vw-2rem)] p-3 shadow-lg backdrop-blur"
     >
       <div className="mb-2 flex items-start gap-2">
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-100">
-            {ACTION_TITLES[run.kind]}
-          </p>
-          <p className="text-xs text-slate-400 dark:text-slate-500">
+          <p className="truncate text-sm font-medium text-text">{ACTION_TITLES[run.kind]}</p>
+          <p className="text-xs text-muted">
             Затрачено: <span className="tabular-nums">{formatClock(elapsedSeconds)}</span>
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Закрыть окно прогресса"
-          className="shrink-0 rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
-        >
-          ✕
-        </button>
+        <IconButton aria-label="Закрыть окно прогресса" size="sm" onClick={onClose}>
+          <X aria-hidden className="h-4 w-4" />
+        </IconButton>
       </div>
 
-      <div className="mb-2 h-1.5 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
-        <div
-          className={`h-full rounded-full transition-all duration-300 ${
-            run.status === 'error' ? 'bg-red-500' : 'bg-blue-500 dark:bg-blue-400'
-          } ${percent == null && running ? 'w-1/3 animate-pulse' : ''}`}
-          style={percent != null ? { width: `${percent}%` } : undefined}
-        />
-      </div>
+      <ProgressBar
+        className="mb-2"
+        size="sm"
+        value={percent ?? 0}
+        tone={run.status === 'error' ? 'danger' : 'primary'}
+        indeterminate={percent == null && running}
+        label={`Прогресс: ${ACTION_TITLES[run.kind]}`}
+      />
 
       <ul className="space-y-1">
         {steps.map((step, index) => (
@@ -134,16 +133,17 @@ function ActionProgressCard({ run, onClose }: Props) {
 
       {run.status !== 'running' && (
         <p
-          className={`mt-2 rounded-md px-2 py-1.5 text-xs ${
+          className={cn(
+            'mt-2 rounded-md px-2 py-1.5 text-xs',
             run.status === 'error'
-              ? 'bg-red-50 text-red-700 dark:bg-red-950/50 dark:text-red-300'
-              : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300'
-          }`}
+              ? 'bg-danger-soft text-danger-soft-fg'
+              : 'bg-success-soft text-success-soft-fg',
+          )}
         >
           {run.result ?? (run.status === 'done' ? 'Готово' : 'Ошибка')}
         </p>
       )}
-    </div>
+    </Card>
   )
 }
 

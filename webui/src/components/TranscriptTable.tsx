@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
+import { Pause, Pencil, Play, X } from 'lucide-react'
 
 import { formatTime, speakerName, type Entry, type SpeakerInfo } from '../api'
+import { Alert, Button, Card, Checkbox, IconButton, Input, Select, Textarea, cn } from './ui'
 import GlossaryQuickModal from './GlossaryQuickModal'
 
 type Props = {
@@ -78,31 +80,6 @@ function speakerPieces(speakers: SpeakerInfo[], entry: Entry): SpeakerPiece[] {
     pieces.push({ id: extraId, name: speakerName(speakers, extraId), extra: true })
   }
   return pieces
-}
-
-//: Иконка воспроизведения/паузы (SVG вместо эмодзи — предсказуемый вид и цвет).
-function PlayerIcon({ paused }: { paused: boolean }) {
-  return (
-    <svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor" aria-hidden="true">
-      {paused ? (
-        <>
-          <rect x="4" y="3" width="3" height="10" rx="0.5" />
-          <rect x="9" y="3" width="3" height="10" rx="0.5" />
-        </>
-      ) : (
-        <path d="M4.5 2.8v10.4L13 8z" />
-      )}
-    </svg>
-  )
-}
-
-//: Карандаш для входа в режим правки текста реплики.
-function PencilIcon() {
-  return (
-    <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" aria-hidden="true">
-      <path d="M11.5 1.5a1.6 1.6 0 0 1 2.3 0l.7.7a1.6 1.6 0 0 1 0 2.3l-8 8L3 14l1.5-3.5 8-8zM3.9 11.2l-.7 1.6 1.6-.7 7.6-7.6-0.9-.9-7.6 7.6z" />
-    </svg>
-  )
 }
 
 //: Минимальная длина фрагмента, чтобы не делить на ноль в прогрессе.
@@ -525,55 +502,48 @@ function TranscriptTable({
 
   return (
     <div className="space-y-2">
-      <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
-        <label className="flex items-center gap-1.5">
-          <input
-            type="checkbox"
-            checked={autoAdvance}
-            onChange={(event) => setAutoAdvance(event.target.checked)}
-          />
-          Автопереход к следующей реплике
-        </label>
+      <div className="flex flex-wrap items-center gap-3 text-xs text-muted">
+        <Checkbox
+          label="Автопереход к следующей реплике"
+          checked={autoAdvance}
+          onChange={(event) => setAutoAdvance(event.target.checked)}
+        />
         {playingKey ? (
-          <span className="flex items-center gap-1 font-medium text-blue-600 dark:text-blue-400">
-            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
+          <span className="flex items-center gap-1 font-medium text-primary">
+            <span aria-hidden className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
             воспроизведение фрагмента
           </span>
         ) : (
           <span>Двойной клик по тексту — правка; ПКМ по выделению — в глоссарий</span>
         )}
         {onAssignSpeaker && (
-          <label className="flex items-center gap-1.5">
-            <input
-              type="checkbox"
-              checked={allSelected}
-              onChange={toggleAll}
-              aria-label="Выделить все реплики"
-            />
-            Выделить все для назначения говорящего
-          </label>
+          <Checkbox
+            label="Выделить все для назначения говорящего"
+            checked={allSelected}
+            onChange={toggleAll}
+            aria-label="Выделить все реплики"
+          />
         )}
         {onUndoAssign && undoAvailable && (
-          <button
-            type="button"
-            onClick={() => void undoAssign()}
+          <Button
+            variant="secondary"
+            size="sm"
             disabled={assignBusy}
             title="Вернуть говорящих к состоянию до последнего назначения"
-            className="rounded border border-slate-300 px-2 py-0.5 text-xs hover:bg-slate-100 disabled:opacity-40 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+            onClick={() => void undoAssign()}
           >
             Отменить назначение
-          </button>
+          </Button>
         )}
       </div>
 
       {onAssignSpeaker && selectedEntries.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200">
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-info/40 bg-info-soft px-3 py-2 text-xs text-info-soft-fg">
           <span className="font-medium">Выбрано реплик: {selectedEntries.length}</span>
-          <select
+          <Select
+            aria-label="Говорящий для назначения"
             value={assignTargetId}
             onChange={(event) => setAssignTargetId(event.target.value)}
-            aria-label="Говорящий для назначения"
-            className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
           >
             <option value="">— говорящий —</option>
             {speakers.map((speaker) => (
@@ -582,78 +552,75 @@ function TranscriptTable({
               </option>
             ))}
             <option value={NEW_SPEAKER}>＋ новый говорящий…</option>
-          </select>
+          </Select>
           {assignTargetId === NEW_SPEAKER && (
-            <input
+            <Input
+              aria-label="Имя нового говорящего"
               value={newSpeakerName}
               onChange={(event) => setNewSpeakerName(event.target.value)}
               placeholder="Имя нового говорящего"
-              className="rounded-md border border-slate-300 px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+              className="w-44"
             />
           )}
-          <button
-            type="button"
+          <Button
+            variant="primary"
+            size="sm"
+            loading={assignBusy}
+            disabled={!assignReady}
             onClick={() => void submitAssign()}
-            disabled={!assignReady || assignBusy}
-            className="rounded-md bg-blue-600 px-2.5 py-1 text-xs text-white hover:bg-blue-500 disabled:opacity-40"
           >
-            {assignBusy ? 'Применяю…' : 'Назначить'}
-          </button>
+            Назначить
+          </Button>
           {onAddExtraSpeaker && (
-            <button
-              type="button"
-              onClick={() => void submitExtra()}
+            <Button
+              variant="secondary"
+              size="sm"
               disabled={!assignReady || assignBusy}
               title="Добавить выбранного говорящего вторым (наложение), не меняя основного"
-              className="rounded-md border border-blue-400 px-2.5 py-1 text-xs text-blue-700 hover:bg-blue-100 disabled:opacity-40 dark:border-blue-700 dark:text-blue-300 dark:hover:bg-blue-950/40"
+              onClick={() => void submitExtra()}
             >
               + второй говорящий
-            </button>
+            </Button>
           )}
-          <button
-            type="button"
-            onClick={() => setSelectedKeys(new Set())}
-            className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-white/60 dark:border-slate-600 dark:hover:bg-slate-800"
-          >
+          <Button variant="ghost" size="sm" onClick={() => setSelectedKeys(new Set())}>
             Снять выделение
-          </button>
+          </Button>
         </div>
       )}
 
       {onSplitEntry && splitKey && splitTarget && (
-        <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200">
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-warn/40 bg-warn-soft px-3 py-2 text-xs text-warn-soft-fg">
           <span className="font-medium">
             Разделить реплику {formatTime(splitTarget.start)}–{formatTime(splitTarget.end)}
           </span>
           <label className="flex items-center gap-1">
             Граница, с
-            <input
+            <Input
               type="number"
               min={splitTarget.start}
               max={splitTarget.end}
               step={0.01}
               value={splitBoundary}
               onChange={(event) => setSplitBoundary(event.target.value)}
-              className="w-24 rounded-md border border-slate-300 px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+              className="w-24"
             />
           </label>
-          <button
-            type="button"
-            onClick={suggestSplitBoundary}
+          <Button
+            variant="secondary"
+            size="sm"
             title={
               (splitTarget.words?.length ?? 0) >= 2
                 ? 'Подсказать границу по пословным таймкодам'
                 : 'Пословных таймкодов нет — середина реплики'
             }
-            className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-white/60 dark:border-slate-600 dark:hover:bg-slate-800"
+            onClick={suggestSplitBoundary}
           >
             Подсказать
-          </button>
-          <select
+          </Button>
+          <Select
+            aria-label="Говорящий первой части"
             value={splitFirstId}
             onChange={(event) => setSplitFirstId(event.target.value)}
-            aria-label="Говорящий первой части"
-            className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
           >
             <option value="">— 1-я часть —</option>
             {speakers.map((speaker) => (
@@ -662,21 +629,21 @@ function TranscriptTable({
               </option>
             ))}
             <option value={NEW_SPEAKER}>＋ новый говорящий…</option>
-          </select>
+          </Select>
           {splitFirstId === NEW_SPEAKER && (
-            <input
+            <Input
+              aria-label="Имя говорящего первой части"
               value={splitFirstNew}
               onChange={(event) => setSplitFirstNew(event.target.value)}
               placeholder="Имя"
-              className="w-28 rounded-md border border-slate-300 px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+              className="w-28"
             />
           )}
-          <span className="text-slate-400">+</span>
-          <select
+          <span className="text-muted">+</span>
+          <Select
+            aria-label="Говорящий второй части"
             value={splitSecondId}
             onChange={(event) => setSplitSecondId(event.target.value)}
-            aria-label="Говорящий второй части"
-            className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
           >
             <option value="">— 2-я часть —</option>
             {speakers.map((speaker) => (
@@ -685,278 +652,262 @@ function TranscriptTable({
               </option>
             ))}
             <option value={NEW_SPEAKER}>＋ новый говорящий…</option>
-          </select>
+          </Select>
           {splitSecondId === NEW_SPEAKER && (
-            <input
+            <Input
+              aria-label="Имя говорящего второй части"
               value={splitSecondNew}
               onChange={(event) => setSplitSecondNew(event.target.value)}
               placeholder="Имя"
-              className="w-28 rounded-md border border-slate-300 px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
+              className="w-28"
             />
           )}
-          <button
-            type="button"
-            onClick={() => void submitSplit()}
-            disabled={splitBusy}
-            className="rounded-md bg-amber-600 px-2.5 py-1 text-xs text-white hover:bg-amber-500 disabled:opacity-40"
-          >
-            {splitBusy ? 'Разрезаю…' : 'Разделить'}
-          </button>
-          <button
-            type="button"
+          <Button variant="primary" size="sm" loading={splitBusy} onClick={() => void submitSplit()}>
+            Разделить
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => {
               setSplitKey(null)
               setEditError(null)
             }}
-            className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-white/60 dark:border-slate-600 dark:hover:bg-slate-800"
           >
             Отмена
-          </button>
+          </Button>
         </div>
       )}
 
       {editError && (
-        <p className="rounded-md bg-red-50 px-3 py-1.5 text-xs text-red-700 dark:bg-red-950/50 dark:text-red-300">
+        <Alert tone="danger" live onDismiss={() => setEditError(null)}>
           {editError}
-        </p>
+        </Alert>
       )}
 
       <audio ref={audioRef} preload="metadata" src={`/api/jobs/${jobId}/audio`} className="hidden" />
 
-      <div className="max-h-[28rem] overflow-auto rounded-md border border-slate-200 dark:border-slate-800">
-        <table className="w-full border-collapse text-sm">
-          <thead className="sticky top-0 z-10 bg-slate-100 text-left text-xs uppercase text-slate-500 dark:bg-slate-800 dark:text-slate-400">
-            <tr>
-              {onAssignSpeaker && (
-                <th className="w-8 px-2 py-2 font-medium" aria-label="Выделить реплику" />
-              )}
-              <th className="w-10 px-2 py-2 font-medium" aria-label="Прослушать" />
-              <th className="px-3 py-2 font-medium">Время</th>
-              <th className="px-3 py-2 font-medium">Говорящий</th>
-              <th className="px-3 py-2 font-medium">Метки</th>
-              <th className="px-3 py-2 font-medium">Текст</th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((entry, index) => {
-              const key = entryKey(entry, index)
-              const playing = playingKey === key
-              const editing = editingKey === key && onSaveText != null
-              const selected = selectedKeys.has(key)
-              const span = Math.max(MIN_FRAGMENT, entry.end - entry.start)
-              const percent = playing
-                ? Math.min(100, Math.max(0, (position / span) * 100))
-                : 0
-              const pieces = speakerPieces(speakers, entry)
-              return (
-                <tr
-                  key={key}
-                  className={
-                    playing
-                      ? 'border-t border-slate-100 bg-blue-50 dark:border-slate-800 dark:bg-blue-950/40'
-                      : selected
-                        ? 'border-t border-slate-100 bg-amber-50 dark:border-slate-800 dark:bg-amber-950/30'
-                        : 'border-t border-slate-100 dark:border-slate-800'
-                  }
-                >
-                  {onAssignSpeaker && (
-                    <td className="px-2 py-1.5">
-                      <input
-                        type="checkbox"
-                        checked={selected}
-                        onChange={() => toggleRow(key)}
-                        aria-label={`Выделить реплику ${index + 1}`}
-                      />
-                    </td>
-                  )}
-                  <td className="px-2 py-1.5">
-                    <button
-                      type="button"
-                      onClick={() => toggle({ key, start: entry.start, end: entry.end })}
-                      aria-label={playing ? 'Остановить фрагмент' : 'Прослушать фрагмент'}
-                      aria-pressed={playing}
-                      title={playing ? 'Остановить' : `Прослушать ${formatTime(entry.start)}–${formatTime(entry.end)}`}
-                      className={
-                        playing
-                          ? 'flex h-6 w-6 items-center justify-center rounded-full bg-blue-500 text-xs text-white'
-                          : 'flex h-6 w-6 items-center justify-center rounded-full border border-slate-300 text-xs text-slate-600 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800'
-                      }
-                    >
-                      <PlayerIcon paused={playing} />
-                    </button>
-                  </td>
-                  <td className="whitespace-nowrap px-3 py-1.5 font-mono text-xs text-slate-500 dark:text-slate-400">
-                    {formatTime(entry.start)}
-                  </td>
-                  <td className="px-3 py-1.5">
-                    <div className="flex items-start gap-1.5">
-                      <div
-                        className="max-w-[9rem] whitespace-normal break-words leading-snug sm:max-w-[16rem]"
-                        title={pieces.map((piece) => piece.name).join(' + ')}
-                      >
-                        {pieces.map((piece, pieceIndex) => (
-                          <span key={`${piece.id ?? 'none'}-${pieceIndex}`}>
-                            {pieceIndex > 0 && (
-                              <span className="mx-1 text-slate-400 dark:text-slate-500">+</span>
-                            )}
-                            <span
-                              className={
-                                piece.extra
-                                  ? 'text-slate-500 dark:text-slate-400'
-                                  : undefined
-                              }
-                              title={piece.extra ? 'дополнительный говорящий (наложение)' : undefined}
-                            >
-                              {piece.name}
-                            </span>
-                            {piece.extra && piece.id && onAddExtraSpeaker && (
-                              <button
-                                type="button"
-                                onClick={() => void removeExtra(entry, piece.id as string)}
-                                title="Убрать второго говорящего"
-                                className="ml-1 rounded border border-slate-300 px-1 text-[10px] text-slate-500 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
-                              >
-                                ×
-                              </button>
-                            )}
-                          </span>
-                        ))}
-                      </div>
-                      {onSplitEntry && (
-                        <button
-                          type="button"
-                          onClick={() => beginSplit(entry, index)}
-                          title="Разделить реплику по времени на двух говорящих"
-                          className="mt-0.5 shrink-0 rounded border border-slate-300 px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
-                        >
-                          разделить
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                  <td className="whitespace-nowrap px-3 py-1.5 text-base">
-                    {entry.low_confidence && <span title="низкая уверенность">⚠</span>}
-                    {entry.low_speaker_confidence && (
-                      <span title="говорящий под вопросом">?</span>
+      <Card className="overflow-hidden">
+        <div className="max-h-[28rem] overflow-auto">
+          <table className="w-full border-collapse text-sm">
+            <thead className="sticky top-0 z-10 bg-surface-3 text-left text-xs uppercase text-muted">
+              <tr>
+                {onAssignSpeaker && (
+                  <th className="w-8 px-2 py-2 font-medium" aria-label="Выделить реплику" />
+                )}
+                <th className="w-10 px-2 py-2 font-medium" aria-label="Прослушать" />
+                <th className="px-3 py-2 font-medium">Время</th>
+                <th className="px-3 py-2 font-medium">Говорящий</th>
+                <th className="px-3 py-2 font-medium">Метки</th>
+                <th className="px-3 py-2 font-medium">Текст</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((entry, index) => {
+                const key = entryKey(entry, index)
+                const playing = playingKey === key
+                const editing = editingKey === key && onSaveText != null
+                const selected = selectedKeys.has(key)
+                const span = Math.max(MIN_FRAGMENT, entry.end - entry.start)
+                const percent = playing ? Math.min(100, Math.max(0, (position / span) * 100)) : 0
+                const pieces = speakerPieces(speakers, entry)
+                return (
+                  <tr
+                    key={key}
+                    className={cn(
+                      'border-t border-border',
+                      playing && 'bg-info-soft',
+                      !playing && selected && 'bg-warn-soft',
                     )}
-                    {entry.overlap && <span title="наложение речи">⇄</span>}
-                  </td>
-                  <td
-                    className="px-3 py-1.5"
-                    onContextMenu={(event) => openContextMenu(event)}
                   >
-                    {editing ? (
-                      <div className="space-y-1">
-                        <textarea
-                          value={draftText}
-                          onChange={(event) => setDraftText(event.target.value)}
-                          rows={2}
-                          autoFocus
-                          className="w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                    {onAssignSpeaker && (
+                      <td className="px-2 py-1.5">
+                        <Checkbox
+                          checked={selected}
+                          onChange={() => toggleRow(key)}
+                          aria-label={`Выделить реплику ${index + 1}`}
                         />
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => void saveEdit(entry, key)}
-                            disabled={savingKey === key}
-                            className="rounded-md bg-slate-800 px-2.5 py-1 text-xs text-white hover:bg-slate-700 disabled:opacity-40 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-white"
-                          >
-                            {savingKey === key ? 'Сохранение…' : 'Сохранить'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditingKey(null)
-                              setEditError(null)
-                            }}
-                            className="rounded-md border border-slate-300 px-2.5 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
-                          >
-                            Отмена
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
+                      </td>
+                    )}
+                    <td className="px-2 py-1.5">
+                      <IconButton
+                        aria-label={playing ? 'Остановить фрагмент' : 'Прослушать фрагмент'}
+                        aria-pressed={playing}
+                        title={
+                          playing
+                            ? 'Остановить'
+                            : `Прослушать ${formatTime(entry.start)}–${formatTime(entry.end)}`
+                        }
+                        variant={playing ? 'primary' : 'secondary'}
+                        size="sm"
+                        onClick={() => toggle({ key, start: entry.start, end: entry.end })}
+                      >
+                        {playing ? (
+                          <Pause aria-hidden className="h-3.5 w-3.5" />
+                        ) : (
+                          <Play aria-hidden className="h-3.5 w-3.5" />
+                        )}
+                      </IconButton>
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-1.5 font-mono text-xs tabular-nums text-muted">
+                      {formatTime(entry.start)}
+                    </td>
+                    <td className="px-3 py-1.5">
                       <div className="flex items-start gap-1.5">
                         <div
-                          className="break-words"
-                          onDoubleClick={() => beginEdit(key, entry.text)}
+                          className="max-w-36 whitespace-normal break-words leading-snug sm:max-w-64"
+                          title={pieces.map((piece) => piece.name).join(' + ')}
                         >
-                          {entry.text}
+                          {pieces.map((piece, pieceIndex) => (
+                            <span key={`${piece.id ?? 'none'}-${pieceIndex}`}>
+                              {pieceIndex > 0 && <span className="mx-1 text-muted">+</span>}
+                              <span
+                                className={cn(piece.extra && 'text-muted')}
+                                title={piece.extra ? 'дополнительный говорящий (наложение)' : undefined}
+                              >
+                                {piece.name}
+                              </span>
+                              {piece.extra && piece.id && onAddExtraSpeaker && (
+                                <IconButton
+                                  aria-label="Убрать второго говорящего"
+                                  title="Убрать второго говорящего"
+                                  size="sm"
+                                  className="ml-1 align-middle"
+                                  onClick={() => void removeExtra(entry, piece.id as string)}
+                                >
+                                  <X aria-hidden className="h-3 w-3" />
+                                </IconButton>
+                              )}
+                            </span>
+                          ))}
                         </div>
-                        {onSaveText && (
-                          <button
-                            type="button"
-                            onClick={() => beginEdit(key, entry.text)}
-                            aria-label="Править текст реплики"
-                            title="Править текст"
-                            className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded border border-slate-300 text-slate-500 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+                        {onSplitEntry && (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                              className="mt-0.5 shrink-0"
+                            title="Разделить реплику по времени на двух говорящих"
+                            onClick={() => beginSplit(entry, index)}
                           >
-                            <PencilIcon />
-                          </button>
-                        )}
-                        {entry.edited && (
-                          <span
-                            className="mt-0.5 shrink-0 rounded bg-amber-100 px-1 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950/60 dark:text-amber-300"
-                            title={
-                              entry.original_text
-                                ? `Исходный текст: ${entry.original_text}`
-                                : 'изменено вручную'
-                            }
-                          >
-                            изменено вручную
-                          </span>
-                        )}
-                        {entry.edited && onResetText && (
-                          <button
-                            type="button"
-                            onClick={() => void resetEdit(entry)}
-                            title="Сбросить к исходному тексту"
-                            className="mt-0.5 shrink-0 rounded border border-slate-300 px-1.5 py-0.5 text-[10px] text-slate-500 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
-                          >
-                            сбросить
-                          </button>
+                            разделить
+                          </Button>
                         )}
                       </div>
-                    )}
-                    {playing && (
-                      <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-blue-100 dark:bg-blue-900">
-                        <div
-                          className="h-full rounded-full bg-blue-500 transition-[width] duration-100 ease-linear"
-                          style={{ width: `${percent}%` }}
-                        />
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-        {entries.length === 0 && (
-          <p className="py-6 text-center text-sm text-slate-400 dark:text-slate-500">
-            Ничего не найдено
-          </p>
-        )}
-      </div>
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-base">
+                      {entry.low_confidence && <span title="низкая уверенность">⚠</span>}
+                      {entry.low_speaker_confidence && <span title="говорящий под вопросом">?</span>}
+                      {entry.overlap && <span title="наложение речи">⇄</span>}
+                    </td>
+                    <td className="px-3 py-1.5" onContextMenu={(event) => openContextMenu(event)}>
+                      {editing ? (
+                        <div className="space-y-1">
+                          <Textarea
+                            aria-label="Текст реплики"
+                            value={draftText}
+                            onChange={(event) => setDraftText(event.target.value)}
+                            rows={2}
+                            autoFocus
+                          />
+                          <div className="flex items-center gap-2">
+                            <Button
+                              variant="primary"
+                              size="sm"
+                              loading={savingKey === key}
+                              onClick={() => void saveEdit(entry, key)}
+                            >
+                              Сохранить
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => {
+                                setEditingKey(null)
+                                setEditError(null)
+                              }}
+                            >
+                              Отмена
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-start gap-1.5">
+                          <div className="break-words" onDoubleClick={() => beginEdit(key, entry.text)}>
+                            {entry.text}
+                          </div>
+                          {onSaveText && (
+                            <IconButton
+                              aria-label="Править текст реплики"
+                              title="Править текст"
+                              size="sm"
+                              className="mt-0.5 shrink-0"
+                              onClick={() => beginEdit(key, entry.text)}
+                            >
+                              <Pencil aria-hidden className="h-3 w-3" />
+                            </IconButton>
+                          )}
+                          {entry.edited && (
+                            <span
+                              className="mt-0.5 shrink-0 rounded bg-warn-soft px-1 py-0.5 text-[10px] font-medium text-warn-soft-fg"
+                              title={
+                                entry.original_text
+                                  ? `Исходный текст: ${entry.original_text}`
+                                  : 'изменено вручную'
+                              }
+                            >
+                              изменено вручную
+                            </span>
+                          )}
+                          {entry.edited && onResetText && (
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                            className="mt-0.5 shrink-0"
+                              title="Сбросить к исходному тексту"
+                              onClick={() => void resetEdit(entry)}
+                            >
+                              сбросить
+                            </Button>
+                          )}
+                        </div>
+                      )}
+                      {playing && (
+                        <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-surface-3">
+                          <div
+                            className="h-full rounded-full bg-primary transition-[width] duration-100 ease-linear"
+                            style={{ width: `${percent}%` }}
+                          />
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+          {entries.length === 0 && (
+            <p className="py-6 text-center text-sm text-muted">Ничего не найдено</p>
+          )}
+        </div>
+      </Card>
 
       {contextMenu && (
         <div
           role="menu"
-          className="fixed z-50 min-w-[12rem] rounded-md border border-slate-200 bg-white py-1 text-sm shadow-lg dark:border-slate-700 dark:bg-slate-900"
+          className="fixed z-50 min-w-48 rounded-md border border-border bg-surface py-1 text-sm shadow-lg"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onClick={(event) => event.stopPropagation()}
         >
-          <button
-            type="button"
+          <Button
             role="menuitem"
+            variant="ghost"
+            fullWidth
             onClick={() => {
               setQuickTerm(contextMenu.term)
               setContextMenu(null)
             }}
-            className="block w-full px-3 py-1.5 text-left hover:bg-slate-100 dark:hover:bg-slate-800"
           >
             Добавить в глоссарий: «{contextMenu.term}»
-          </button>
+          </Button>
         </div>
       )}
 

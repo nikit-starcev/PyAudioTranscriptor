@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { Send, Trash2 } from 'lucide-react'
 
 import {
   clearChatHistory,
@@ -10,6 +11,7 @@ import {
   type ChatCitation,
   type ChatMessage,
 } from '../api'
+import { Alert, Button, Card, CardHeader, Spinner, Textarea, cn } from './ui'
 
 type Props = {
   jobId: string
@@ -66,13 +68,15 @@ function MessageContent({
             {indexes.map((index, position) => (
               <span key={index}>
                 {position > 0 && ', '}
-                <button
-                  type="button"
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="align-middle"
+                  aria-label={`Источник ${index}`}
                   onClick={() => onCite(byIndex.get(index)!)}
-                  className="rounded bg-blue-100 px-1 font-medium text-blue-700 hover:bg-blue-200 dark:bg-blue-950/60 dark:text-blue-300 dark:hover:bg-blue-900"
                 >
                   {index}
-                </button>
+                </Button>
               </span>
             ))}
             ]
@@ -275,115 +279,111 @@ function ChatPanel({ jobId }: Props) {
   }
 
   return (
-    <div className="space-y-3 rounded-md border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-800/50">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="font-medium">Чат по стенограмме</h3>
-        <button
-          type="button"
-          onClick={() => void clear()}
-          disabled={busy || messages.length === 0}
-          title="Удалить историю чата по этой записи"
-          className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-600 dark:bg-slate-900 dark:hover:bg-slate-800"
-        >
-          Очистить
-        </button>
-      </div>
-
-      {error && (
-        <p
-          role="alert"
-          className="rounded-md bg-red-50 px-3 py-1.5 text-xs text-red-700 dark:bg-red-950/50 dark:text-red-300"
-        >
-          {error}
-        </p>
-      )}
-
-      <div className="max-h-[24rem] space-y-2 overflow-auto rounded-md border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-900">
-        {loading ? (
-          <p className="py-4 text-center text-sm text-slate-400 dark:text-slate-500">
-            Загрузка истории…
-          </p>
-        ) : messages.length === 0 ? (
-          <p className="py-4 text-center text-sm text-slate-400 dark:text-slate-500">
-            Задайте вопрос по стенограмме: «о чём договорились?», «какие сроки назвали?»
-          </p>
-        ) : (
-          messages.map((message) => (
-            <div
-              key={message.key}
-              className={
-                message.role === 'user'
-                  ? 'ml-auto max-w-[85%] rounded-md bg-blue-50 px-3 py-2 text-sm dark:bg-blue-950/40'
-                  : 'mr-auto max-w-[85%] rounded-md bg-slate-100 px-3 py-2 text-sm dark:bg-slate-800'
-              }
-            >
-              <p className="mb-0.5 text-[10px] uppercase text-slate-400 dark:text-slate-500">
-                {message.role === 'user' ? 'Вы' : 'Ассистент'}
-                {message.pending ? ' · печатает…' : ''}
-              </p>
-              {message.failed ? (
-                <p className="break-words text-red-700 dark:text-red-300">{message.content}</p>
-              ) : (
-                <MessageContent
-                  content={message.content}
-                  citations={message.citations}
-                  onCite={playCitation}
-                />
-              )}
-              {message.citations.length > 0 && (
-                <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-slate-200 pt-2 text-xs dark:border-slate-700">
-                  <span className="text-slate-400 dark:text-slate-500">Источники:</span>
-                  {message.citations.map((citation) => (
-                    <button
-                      key={citation.index}
-                      type="button"
-                      onClick={() => playCitation(citation)}
-                      title={`${citation.speaker}: ${citation.text}`}
-                      aria-pressed={playingIndex === citation.index}
-                      className={
-                        playingIndex === citation.index
-                          ? 'rounded border border-blue-400 bg-blue-100 px-1.5 py-0.5 text-blue-700 dark:border-blue-700 dark:bg-blue-950/60 dark:text-blue-300'
-                          : 'rounded border border-slate-300 px-1.5 py-0.5 text-slate-600 hover:bg-slate-100 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800'
-                      }
-                    >
-                      [{citation.index}] {formatClock(citation.start)} · {citation.speaker}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))
-        )}
-        <div ref={endRef} />
-      </div>
-
-      <div className="flex items-end gap-2">
-        <textarea
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          onKeyDown={onKeyDown}
-          rows={2}
-          placeholder="Вопрос по стенограмме… (Enter — отправить, Shift+Enter — новая строка)"
-          disabled={busy}
-          className="min-h-[2.5rem] flex-1 resize-y rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:border-blue-400 focus:outline-none disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder-slate-500"
-        />
-        <button
-          type="button"
-          onClick={() => void send()}
-          disabled={busy || input.trim().length === 0}
-          className="rounded-md bg-slate-800 px-3 py-1.5 text-sm text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-white"
-        >
-          {busy ? 'Отвечаю…' : 'Отправить'}
-        </button>
-      </div>
-
-      <audio
-        ref={audioRef}
-        preload="metadata"
-        src={`/api/jobs/${jobId}/audio`}
-        className="hidden"
+    <Card>
+      <CardHeader
+        title="Чат по стенограмме"
+        description="Вопрос → ответ локальной LLM с ссылками на реплики"
+        actions={
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={<Trash2 aria-hidden className="h-4 w-4" />}
+            disabled={busy || messages.length === 0}
+            title="Удалить историю чата по этой записи"
+            onClick={() => void clear()}
+          >
+            Очистить
+          </Button>
+        }
       />
-    </div>
+      <div className="space-y-3 p-4">
+        {error && (
+          <Alert tone="danger" live onDismiss={() => setError(null)}>
+            {error}
+          </Alert>
+        )}
+
+        <div className="max-h-96 space-y-2 overflow-auto rounded-md border border-border bg-surface-2/40 p-3">
+          {loading ? (
+            <div className="flex items-center justify-center gap-2 py-4 text-sm text-muted">
+              <Spinner size={16} /> Загрузка истории…
+            </div>
+          ) : messages.length === 0 ? (
+            <p className="py-4 text-center text-sm text-muted">
+              Задайте вопрос по стенограмме: «о чём договорились?», «какие сроки назвали?»
+            </p>
+          ) : (
+            messages.map((message) => (
+              <div
+                key={message.key}
+                className={cn(
+                  'max-w-[85%] rounded-md px-3 py-2 text-sm',
+                  message.role === 'user'
+                    ? 'ml-auto bg-primary-soft text-primary-soft-fg'
+                    : 'mr-auto bg-surface-3 text-text',
+                )}
+              >
+                <p className="mb-0.5 text-[10px] uppercase text-muted">
+                  {message.role === 'user' ? 'Вы' : 'Ассистент'}
+                  {message.pending ? ' · печатает…' : ''}
+                </p>
+                {message.failed ? (
+                  <p className="break-words text-danger">{message.content}</p>
+                ) : (
+                  <MessageContent
+                    content={message.content}
+                    citations={message.citations}
+                    onCite={playCitation}
+                  />
+                )}
+                {message.citations.length > 0 && (
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-border pt-2 text-xs">
+                    <span className="text-muted">Источники:</span>
+                    {message.citations.map((citation) => (
+                      <Button
+                        key={citation.index}
+                        variant={playingIndex === citation.index ? 'primary' : 'secondary'}
+                        size="sm"
+                        aria-pressed={playingIndex === citation.index}
+                        title={`${citation.speaker}: ${citation.text}`}
+                        onClick={() => playCitation(citation)}
+                      >
+                        [{citation.index}] {formatClock(citation.start)} · {citation.speaker}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+          <div ref={endRef} />
+        </div>
+
+        <div className="flex items-end gap-2">
+          <Textarea
+            aria-label="Вопрос по стенограмме"
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={onKeyDown}
+            rows={2}
+            placeholder="Вопрос по стенограмме… (Enter — отправить, Shift+Enter — новая строка)"
+            disabled={busy}
+            className="flex-1"
+          />
+          <Button
+            variant="primary"
+            icon={<Send aria-hidden className="h-4 w-4" />}
+            loading={busy}
+            disabled={input.trim().length === 0}
+            onClick={() => void send()}
+          >
+            {busy ? 'Отвечаю…' : 'Отправить'}
+          </Button>
+        </div>
+
+        <audio ref={audioRef} preload="metadata" src={`/api/jobs/${jobId}/audio`} className="hidden" />
+      </div>
+    </Card>
   )
 }
 

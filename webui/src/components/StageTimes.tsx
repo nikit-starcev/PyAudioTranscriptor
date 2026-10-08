@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
+import { Ban, Circle, Check } from 'lucide-react'
 
 import { formatStageTime, type StageTime } from '../api'
+import { Badge, Card, cn } from './ui'
 
 const STAGE_LABELS: Record<string, string> = {
   denoise: 'Шумоподавление',
@@ -83,113 +85,104 @@ export default function StageTimes({
   const hasData = stages.length > 0 || totalSeconds != null
 
   return (
-    <div className="mt-4 rounded-md border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-800/40">
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <h3 className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-          Стадии и время
-        </h3>
-        <span className="text-sm tabular-nums text-slate-700 dark:text-slate-200">
+    <Card>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+        <h2 className="text-sm font-semibold text-text">Стадии и время</h2>
+        <span className="text-sm tabular-nums text-text">
           Итого:{' '}
           <span className="font-medium">
             {totalSeconds != null ? formatStageTime(totalSeconds) : '—'}
           </span>
         </span>
       </div>
-
-      {!hasData ? (
-        <p className="py-1 text-xs text-slate-400 dark:text-slate-500">Нет данных о времени</p>
-      ) : (
-        <ul className="space-y-1 text-sm">
-          {stages.map((stage) => {
-            const timing = byStage.get(stage)
-            const isFailed = failedStage === stage
-            const isActive = running && currentStage === stage
-            const isDone = !isFailed && !isActive && timing != null
-            const title = isFailed
-              ? `Сбой на стадии «${stageLabel(stage)}»`
-              : stageLabel(stage)
-            return (
-              <li
-                key={stage}
-                className={`flex items-center gap-2 rounded px-1 ${
-                  isActive
-                    ? 'bg-blue-50 dark:bg-blue-950/40'
-                    : isFailed
-                      ? 'bg-red-50 dark:bg-red-950/40'
-                      : ''
-                }`}
-              >
-                <span
-                  className={
-                    isFailed
-                      ? 'text-red-600 dark:text-red-400'
-                      : isDone
-                        ? 'text-emerald-600 dark:text-emerald-400'
+      <div className="p-4">
+        {!hasData ? (
+          <p className="py-1 text-xs text-muted">Нет данных о времени</p>
+        ) : (
+          <ul className="space-y-1 text-sm">
+            {stages.map((stage) => {
+              const timing = byStage.get(stage)
+              const isFailed = failedStage === stage
+              const isActive = running && currentStage === stage
+              const isDone = !isFailed && !isActive && timing != null
+              return (
+                <li
+                  key={stage}
+                  className={cn(
+                    'flex items-center gap-2 rounded px-1',
+                    isActive && 'bg-info-soft',
+                    isFailed && 'bg-danger-soft',
+                  )}
+                >
+                  <span
+                    className={cn(
+                      'shrink-0',
+                      isFailed
+                        ? 'text-danger'
+                        : isDone
+                          ? 'text-success'
+                          : isActive
+                            ? 'text-primary'
+                            : 'text-muted',
+                    )}
+                    title={isFailed ? `Сбой на стадии «${stageLabel(stage)}»` : stageLabel(stage)}
+                  >
+                    {isFailed ? (
+                      <Ban aria-hidden className="h-3.5 w-3.5" />
+                    ) : isDone ? (
+                      <Check aria-hidden className="h-3.5 w-3.5" />
+                    ) : isActive ? (
+                      <Circle aria-hidden className="h-2 w-2 animate-pulse fill-current" />
+                    ) : (
+                      <Circle aria-hidden className="h-2 w-2" />
+                    )}
+                  </span>
+                  <span
+                    className={cn(
+                      'min-w-0 flex-1 truncate',
+                      isFailed
+                        ? 'font-medium text-danger-soft-fg'
                         : isActive
-                          ? 'animate-pulse text-blue-600 dark:text-blue-400'
-                          : 'text-slate-300 dark:text-slate-600'
-                  }
-                  title={title}
-                >
-                  {isFailed ? '⛔' : isDone ? '✓' : isActive ? '●' : '·'}
-                </span>
-                <span
-                  className={`flex-1 truncate ${
-                    isFailed
-                      ? 'font-medium text-red-700 dark:text-red-300'
+                          ? 'font-medium text-text'
+                          : isDone
+                            ? 'text-text'
+                            : 'text-muted',
+                    )}
+                  >
+                    {stageLabel(stage)}
+                  </span>
+                  {timing?.cached && (
+                    <span className="shrink-0" title="Стадия не пересчитывалась — результат взят из кэша">
+                      <Badge tone="warn">из кэша</Badge>
+                    </span>
+                  )}
+                  <span
+                    className={cn(
+                      'tabular-nums',
+                      isFailed ? 'text-danger' : isActive ? 'text-primary' : 'text-muted',
+                      isDone && 'text-text',
+                    )}
+                  >
+                    {isFailed
+                      ? 'сбой'
                       : isActive
-                        ? 'font-medium text-blue-700 dark:text-blue-300'
-                        : isDone
-                          ? ''
-                          : 'text-slate-400 dark:text-slate-500'
-                  }`}
-                >
-                  {stageLabel(stage)}
-                </span>
-                {timing?.cached && <CachedBadge />}
-                <span
-                  className={`tabular-nums ${
-                    isFailed
-                      ? 'text-red-600 dark:text-red-400'
-                      : isActive
-                        ? 'text-blue-600 dark:text-blue-400'
-                        : isDone
-                          ? 'text-slate-600 dark:text-slate-300'
-                          : 'text-slate-400 dark:text-slate-500'
-                  }`}
-                >
-                  {isFailed
-                    ? 'сбой'
-                    : isActive
-                      ? running && liveSeconds != null
-                        ? `${formatStageTime(liveSeconds)}…`
-                        : '—'
-                      : timing
-                        ? formatStageTime(timing.seconds)
-                        : '—'}
-                </span>
-              </li>
-            )
-          })}
-        </ul>
-      )}
+                        ? running && liveSeconds != null
+                          ? `${formatStageTime(liveSeconds)}…`
+                          : '—'
+                        : timing
+                          ? formatStageTime(timing.seconds)
+                          : '—'}
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
+        )}
 
-      {status === 'error' && failedStage == null && (
-        <p className="mt-2 text-xs text-red-600 dark:text-red-400">
-          Задача завершилась ошибкой
-        </p>
-      )}
-    </div>
-  )
-}
-
-function CachedBadge() {
-  return (
-    <span
-      className="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-700 dark:bg-amber-950/60 dark:text-amber-300"
-      title="Стадия не пересчитывалась — результат взят из кэша"
-    >
-      из кэша
-    </span>
+        {status === 'error' && failedStage == null && (
+          <p className="mt-2 text-xs text-danger">Задача завершилась ошибкой</p>
+        )}
+      </div>
+    </Card>
   )
 }

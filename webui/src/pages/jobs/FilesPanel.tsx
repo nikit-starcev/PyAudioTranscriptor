@@ -48,6 +48,7 @@ function FilesPanel() {
           <input
             ref={fileInput}
             type="file"
+            aria-label="Загрузить аудиофайл"
             className="hidden"
             onChange={(event) => {
               const file = event.target.files?.[0]

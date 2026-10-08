@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 
 import {
   api,
@@ -8,17 +9,25 @@ import {
   type VoiceGroup,
   type VoiceInfo,
 } from '../api'
-
-type Props = {
-  open: boolean
-  onClose: () => void
-}
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  EmptyState,
+  Field,
+  IconButton,
+  Input,
+  Spinner,
+} from './ui'
 
 function sampleAudioUrl(filename: string): string {
   return `/api/voices/samples/${encodeURIComponent(filename)}/audio`
 }
 
-function VoicesModal({ open, onClose }: Props) {
+function VoicesPanel() {
   const [groups, setGroups] = useState<VoiceGroup[]>([])
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -43,19 +52,8 @@ function VoicesModal({ open, onClose }: Props) {
   }, [])
 
   useEffect(() => {
-    if (open) void refresh()
-  }, [open, refresh])
-
-  useEffect(() => {
-    if (!open) return
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
-
-  if (!open) return null
+    void refresh()
+  }, [refresh])
 
   const upload = async () => {
     const name = newName.trim()
@@ -160,137 +158,117 @@ function VoicesModal({ open, onClose }: Props) {
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/40 p-4 sm:items-center dark:bg-black/60"
-      onClick={onClose}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Библиотека голосов"
-        className="flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg bg-white shadow-xl dark:bg-slate-900"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-800">
-          <h2 className="font-medium">Библиотека голосов</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
-          >
-            Закрыть
-          </button>
-        </div>
+    <div className="space-y-5">
+      {error && (
+        <Alert tone="danger" live onDismiss={() => setError(null)}>
+          {error}
+        </Alert>
+      )}
+      {status && (
+        <Alert tone="info" live onDismiss={() => setStatus(null)}>
+          {status}
+        </Alert>
+      )}
+      {warning && (
+        <Alert tone="warn" live onDismiss={() => setWarning(null)}>
+          {warning}
+        </Alert>
+      )}
 
-        <div className="space-y-3 overflow-y-auto px-4 py-3">
-          {error && (
-            <p className="rounded-md bg-red-50 px-3 py-1.5 text-xs text-red-700 dark:bg-red-950/50 dark:text-red-300">
-              {error}
-            </p>
-          )}
-          {status && (
-            <p
-              role="status"
-              className="rounded-md bg-slate-50 px-3 py-1.5 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300"
-            >
-              {status}
-            </p>
-          )}
-          {warning && (
-            <p
-              role="alert"
-              className="rounded-md bg-amber-50 px-3 py-1.5 text-xs text-amber-800 dark:bg-amber-950/50 dark:text-amber-300"
-            >
-              ⚠ {warning}
-            </p>
-          )}
-
-          <div className="rounded-md border border-slate-200 p-3 dark:border-slate-800">
-            <p className="mb-2 text-xs font-medium text-slate-500 dark:text-slate-400">
-              Добавить образец
-            </p>
-            <div className="flex flex-wrap items-center gap-2">
-              <input
+      <Card>
+        <CardHeader title="Добавить образец" description="WAV-клип или аудио другого формата" />
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap items-end gap-3">
+            <Field label="Имя участника" htmlFor="voice-new-name">
+              <Input
+                id="voice-new-name"
                 value={newName}
                 onChange={(event) => setNewName(event.target.value)}
                 placeholder="Имя участника"
-                className="w-48 rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                className="w-48"
               />
+            </Field>
+            <Field label="Файл" htmlFor="voice-file">
               <input
+                id="voice-file"
                 type="file"
                 accept="audio/*,.wav"
                 onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-                className="text-xs"
+                className="block w-full text-xs text-muted file:mr-3 file:rounded-md file:border-0 file:bg-surface-2 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
               />
-              <button
-                type="button"
-                onClick={() => void upload()}
-                disabled={busy}
-                className="rounded-md bg-slate-800 px-3 py-1.5 text-xs text-white hover:bg-slate-700 disabled:opacity-40 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-white"
-              >
-                Загрузить
-              </button>
-            </div>
-            <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
-              WAV сохраняется как есть, другие форматы конвертируются в 16 кГц моно. Повторная
-              загрузка к тому же имени добавит образец «(2)», «(3)» и т.д.
-            </p>
+            </Field>
+            <Button variant="primary" loading={busy} onClick={() => void upload()}>
+              Загрузить
+            </Button>
           </div>
+          <p className="text-xs text-muted">
+            WAV сохраняется как есть, другие форматы конвертируются в 16 кГц моно. Повторная
+            загрузка к тому же имени добавит образец «(2)», «(3)» и т.д.
+          </p>
+        </CardContent>
+      </Card>
 
+      <Card>
+        <CardHeader
+          title="Образцы"
+          description={loading ? 'Загрузка…' : `Групп: ${groups.length}`}
+        />
+        <CardContent>
           {loading ? (
-            <p className="py-6 text-center text-sm text-slate-400 dark:text-slate-500">
-              Загрузка…
-            </p>
+            <div className="flex items-center justify-center py-6">
+              <Spinner size={20} label="Загрузка библиотеки голосов" />
+            </div>
           ) : groups.length === 0 ? (
-            <p className="py-6 text-center text-sm text-slate-400 dark:text-slate-500">
-              Библиотека пуста
-            </p>
+            <EmptyState
+              title="Библиотека пуста"
+              description="Добавьте образцы голоса участников"
+            />
           ) : (
             <ul className="space-y-2">
               {groups.map((group) => {
                 const isCollapsed = collapsed[group.name] ?? false
                 return (
-                  <li
-                    key={group.name}
-                    className="rounded-md border border-slate-200 dark:border-slate-800"
-                  >
+                  <li key={group.name} className="rounded-md border border-border">
                     <div className="flex items-center gap-2 px-3 py-2">
-                      <button
-                        type="button"
+                      <IconButton
+                        aria-label={isCollapsed ? `Развернуть ${group.name}` : `Свернуть ${group.name}`}
+                        size="sm"
                         onClick={() =>
                           setCollapsed((prev) => ({ ...prev, [group.name]: !isCollapsed }))
                         }
-                        className="w-6 shrink-0 text-xs text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-200"
-                        title={isCollapsed ? 'Развернуть' : 'Свернуть'}
                       >
-                        {isCollapsed ? '▸' : '▾'}
-                      </button>
-                      <span className="min-w-0 truncate text-sm font-medium" title={group.name}>
+                        {isCollapsed ? (
+                          <ChevronRight aria-hidden className="h-4 w-4" />
+                        ) : (
+                          <ChevronDown aria-hidden className="h-4 w-4" />
+                        )}
+                      </IconButton>
+                      <span className="min-w-0 truncate text-sm font-medium text-text" title={group.name}>
                         {group.name}
                       </span>
-                      <span className="shrink-0 text-xs text-slate-400 dark:text-slate-500">
-                        {group.count} обр.
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => void removePerson(group.name, group.count)}
+                      <Badge tone="neutral">{group.count} обр.</Badge>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="ml-auto"
                         disabled={busy}
-                        className="ml-auto shrink-0 rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-40 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-red-950/50 dark:hover:text-red-300"
+                        onClick={() => void removePerson(group.name, group.count)}
                       >
                         Удалить все
-                      </button>
+                      </Button>
                     </div>
 
                     {!isCollapsed && (
-                      <ul className="divide-y divide-slate-100 border-t border-slate-100 dark:divide-slate-800 dark:border-slate-800">
+                      <ul className="divide-y divide-border border-t border-border">
                         {group.samples.map((sample) => (
                           <li key={sample.filename} className="flex flex-col gap-2 px-3 py-2">
                             <div className="flex flex-wrap items-center gap-2">
                               <div className="min-w-0 flex-1">
                                 {edit?.filename === sample.filename ? (
                                   <div className="flex flex-wrap items-center gap-1">
-                                    <input
+                                    <Input
                                       autoFocus
+                                      aria-label="Новое имя образца"
                                       value={edit.value}
                                       onChange={(event) =>
                                         setEdit({ ...edit, value: event.target.value })
@@ -299,22 +277,18 @@ function VoicesModal({ open, onClose }: Props) {
                                         if (event.key === 'Enter') void rename(edit)
                                         if (event.key === 'Escape') setEdit(null)
                                       }}
-                                      className="w-40 min-w-0 max-w-full rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                                      className="w-40"
                                     />
-                                    <button
-                                      type="button"
+                                    <Button
+                                      variant="primary"
+                                      size="sm"
                                       onClick={() => void rename(edit)}
-                                      className="rounded-md bg-slate-800 px-2 py-1 text-xs text-white hover:bg-slate-700 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-white"
                                     >
                                       ОК
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => setEdit(null)}
-                                      className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
-                                    >
+                                    </Button>
+                                    <Button variant="ghost" size="sm" onClick={() => setEdit(null)}>
                                       Отмена
-                                    </button>
+                                    </Button>
                                   </div>
                                 ) : (
                                   <p className="truncate text-xs" title={sample.filename}>
@@ -322,21 +296,16 @@ function VoicesModal({ open, onClose }: Props) {
                                   </p>
                                 )}
                               </div>
-                              <span
-                                className="tabular-nums text-xs text-slate-400 dark:text-slate-500"
-                                title="Длительность"
-                              >
+                              <span className="tabular-nums text-xs text-muted" title="Длительность">
                                 {formatDuration(sample.duration)}
                               </span>
-                              <span
-                                className="tabular-nums text-xs text-slate-400 dark:text-slate-500"
-                                title="Размер файла"
-                              >
+                              <span className="tabular-nums text-xs text-muted" title="Размер файла">
                                 {formatBytes(sample.size)}
                               </span>
                               <div className="flex items-center gap-1">
-                                <button
-                                  type="button"
+                                <Button
+                                  variant="secondary"
+                                  size="sm"
                                   onClick={() =>
                                     setEdit({
                                       filename: sample.filename,
@@ -344,18 +313,17 @@ function VoicesModal({ open, onClose }: Props) {
                                       value: sample.name,
                                     })
                                   }
-                                  className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
                                 >
                                   Переименовать
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => void removeSample(sample.filename)}
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
                                   disabled={busy}
-                                  className="rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-40 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-red-950/50 dark:hover:text-red-300"
+                                  onClick={() => void removeSample(sample.filename)}
                                 >
                                   Удалить
-                                </button>
+                                </Button>
                               </div>
                             </div>
                             <audio
@@ -373,10 +341,10 @@ function VoicesModal({ open, onClose }: Props) {
               })}
             </ul>
           )}
-        </div>
-      </div>
+        </CardContent>
+      </Card>
     </div>
   )
 }
 
-export default VoicesModal
+export default VoicesPanel

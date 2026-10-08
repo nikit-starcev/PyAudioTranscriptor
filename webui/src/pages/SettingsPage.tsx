@@ -1,15 +1,16 @@
-import { navigateTo } from '../app/routes'
 import { useApp } from '../app/useApp'
-import SettingsModal from '../components/SettingsModal'
+import SettingsPanel from '../components/SettingsPanel'
 
 function SettingsPage() {
   const app = useApp()
   return (
-    <SettingsModal
-      open
-      onClose={() => navigateTo('/jobs')}
-      onSaved={app.handleSettingsSaved}
-    />
+    <div className="space-y-5">
+      <div>
+        <h1 className="text-lg font-semibold">Настройки</h1>
+        <p className="text-sm text-muted">Режимы обработки, модели, диаризация и пути</p>
+      </div>
+      <SettingsPanel onSaved={app.handleSettingsSaved} />
+    </div>
   )
 }
 

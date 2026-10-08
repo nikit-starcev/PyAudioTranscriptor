@@ -1,4 +1,7 @@
+import { AlertCircle, Ban, TriangleAlert } from 'lucide-react'
+
 import { type DoctorCheck, type DoctorReport } from '../api'
+import { Button, Card, cn } from './ui'
 
 type Props = {
   report: DoctorReport | null
@@ -21,15 +24,8 @@ function CheckRow({ check }: { check: DoctorCheck }) {
   return (
     <li className="py-1.5">
       <div className="flex items-start gap-2">
-        <span
-          aria-hidden
-          className={
-            isFail
-              ? 'mt-0.5 text-red-600 dark:text-red-400'
-              : 'mt-0.5 text-amber-600 dark:text-amber-400'
-          }
-        >
-          {isFail ? '✗' : '!'}
+        <span aria-hidden className={cn('mt-0.5 shrink-0', isFail ? 'text-danger' : 'text-warn')}>
+          {isFail ? <Ban className="h-4 w-4" /> : <TriangleAlert className="h-4 w-4" />}
         </span>
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium">
@@ -37,13 +33,11 @@ function CheckRow({ check }: { check: DoctorCheck }) {
             {check.critical ? '' : ' — некритично'}
           </p>
           {check.detail && (
-            <p className="text-xs text-slate-600 dark:text-slate-300">
+            <p className="text-xs text-muted">
               <code>{check.detail}</code>
             </p>
           )}
-          {check.hint && (
-            <p className="text-xs text-slate-600 dark:text-slate-300">{check.hint}</p>
-          )}
+          {check.hint && <p className="text-xs text-muted">{check.hint}</p>}
           {check.links.length > 0 && (
             <p className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs">
               {check.links.map((link) => (
@@ -52,7 +46,7 @@ function CheckRow({ check }: { check: DoctorCheck }) {
                   href={link}
                   target="_blank"
                   rel="noreferrer noopener"
-                  className="text-blue-600 underline hover:text-blue-500 dark:text-blue-400 dark:hover:text-blue-300"
+                  className="font-medium text-primary underline hover:opacity-80"
                 >
                   {linkLabel(link)}
                 </a>
@@ -72,29 +66,25 @@ function ReadinessBanner({ report, loading, error, onRecheck }: Props) {
   const blocked = failures.length > 0
 
   const recheckButton = (
-    <button
-      type="button"
-      onClick={onRecheck}
-      disabled={loading}
-      className="rounded-md border border-slate-300 bg-white px-3 py-1 text-xs hover:bg-slate-100 disabled:opacity-40 dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
-    >
-      {loading ? 'Проверка…' : 'Проверить снова'}
-    </button>
+    <Button variant="secondary" size="sm" loading={loading} onClick={onRecheck}>
+      Проверить снова
+    </Button>
   )
 
   if (!report) {
     return (
-      <div className="flex flex-wrap items-center gap-3 rounded-md border border-slate-200 bg-white px-4 py-2 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400">
+      <Card padded className="flex flex-wrap items-center gap-3 text-sm text-muted">
+        <AlertCircle aria-hidden className="h-4 w-4 shrink-0" />
         <span>{error ? `Не удалось проверить готовность: ${error}` : 'Проверка готовности…'}</span>
-        {error && recheckButton}
-      </div>
+        {error && <span className="ml-auto">{recheckButton}</span>}
+      </Card>
     )
   }
 
   if (problems.length === 0) {
     return (
-      <div className="flex flex-wrap items-center gap-3 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300">
-        <span className="font-medium">✓ Окружение готово</span>
+      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-success/40 bg-success-soft px-4 py-3 text-sm text-success-soft-fg">
+        <span className="font-medium">Окружение готово</span>
         <span className="text-xs">
           критичных проблем нет · проверок {report.summary.ok} в порядке
         </span>
@@ -103,14 +93,15 @@ function ReadinessBanner({ report, loading, error, onRecheck }: Props) {
     )
   }
 
-  const palette = blocked
-    ? 'border-red-300 bg-red-50 text-red-800 dark:border-red-900 dark:bg-red-950/50 dark:text-red-200'
-    : 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200'
-
   return (
     <section
       role="alert"
-      className={`rounded-md border px-4 py-3 ${palette}`}
+      className={cn(
+        'rounded-lg border px-4 py-3',
+        blocked
+          ? 'border-danger/40 bg-danger-soft text-danger-soft-fg'
+          : 'border-warn/40 bg-warn-soft text-warn-soft-fg',
+      )}
     >
       <div className="flex flex-wrap items-center gap-3">
         <h2 className="font-semibold">
@@ -125,7 +116,7 @@ function ReadinessBanner({ report, loading, error, onRecheck }: Props) {
         </span>
         <span className="ml-auto">{recheckButton}</span>
       </div>
-      <ul className="mt-2 divide-y divide-black/5 dark:divide-white/10">
+      <ul className="mt-2 divide-y divide-border/60">
         {failures.map((check) => (
           <CheckRow key={check.id} check={check} />
         ))}

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { ChevronDown, ChevronRight, Pause, Play } from 'lucide-react'
 
 import {
   api,
@@ -13,6 +14,7 @@ import {
   type SpeakerVariants as SpeakerVariantsResponse,
   type VoiceInfo,
 } from '../api'
+import { Alert, Button, Checkbox, IconButton, Input, ProgressBar, Select, Spinner } from './ui'
 
 type Props = {
   jobId: string
@@ -239,16 +241,17 @@ function SpeakerVariants({
 
   return (
     <div className="mt-1 sm:col-span-2">
-      <button
-        type="button"
-        onClick={() => setOpen((current) => !current)}
-        className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
-      >
-        {open ? '▾' : '▸'} Варианты прослушивания
-      </button>
+      <Button variant="secondary" size="sm" onClick={() => setOpen((current) => !current)}>
+        {open ? (
+          <ChevronDown aria-hidden className="h-4 w-4" />
+        ) : (
+          <ChevronRight aria-hidden className="h-4 w-4" />
+        )}
+        Варианты прослушивания
+      </Button>
 
       {open && (
-        <div className="mt-2 rounded-md border border-slate-200 bg-white p-2 dark:border-slate-700 dark:bg-slate-900">
+        <div className="mt-2 rounded-md border border-border bg-surface p-2">
           <audio
             ref={audioRef}
             preload="metadata"
@@ -257,22 +260,26 @@ function SpeakerVariants({
             onEnded={stop}
             className="hidden"
           />
-          <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
-            Прослушайте клип и назовите голос «по клику» (#52) либо перенесите окно
-            другому говорящему (#40/#41).
+          <p className="mb-2 text-xs text-muted">
+            Прослушайте клип и назовите голос «по клику» (#52) либо перенесите окно другому
+            говорящему (#40/#41).
           </p>
           {status && (
-            <p role="status" className="mb-2 text-xs text-slate-600 dark:text-slate-300">
+            <Alert tone="success" live className="mb-2">
               {status}
-            </p>
+            </Alert>
           )}
-          {error && <p className="mb-2 text-xs text-red-600 dark:text-red-300">{error}</p>}
+          {error && (
+            <Alert tone="danger" live className="mb-2">
+              {error}
+            </Alert>
+          )}
           {loading ? (
-            <p className="py-1 text-xs text-slate-400 dark:text-slate-500">Загрузка…</p>
+            <div className="flex items-center gap-2 py-1 text-xs text-muted">
+              <Spinner size={14} /> Загрузка…
+            </div>
           ) : variants.length === 0 ? (
-            <p className="py-1 text-xs text-slate-400 dark:text-slate-500">
-              Вариантов не найдено
-            </p>
+            <p className="py-1 text-xs text-muted">Вариантов не найдено</p>
           ) : (
             <ul className="space-y-1">
               {variants.map((variant, index) => {
@@ -280,35 +287,36 @@ function SpeakerVariants({
                 return (
                   <li
                     key={`${variant.start}-${variant.end}`}
-                    className="flex flex-col gap-1 rounded border border-slate-100 px-2 py-1 dark:border-slate-800"
+                    className="flex flex-col gap-1 rounded border border-border px-2 py-1"
                   >
                     <div className="flex flex-wrap items-center gap-2 text-xs">
-                      <button
-                        type="button"
-                        onClick={() => play(index)}
-                        className="w-7 shrink-0 rounded-md border border-slate-300 py-0.5 hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
+                      <IconButton
+                        variant={playing === index ? 'primary' : 'secondary'}
+                        size="sm"
+                        aria-label={playing === index ? 'Остановить вариант' : 'Прослушать вариант'}
                         title={playing === index ? 'Остановить' : 'Прослушать вариант'}
+                        onClick={() => play(index)}
                       >
-                        {playing === index ? '⏸' : '▶'}
-                      </button>
-                      <span className="tabular-nums text-slate-500 dark:text-slate-400">
+                        {playing === index ? (
+                          <Pause aria-hidden className="h-3.5 w-3.5" />
+                        ) : (
+                          <Play aria-hidden className="h-3.5 w-3.5" />
+                        )}
+                      </IconButton>
+                      <span className="tabular-nums text-muted">
                         [{formatTime(variant.start)}–{formatTime(variant.end)}]
                       </span>
-                      <span className="tabular-nums text-slate-400 dark:text-slate-500">
-                        {variant.duration.toFixed(1)} с
-                      </span>
-                      <span
-                        className="tabular-nums text-slate-300 dark:text-slate-600"
-                        title="Энергия окна"
-                      >
+                      <span className="tabular-nums text-muted">{variant.duration.toFixed(1)} с</span>
+                      <span className="tabular-nums text-muted" title="Энергия окна">
                         {variant.score.toFixed(4)}
                       </span>
                     </div>
 
                     {active ? (
                       <div className="flex flex-wrap items-center gap-1 text-xs">
-                        <input
+                        <Input
                           autoFocus
+                          aria-label="Имя"
                           value={value}
                           onChange={(event) => setValue(event.target.value)}
                           onKeyDown={(event) => {
@@ -322,51 +330,43 @@ function SpeakerVariants({
                                 ? 'Имя нового говорящего'
                                 : 'Имя образца'
                           }
-                          className="w-44 rounded-md border border-slate-300 px-2 py-0.5 text-xs dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                          className="w-44"
                         />
                         {active.kind === 'new' && (
-                          <label
-                            className="flex items-center gap-1 text-slate-500 dark:text-slate-400"
+                          <Checkbox
+                            label="разделить"
+                            checked={split}
                             title="Частично перекрывающиеся реплики станут общими с новым говорящим"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={split}
-                              onChange={(event) => setSplit(event.target.checked)}
-                            />
-                            разделить
-                          </label>
+                            onChange={(event) => setSplit(event.target.checked)}
+                          />
                         )}
-                        <button
-                          type="button"
-                          disabled={saving}
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          loading={saving}
                           onClick={() => void submitAction(active)}
-                          className="rounded-md bg-slate-800 px-2 py-0.5 text-white hover:bg-slate-700 disabled:opacity-40 dark:bg-slate-200 dark:text-slate-900"
                         >
                           {active.kind === 'rename'
                             ? 'Назвать'
                             : active.kind === 'new'
                               ? 'Создать'
                               : 'Сохранить'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setAction(null)}
-                          className="rounded-md border border-slate-300 px-2 py-0.5 hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
-                        >
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => setAction(null)}>
                           Отмена
-                        </button>
+                        </Button>
                       </div>
                     ) : (
                       <div className="flex flex-wrap items-center gap-2 text-xs">
                         {others.length > 0 && (
                           <span className="flex items-center gap-1">
-                            <select
+                            <Select
+                              aria-label="Перенести в говорящего"
                               value={targets[index] ?? ''}
                               onChange={(event) =>
                                 setTargets((prev) => ({ ...prev, [index]: event.target.value }))
                               }
-                              className="max-w-[11rem] rounded-md border border-slate-300 px-2 py-0.5 text-xs dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                              className="max-w-44"
                             >
                               <option value="">Перенести в…</option>
                               {others.map((speaker) => (
@@ -374,50 +374,49 @@ function SpeakerVariants({
                                   {speaker.display_name} ({speaker.id})
                                 </option>
                               ))}
-                            </select>
-                            <button
-                              type="button"
+                            </Select>
+                            <Button
+                              variant="secondary"
+                              size="sm"
                               disabled={!targets[index] || saving}
                               onClick={() => transfer(index)}
-                              className="rounded-md border border-slate-300 px-2 py-0.5 hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:hover:bg-slate-800"
                             >
                               Перенести
-                            </button>
+                            </Button>
                           </span>
                         )}
-                        <button
-                          type="button"
-                          onClick={() => openAction(index, 'new')}
-                          className="rounded-md border border-slate-300 px-2 py-0.5 hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
+                        <Button
+                          variant="secondary"
+                          size="sm"
                           title="Создать нового говорящего и назначить ему это окно (#41)"
+                          onClick={() => openAction(index, 'new')}
                         >
                           ＋ Говорящий
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => openAction(index, 'rename')}
-                          className="rounded-md border border-slate-300 px-2 py-0.5 hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
                           title="Назвать голос по прослушанному клипу (#52)"
+                          onClick={() => openAction(index, 'rename')}
                         >
                           Назвать
-                        </button>
-                        <button
-                          type="button"
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
                           onClick={() => openAction(index, 'library')}
-                          className="rounded-md border border-slate-300 px-2 py-0.5 hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
                         >
                           В библиотеку
-                        </button>
+                        </Button>
                       </div>
                     )}
 
                     {playing === index && (
-                      <div className="h-1 w-full overflow-hidden rounded bg-slate-100 dark:bg-slate-800">
-                        <div
-                          className="h-full bg-blue-500 transition-[width] duration-100"
-                          style={{ width: `${Math.round(progress * 100)}%` }}
-                        />
-                      </div>
+                      <ProgressBar
+                        size="sm"
+                        value={progress * 100}
+                        label="Прогресс воспроизведения варианта"
+                      />
                     )}
                   </li>
                 )

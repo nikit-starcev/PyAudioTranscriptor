@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import { api, errorMessage, type GlossaryEntry, type GlossaryQuickRequest } from '../api'
+import { Alert, Button, Field, Input, Modal } from './ui'
 
 type Props = {
   open: boolean
@@ -40,15 +41,6 @@ function GlossaryQuickModal({ open, term, source, onClose, onSaved }: Props) {
     setSaved(null)
   }, [open, term, source])
 
-  useEffect(() => {
-    if (!open) return
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
-
   const submit = useCallback(async () => {
     const canonicalValue = canonical.trim()
     if (!canonicalValue) {
@@ -79,124 +71,85 @@ function GlossaryQuickModal({ open, term, source, onClose, onSaved }: Props) {
     }
   }, [canonical, term, variant, note, sourceName, onSaved])
 
-  if (!open) return null
-
   return (
-    <div
-      className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 sm:items-center dark:bg-black/60"
-      onClick={onClose}
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Добавить в глоссарий"
+      size="md"
+      footer={
+        saved ? (
+          <Button variant="primary" onClick={onClose}>
+            Готово
+          </Button>
+        ) : (
+          <>
+            <Button variant="ghost" onClick={onClose}>
+              Отмена
+            </Button>
+            <Button variant="primary" loading={busy} onClick={() => void submit()}>
+              Сохранить
+            </Button>
+          </>
+        )
+      }
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Добавить термин в глоссарий"
-        className="w-full max-w-lg rounded-lg bg-white shadow-xl dark:bg-slate-900"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-800">
-          <h2 className="font-medium">Добавить в глоссарий</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md border border-slate-300 px-2 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
-          >
-            Закрыть
-          </button>
-        </div>
+      <div className="space-y-3">
+        <p className="rounded-md bg-surface-2 px-3 py-2 text-xs text-muted">
+          Выделенный фрагмент:{' '}
+          <span className="font-medium text-text">{term}</span>
+        </p>
 
-        <div className="space-y-3 px-4 py-3">
-          <p className="rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">
-            Выделенный фрагмент: <span className="font-medium text-slate-700 dark:text-slate-200">{term}</span>
-          </p>
+        {error && (
+          <Alert tone="danger" live>
+            {error}
+          </Alert>
+        )}
+        {saved && (
+          <Alert tone="success" live>
+            Сохранено: «{saved.canonical}»{saved.variant ? ` ← ${saved.variant}` : ''} (id {saved.id})
+          </Alert>
+        )}
 
-          {error && (
-            <p className="rounded-md bg-red-50 px-3 py-1.5 text-xs text-red-700 dark:bg-red-950/50 dark:text-red-300">
-              {error}
-            </p>
-          )}
-          {saved && (
-            <p
-              role="status"
-              className="rounded-md bg-emerald-50 px-3 py-1.5 text-xs text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300"
-            >
-              Сохранено: «{saved.canonical}»{saved.variant ? ` ← ${saved.variant}` : ''} (id {saved.id})
-            </p>
-          )}
+        <Field label="Канон (правильно)" htmlFor="quick-glossary-canonical" required>
+          <Input
+            id="quick-glossary-canonical"
+            value={canonical}
+            onChange={(event) => setCanonical(event.target.value)}
+            placeholder="Правильное написание"
+            autoFocus
+          />
+        </Field>
 
-          <label className="block text-xs text-slate-500 dark:text-slate-400">
-            Канон (правильно)
-            <input
-              value={canonical}
-              onChange={(event) => setCanonical(event.target.value)}
-              placeholder="Правильное написание"
-              autoFocus
-              className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-800 focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+        <Field label="Ошибочная форма (как распозналось)" htmlFor="quick-glossary-variant">
+          <Input
+            id="quick-glossary-variant"
+            value={variant}
+            onChange={(event) => setVariant(event.target.value)}
+            placeholder="Как распознано (вариант)"
+          />
+        </Field>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Источник" htmlFor="quick-glossary-source">
+            <Input
+              id="quick-glossary-source"
+              value={sourceName}
+              onChange={(event) => setSourceName(event.target.value)}
+              placeholder="Например, встреча"
             />
-          </label>
-
-          <label className="block text-xs text-slate-500 dark:text-slate-400">
-            Ошибочная форма (как распозналось)
-            <input
-              value={variant}
-              onChange={(event) => setVariant(event.target.value)}
-              placeholder="Как распознано (вариант)"
-              className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-800 focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+          </Field>
+          <Field label="Заметка" htmlFor="quick-glossary-note">
+            <Input
+              id="quick-glossary-note"
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+              placeholder="Комментарий"
             />
-          </label>
-
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="block text-xs text-slate-500 dark:text-slate-400">
-              Источник
-              <input
-                value={sourceName}
-                onChange={(event) => setSourceName(event.target.value)}
-                placeholder="Например, встреча"
-                className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-800 focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-              />
-            </label>
-            <label className="block text-xs text-slate-500 dark:text-slate-400">
-              Заметка
-              <input
-                value={note}
-                onChange={(event) => setNote(event.target.value)}
-                placeholder="Комментарий"
-                className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-800 focus:border-blue-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-              />
-            </label>
-          </div>
-        </div>
-
-        <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-4 py-3 dark:border-slate-800">
-          {saved ? (
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-md bg-slate-800 px-3 py-1.5 text-sm text-white hover:bg-slate-700 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-white"
-            >
-              Готово
-            </button>
-          ) : (
-            <>
-              <button
-                type="button"
-                onClick={onClose}
-                className="rounded-md border border-slate-300 px-3 py-1.5 text-sm hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
-              >
-                Отмена
-              </button>
-              <button
-                type="button"
-                onClick={() => void submit()}
-                disabled={busy}
-                className="rounded-md bg-slate-800 px-3 py-1.5 text-sm text-white hover:bg-slate-700 disabled:opacity-40 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-white"
-              >
-                {busy ? 'Сохранение…' : 'Сохранить'}
-              </button>
-            </>
-          )}
+          </Field>
         </div>
       </div>
-    </div>
+    </Modal>
   )
 }
 

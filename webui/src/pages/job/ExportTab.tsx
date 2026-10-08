@@ -3,7 +3,6 @@ import { Download } from 'lucide-react'
 
 import { EXPORT_FORMATS } from '../../api'
 import { useApp } from '../../app/useApp'
-import SummaryPromptsModal from '../../components/SummaryPromptsModal'
 import {
   Alert,
   Button,
@@ -11,9 +10,11 @@ import {
   CardContent,
   CardHeader,
   EmptyState,
+  Field,
   Select,
   Spinner,
 } from '../../components/ui'
+import SummaryPromptsPanel from '../../components/SummaryPromptsPanel'
 
 const LINK_BUTTON =
   'inline-flex h-9 items-center justify-center gap-2 rounded-md border border-border-strong ' +
@@ -47,9 +48,9 @@ function ExportTab({ jobId }: { jobId: string }) {
               Сформировать протокол
             </Button>
             {app.summaryPrompts.length > 0 && (
-              <label className="flex flex-col gap-1 text-xs text-muted">
-                Промпт резюме
+              <Field label="Промпт резюме" htmlFor="export-summary-prompt" className="min-w-44">
                 <Select
+                  id="export-summary-prompt"
                   value={app.protocolPromptId}
                   title="Шаблон промпта резюме для этого протокола"
                   onChange={(event) =>
@@ -63,9 +64,13 @@ function ExportTab({ jobId }: { jobId: string }) {
                     </option>
                   ))}
                 </Select>
-              </label>
+              </Field>
             )}
-            <Button variant="secondary" onClick={() => setPromptsOpen(true)}>
+            <Button
+              variant="secondary"
+              aria-expanded={promptsOpen}
+              onClick={() => setPromptsOpen((value) => !value)}
+            >
               Промпты резюме
             </Button>
           </div>
@@ -95,9 +100,9 @@ function ExportTab({ jobId }: { jobId: string }) {
       <Card>
         <CardHeader title="Скачать" description="Стенограмма и протокол в файле" />
         <CardContent className="flex flex-wrap items-end gap-3">
-          <label className="flex flex-col gap-1 text-xs text-muted">
-            Формат
+          <Field label="Формат" htmlFor="export-format" className="min-w-24">
             <Select
+              id="export-format"
               value={app.exportFormat}
               onChange={(event) => app.setExportFormat(event.target.value)}
             >
@@ -107,7 +112,7 @@ function ExportTab({ jobId }: { jobId: string }) {
                 </option>
               ))}
             </Select>
-          </label>
+          </Field>
           <a
             className={LINK_BUTTON}
             href={`/api/jobs/${jobId}/export?fmt=${app.exportFormat}`}
@@ -129,11 +134,9 @@ function ExportTab({ jobId }: { jobId: string }) {
         </CardContent>
       </Card>
 
-      <SummaryPromptsModal
-        open={promptsOpen}
-        onClose={() => setPromptsOpen(false)}
-        onChanged={() => void app.refreshSummaryPrompts()}
-      />
+      {promptsOpen && (
+        <SummaryPromptsPanel onChanged={() => void app.refreshSummaryPrompts()} />
+      )}
     </div>
   )
 }

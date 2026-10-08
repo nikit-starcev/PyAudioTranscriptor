@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { formatClock, type AsrDeviceInfo, type HealthStatus, type JobEvent } from '../api'
+import { Badge, type BadgeTone } from './ui'
 import { STAGE_KEYS, stageLabel } from './StageTimes'
 
 const HEALTH_LABELS: Record<HealthStatus, string> = {
@@ -9,10 +10,10 @@ const HEALTH_LABELS: Record<HealthStatus, string> = {
   stalled: 'Нет активности',
 }
 
-const HEALTH_STYLES: Record<HealthStatus, string> = {
-  ok: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300',
-  slow: 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300',
-  stalled: 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300',
+const HEALTH_TONES: Record<HealthStatus, BadgeTone> = {
+  ok: 'success',
+  slow: 'warn',
+  stalled: 'danger',
 }
 
 /** ETA человекачитаемо: секунды до минуты, дальше — минуты. */
@@ -82,56 +83,51 @@ export default function ProgressSummary({ progress, running, asrDevice }: Props)
     progress.progress_percent ?? (progress.fraction != null ? progress.fraction * 100 : 0)
 
   return (
-    <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-      <span className="tabular-nums text-slate-700 dark:text-slate-200">
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+      <span className="tabular-nums text-text">
         Общий прогресс: <span className="font-medium">{Math.round(percent)}%</span>
       </span>
       {health && (
-        <span
-          className={`rounded-full px-2 py-0.5 text-xs ${
-            HEALTH_STYLES[health] ??
-            'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
-          }`}
-          title={healthReason || 'Состояние задачи по активности и темпу прогресса'}
-        >
-          {HEALTH_LABELS[health] ?? health}
+        <span title={healthReason || 'Состояние задачи по активности и темпу прогресса'}>
+          <Badge tone={HEALTH_TONES[health] ?? 'neutral'}>
+            {HEALTH_LABELS[health] ?? health}
+          </Badge>
         </span>
       )}
       {progress.duration != null && (
-        <span className="tabular-nums text-slate-600 dark:text-slate-300">
+        <span className="tabular-nums text-muted">
           длительность записи: {formatClock(progress.duration)}
         </span>
       )}
       {running && progress.stage && STAGE_KEYS.includes(progress.stage) && (
-        <span className="text-slate-600 dark:text-slate-300">
-          идёт: <span className="font-medium">{stageLabel(progress.stage)}</span>
+        <span className="text-muted">
+          идёт: <span className="font-medium text-text">{stageLabel(progress.stage)}</span>
         </span>
       )}
       {asrDevice && progress.stage === 'asr' && (
         <span
-          className={`rounded-full px-2 py-0.5 text-xs ${
-            asrDevice.device === 'gpu'
-              ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
-              : asrDevice.device === 'unknown'
-                ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
-                : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
-          }`}
           title={`${asrDevice.label} · ${asrDevice.note}${
             asrDevice.details.length ? ` · ${asrDevice.details.join('; ')}` : ''
           }`}
         >
-          Устройство ASR: {asrDevice.label}
+          <Badge
+            tone={
+              asrDevice.device === 'gpu'
+                ? 'success'
+                : asrDevice.device === 'unknown'
+                  ? 'warn'
+                  : 'neutral'
+            }
+          >
+            Устройство ASR: {asrDevice.label}
+          </Badge>
         </span>
       )}
       {running && eta != null && (
-        <span className="tabular-nums text-slate-600 dark:text-slate-300">
-          ≈ осталось {formatEta(eta)}
-        </span>
+        <span className="tabular-nums text-muted">≈ осталось {formatEta(eta)}</span>
       )}
       {lastUpdate != null && (
-        <span className="text-xs text-slate-400 dark:text-slate-500">
-          последнее обновление {formatAgo(lastUpdate)}
-        </span>
+        <span className="text-xs text-muted">последнее обновление {formatAgo(lastUpdate)}</span>
       )}
     </div>
   )

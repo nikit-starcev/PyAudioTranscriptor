@@ -9,6 +9,7 @@ import {
   type BinaryRequirement,
   type DependencyEvent,
 } from '../api'
+import { Alert, Badge, Button, ProgressBar } from './ui'
 
 type Props = {
   /** Требования шага «Бинарники/Пакеты» из плана мастера. */
@@ -121,20 +122,18 @@ function BinaryRequirements({ requirements, onChanged }: Props) {
 
   return (
     <div className="space-y-3">
-      <p className="text-sm text-slate-600 dark:text-slate-300">
+      <p className="text-sm text-muted">
         Внешние бинарники скачиваются кнопкой «Скачать» (фиксированные версии с проверкой
         контрольной суммы), пакеты ставятся кнопкой «Установить»
         {installer ? ` через ${installer}` : ''}. Прогресс виден здесь же.
       </p>
       {error && (
-        <p className="rounded-md bg-red-50 px-3 py-1.5 text-xs text-red-700 dark:bg-red-950/50 dark:text-red-300">
+        <Alert tone="danger" live>
           {error}
-        </p>
+        </Alert>
       )}
       {requirements.length === 0 ? (
-        <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300">
-          Для выбранного режима отдельные компоненты не требуются.
-        </p>
+        <Alert tone="success">Для выбранного режима отдельные компоненты не требуются.</Alert>
       ) : (
         <ul className="space-y-2">
           {summary.map(({ requirement, assetKey }) => {
@@ -144,36 +143,24 @@ function BinaryRequirements({ requirements, onChanged }: Props) {
             const running = asset?.status === 'running'
             const downloadable = asset?.downloadable ?? requirement.downloadable ?? false
             const size = asset?.artifact?.size ?? requirement.artifact?.size ?? 0
-            const fraction = running && asset?.fraction != null ? Math.round(asset.fraction * 100) : null
+            const fraction =
+              running && asset?.fraction != null ? Math.round(asset.fraction * 100) : null
             const installedPath = asset?.path || requirement.installed_path || ''
             const canAct = asset != null && (isBinary ? downloadable : canInstallPip)
             return (
-              <li
-                key={requirement.key}
-                className="rounded-md border border-slate-200 p-3 text-sm dark:border-slate-800"
-              >
-                <p className="font-medium">
-                  {requirement.label}{' '}
-                  <span
-                    className={
-                      installed
-                        ? 'text-emerald-600 dark:text-emerald-400'
-                        : running
-                          ? 'text-blue-600 dark:text-blue-400'
-                          : 'text-amber-600 dark:text-amber-400'
-                    }
-                  >
-                    {installed ? '✓ установлено' : running ? '⏳ установка…' : '✗ не найдено'}
-                  </span>
+              <li key={requirement.key} className="rounded-md border border-border p-3 text-sm">
+                <p className="flex flex-wrap items-center gap-2 font-medium">
+                  {requirement.label}
+                  <Badge tone={installed ? 'success' : running ? 'info' : 'warn'}>
+                    {installed ? 'установлено' : running ? 'установка…' : 'не найдено'}
+                  </Badge>
                   {requirement.optional && !installed && (
-                    <span className="ml-2 text-xs text-slate-400 dark:text-slate-500">необязательно</span>
+                    <span className="text-xs text-muted">необязательно</span>
                   )}
                 </p>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  {requirement.instructions}
-                </p>
+                <p className="text-xs text-muted">{requirement.instructions}</p>
                 {size > 0 && (
-                  <p className="text-xs text-slate-400 dark:text-slate-500">
+                  <p className="text-xs text-muted">
                     Размер: ~{formatBytes(size)}
                     {requirement.platform ? ` · ${requirement.platform}` : ''}
                     {asset?.artifact?.variant ? ` · ${asset.artifact.variant}` : ''}
@@ -181,47 +168,42 @@ function BinaryRequirements({ requirements, onChanged }: Props) {
                 )}
                 {running && (
                   <div className="mt-1 space-y-1">
-                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
-                      <div
-                        className={`h-full rounded-full bg-blue-500 ${fraction == null ? 'w-1/3 animate-pulse' : ''}`}
-                        style={fraction == null ? undefined : { width: `${fraction}%` }}
-                      />
-                    </div>
+                    <ProgressBar
+                      size="sm"
+                      value={fraction ?? 0}
+                      indeterminate={fraction == null}
+                      label={`Загрузка: ${requirement.label}`}
+                    />
                     {asset?.message && (
-                      <p className="truncate font-mono text-[11px] text-slate-500 dark:text-slate-400">
-                        {asset.message}
-                      </p>
+                      <p className="truncate font-mono text-[11px] text-muted">{asset.message}</p>
                     )}
                   </div>
                 )}
-                {asset?.error && !running && (
-                  <p className="mt-0.5 text-xs text-red-600 dark:text-red-400">{asset.error}</p>
-                )}
+                {asset?.error && !running && <p className="mt-0.5 text-xs text-danger">{asset.error}</p>}
                 {installedPath && installed && (
-                  <p className="mt-0.5 truncate font-mono text-[11px] text-slate-400 dark:text-slate-500" title={installedPath}>
+                  <p className="mt-0.5 truncate font-mono text-[11px] text-muted" title={installedPath}>
                     {installedPath}
                   </p>
                 )}
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
                   {!installed && (
-                    <button
-                      type="button"
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      loading={busy === assetKey || running}
+                      disabled={busy !== null || !canAct}
                       onClick={() => asset && void install(asset)}
-                      disabled={busy !== null || running || !canAct}
-                      className="rounded-md bg-slate-800 px-3 py-1 text-xs text-white hover:bg-slate-700 disabled:opacity-40 dark:bg-slate-200 dark:text-slate-900 dark:hover:bg-white"
                     >
                       {running ? 'Установка…' : isBinary ? 'Скачать' : 'Установить'}
-                    </button>
+                    </Button>
                   )}
                   {!installed && isBinary && !downloadable && (
-                    <span className="text-amber-700 dark:text-amber-400">
+                    <span className="text-warn">
                       Для вашей ОС/архитектуры готового артефакта нет — нужна ручная сборка
                     </span>
                   )}
                   {!installed && !isBinary && !canInstallPip && (
-                    <span className="text-amber-700 dark:text-amber-400">
-                      Не найден установщик (uv/pip)
-                    </span>
+                    <span className="text-warn">Не найден установщик (uv/pip)</span>
                   )}
                   {requirement.links.map((link) => (
                     <a
@@ -229,7 +211,7 @@ function BinaryRequirements({ requirements, onChanged }: Props) {
                       href={link}
                       target="_blank"
                       rel="noreferrer noopener"
-                      className="text-blue-600 underline hover:text-blue-500 dark:text-blue-400 dark:hover:text-blue-300"
+                      className="font-medium text-primary underline hover:opacity-80"
                     >
                       {link}
                     </a>
