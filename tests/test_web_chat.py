@@ -86,6 +86,7 @@ def _config_builder(web_paths: WebPaths, *, llm_enabled: bool):
             protocol_auto=False,
             use_cache=False,
             llm_enabled=llm_enabled,
+            llm_model=Path("llm.gguf") if llm_enabled else None,
         )
 
     return build

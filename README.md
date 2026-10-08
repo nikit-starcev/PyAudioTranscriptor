@@ -755,7 +755,10 @@ uv run audio-transcriber transcribe call.mp3 --glossary glossary.txt
 (`LLM_PROVIDER=openai` и `LLM_BASE_URL`/`LLM_MODEL_NAME`/`LLM_API_KEY`) — при
 этом текст стенограммы уходит на внешний сервер.
 
-Включается флагом `--llm` и указанием модели:
+Включается флагом `--llm` и указанием модели. Включение LLM без модели —
+ошибка конфигурации (fail-fast): для `llama` нужен `LLM_MODEL`, для `openai` —
+`LLM_BASE_URL` и `LLM_MODEL_NAME`; иначе запуск сразу завершится с подсказкой,
+чего не хватает.
 
 ```bash
 uv run audio-transcriber transcribe call.mp3 \

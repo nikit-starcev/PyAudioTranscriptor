@@ -16,6 +16,12 @@
   при наличии пословных таймкодов (#45) — караоке-теги в VTT, `<font>` в SRT,
   флажок «Подсветка слов» и параметр `highlight` у `/api/jobs/{id}/export`.
 
+### Changed
+
+- **Fail-fast валидация LLM-конфигурации** (#9): `LLM_ENABLED=true` без модели
+  (`LLM_MODEL` для локального `llama`) или без `LLM_BASE_URL`/`LLM_MODEL_NAME`
+  (`openai`) теперь возбуждает `ConfigurationError` с подсказкой вместо
+  предупреждения в рантайме.
 
 ## [0.5.6] - 2026-10-08
 

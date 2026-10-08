@@ -244,6 +244,7 @@ def test_run_llm_postprocess_extracts_names_when_enabled(
         input_file=audio_file,
         output_dir=tmp_path / "out",
         llm_enabled=True,
+        llm_model=Path("llm.gguf"),
         llm_extract_names=True,
     )
     entries = _entries()
@@ -265,6 +266,7 @@ def test_run_llm_postprocess_participants_only_renamed(tmp_path: Path, audio_fil
         input_file=audio_file,
         output_dir=tmp_path / "out",
         llm_enabled=True,
+        llm_model=Path("llm.gguf"),
         llm_extract_names=True,
     )
 
@@ -294,6 +296,7 @@ def test_run_llm_postprocess_participants_include_enrolled_names(
         input_file=audio_file,
         output_dir=tmp_path / "out",
         llm_enabled=True,
+        llm_model=Path("llm.gguf"),
         llm_extract_names=True,
     )
 
@@ -312,6 +315,7 @@ def test_run_llm_postprocess_skips_names_when_disabled(tmp_path: Path, audio_fil
         input_file=audio_file,
         output_dir=tmp_path / "out",
         llm_enabled=True,
+        llm_model=Path("llm.gguf"),
         llm_extract_names=False,
         glossary_path=glossary_path,
     )
@@ -361,6 +365,7 @@ def test_run_llm_postprocess_writes_suggested_terms(tmp_path: Path, audio_file: 
         input_file=audio_file,
         output_dir=tmp_path / "out",
         llm_enabled=True,
+        llm_model=Path("llm.gguf"),
         llm_suggest_terms=True,
         glossary_path=glossary_path,
     )
@@ -383,6 +388,7 @@ def test_run_llm_postprocess_suggestions_disabled_by_default(
         input_file=audio_file,
         output_dir=tmp_path / "out",
         llm_enabled=True,
+        llm_model=Path("llm.gguf"),
         glossary_path=glossary_path,
     )
 
@@ -421,7 +427,12 @@ def test_run_llm_postprocess_closes_internally_created_client(
         return client
 
     monkeypatch.setattr(postprocess_module, "create_llm_client", fake_create)
-    config = AppConfig(input_file=audio_file, output_dir=tmp_path / "out", llm_enabled=True)
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        llm_enabled=True,
+        llm_model=Path("llm.gguf"),
+    )
 
     run_llm_postprocess(config, _entries(), _speakers())
 
@@ -438,6 +449,7 @@ def test_run_llm_postprocess_does_not_close_external_client(
         input_file=audio_file,
         output_dir=tmp_path / "out",
         llm_enabled=True,
+        llm_model=Path("llm.gguf"),
         llm_extract_names=True,
     )
 
@@ -458,7 +470,12 @@ def test_run_llm_postprocess_closes_internal_client_even_on_error(
 
     client.chat = fake_chat  # type: ignore[method-assign]
     monkeypatch.setattr(postprocess_module, "create_llm_client", lambda *_a, **_kw: client)
-    config = AppConfig(input_file=audio_file, output_dir=tmp_path / "out", llm_enabled=True)
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        llm_enabled=True,
+        llm_model=Path("llm.gguf"),
+    )
 
     run_llm_postprocess(config, _entries(), _speakers())
 
@@ -679,6 +696,7 @@ def test_run_llm_postprocess_passes_context_chunk_limit(
         input_file=audio_file,
         output_dir=tmp_path / "out",
         llm_enabled=True,
+        llm_model=Path("llm.gguf"),
         llm_context_size=8192,
         llm_extract_names=True,
     )
@@ -713,6 +731,7 @@ def test_run_llm_postprocess_returns_summary(tmp_path: Path, audio_file: Path) -
         input_file=audio_file,
         output_dir=tmp_path / "out",
         llm_enabled=True,
+        llm_model=Path("llm.gguf"),
     )
     config.ensure_output_dir()
 
@@ -733,6 +752,7 @@ def test_run_llm_postprocess_summary_disabled_makes_no_calls(
         input_file=audio_file,
         output_dir=tmp_path / "out",
         llm_enabled=True,
+        llm_model=Path("llm.gguf"),
         llm_summary=False,
     )
     client = _EmptyChatClient()
@@ -759,6 +779,7 @@ def test_run_llm_postprocess_summary_failure_is_soft(
         input_file=audio_file,
         output_dir=tmp_path / "out",
         llm_enabled=True,
+        llm_model=Path("llm.gguf"),
     )
     config.ensure_output_dir()
 
@@ -776,6 +797,7 @@ def test_run_llm_postprocess_saves_prompt_file(tmp_path: Path, audio_file: Path)
         input_file=audio_file,
         output_dir=tmp_path / "out",
         llm_enabled=True,
+        llm_model=Path("llm.gguf"),
     )
     config.ensure_output_dir()
 
@@ -796,6 +818,7 @@ def test_run_llm_postprocess_applies_extra_instructions(
         input_file=audio_file,
         output_dir=tmp_path / "out",
         llm_enabled=True,
+        llm_model=Path("llm.gguf"),
         llm_prompt_extra="ПИШИ МАКСИМАЛЬНО КРАТКО",
     )
     config.ensure_output_dir()
@@ -819,6 +842,7 @@ def test_run_llm_postprocess_without_prompts_writes_no_file(
         input_file=audio_file,
         output_dir=tmp_path / "out",
         llm_enabled=True,
+        llm_model=Path("llm.gguf"),
         llm_summary=False,
         llm_extract_names=False,
     )

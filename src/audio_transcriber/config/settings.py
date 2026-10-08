@@ -738,13 +738,15 @@ class AppConfig:
             )
 
     def _validate_llm_provider(self) -> None:
-        """Проверяет провайдера LLM и параметры внешнего API.
+        """Проверяет провайдера LLM и параметры выбранного режима.
 
         Провайдер обязан быть известным (``llama``/``openai``) — иначе это
         опечатка, которую лучше поймать сразу. Параметры внешнего провайдера
         (``base_url``/имя модели/ключ) нормализуются: пустые строки — ``None``.
-        Нехватка параметров — предупреждение (мягкая деградация), как и для
-        локальной модели: конвейер пропустит постобработку, но не упадёт.
+        При включённой LLM нехватка параметров выбранного режима — ошибка
+        конфигурации (fail-fast): локальному ``llama`` нужна ``llm_model``,
+        внешнему ``openai`` — ``base_url`` и имя модели. Иначе постобработка
+        молча пропускалась бы, а пользователь не понимал бы, почему.
         """
         provider = (self.llm_provider or "").strip().casefold()
         if provider not in VALID_LLM_PROVIDERS:
@@ -769,11 +771,25 @@ class AppConfig:
 
         if provider == "llama":
             if self.llm_model is None:
-                logger.warning(
-                    "LLM включена, но модель не задана (LLM_MODEL/--llm-model) — "
-                    "LLM-постобработка будет пропущена"
+                raise ConfigurationError(
+                    "LLM включена (LLM_ENABLED=true), но не задана локальная модель. "
+                    "Укажите путь к GGUF-модели (LLM_MODEL/--llm-model) или "
+                    "переключитесь на внешний провайдер: LLM_PROVIDER=openai "
+                    "с LLM_BASE_URL и LLM_MODEL_NAME."
                 )
             return
+
+        missing: list[str] = []
+        if not self.llm_base_url:
+            missing.append("LLM_BASE_URL/--llm-base-url")
+        if not self.llm_model_name:
+            missing.append("LLM_MODEL_NAME/--llm-model-name")
+        if missing:
+            raise ConfigurationError(
+                "LLM включена (LLM_ENABLED=true) с провайдером openai, но не "
+                f"задано: {', '.join(missing)}. Для локальной модели задайте "
+                "LLM_PROVIDER=llama и LLM_MODEL."
+            )
 
         # Внешний провайдер: текст стенограммы уходит за пределы машины —
         # это осознанный выбор пользователя, поэтому фиксируем в логе.
@@ -781,18 +797,8 @@ class AppConfig:
             "LLM-провайдер «%s»: стенограмма отправляется на внешний сервер %s — "
             "текст покидает локальную машину (проект заявлен как «100%% локально»).",
             provider,
-            self.llm_base_url or "<base_url не задан>",
+            self.llm_base_url,
         )
-        if not self.llm_base_url:
-            logger.warning(
-                "LLM включена с провайдером openai, но не задан base_url "
-                "(LLM_BASE_URL/--llm-base-url) — LLM-постобработка будет пропущена"
-            )
-        if not self.llm_model_name:
-            logger.warning(
-                "LLM включена с провайдером openai, но не задано имя модели "
-                "(LLM_MODEL_NAME/--llm-model-name) — LLM-постобработка будет пропущена"
-            )
 
     def _validate_gigaam(self) -> None:
         """Проверяет параметры бэкенда GigaAM (onnx-asr)."""
