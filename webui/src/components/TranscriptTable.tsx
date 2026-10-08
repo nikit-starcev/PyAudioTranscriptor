@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { Pause, Pencil, Play, Scissors, X } from 'lucide-react'
 
-import { formatTime, speakerName, type Entry, type SpeakerInfo } from '../api'
+import { formatTime, speakerName, type Entry, type SpeakerInfo, type WordTimestamp } from '../api'
+import { usePlayback } from '../app/playback'
 import {
   Alert,
   Button,
@@ -74,6 +75,21 @@ function suggestBoundary(entry: Entry): number {
 
 type Fragment = { key: string; start: number; end: number }
 
+//: Пословные метки, пригодные для караоке: реплика не правилась вручную и слова
+//: точно пересобираются в её текст (иначе показываем текст реплики целиком).
+function karaokeWords(entry: Entry): WordTimestamp[] | null {
+  if (entry.edited) return null
+  const words = entry.words
+  if (!words || words.length === 0) return null
+  const joined = words
+    .map((word) => word.text)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const text = entry.text.replace(/\s+/g, ' ').trim()
+  return joined === text ? words : null
+}
+
 type SpeakerPiece = { id: string | null; name: string; extra: boolean }
 
 type ContextMenu = { x: number; y: number; term: string }
@@ -96,11 +112,6 @@ function speakerPieces(speakers: SpeakerInfo[], entry: Entry): SpeakerPiece[] {
 
 //: Минимальная длина фрагмента, чтобы не делить на ноль в прогрессе.
 const MIN_FRAGMENT = 0.05
-//: Точность остановки: останавливаемся чуть раньше `end`, чтобы не зацепить
-//: следующий звук из-за округления `currentTime`.
-const STOP_EPSILON = 0.005
-//: Как часто обновлять прогресс (мс), чтобы не ререндерить таблицу каждый кадр.
-const PAINT_INTERVAL_MS = 100
 
 type MarkProps = { markKey: string; label: string }
 
@@ -131,14 +142,24 @@ function TranscriptTable({
   onUndoAssign,
   undoAvailable,
 }: Props) {
-  const audioRef = useRef<HTMLAudioElement | null>(null)
-  const [playingKey, setPlayingKey] = useState<string | null>(null)
-  const [position, setPosition] = useState(0)
+  const playback = usePlayback()
   const [autoAdvance, setAutoAdvance] = useState(false)
 
-  const fragmentRef = useRef<Fragment | null>(null)
-  const rafRef = useRef<number | null>(null)
-  const lastPaintRef = useRef(0)
+  // Караоке: активная реплика/слово и следование за воспроизведением.
+  const [activeKey, setActiveKey] = useState<string | null>(null)
+  const [activeWordIndex, setActiveWordIndex] = useState<number | null>(null)
+  const [follow, setFollow] = useState(true)
+  const [reduceMotion, setReduceMotion] = useState(false)
+
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const rowRefs = useRef(new Map<string, HTMLTableRowElement>())
+  const progressBarRef = useRef<HTMLDivElement | null>(null)
+  const activeKeyRef = useRef<string | null>(null)
+  const activeWordRef = useRef<number | null>(null)
+  const followRef = useRef(true)
+  const playingKeyRef = useRef<string | null>(null)
+  const startedRef = useRef(false)
+  const pendingSeekRef = useRef<number | null>(null)
   const playRef = useRef<(fragment: Fragment) => void>(() => {})
 
   // Ручная правка текста (#26): ключ редактируемой реплики и черновик.
@@ -198,12 +219,16 @@ function TranscriptTable({
     }
   }, [contextMenu])
 
-  // При смене задачи выходим из режима правки.
+  // При смене задачи выходим из режима правки и сбрасываем караоке.
   useEffect(() => {
     setEditingKey(null)
     setEditError(null)
     setContextMenu(null)
     setSplitKey(null)
+    activeKeyRef.current = null
+    activeWordRef.current = null
+    setActiveKey(null)
+    setActiveWordIndex(null)
   }, [jobId])
 
   // Выделение реплик сбрасываем при смене задачи или списка реплик (после
@@ -212,109 +237,194 @@ function TranscriptTable({
     setSelectedKeys(new Set())
   }, [jobId, entries])
 
-  const cancelLoop = useCallback(() => {
-    if (rafRef.current != null) {
-      cancelAnimationFrame(rafRef.current)
-      rafRef.current = null
+  // --- Караоке и общий плеер (#101) ------------------------------------------
+
+  const scrollToKey = useCallback(
+    (key: string) => {
+      const container = scrollRef.current
+      const row = rowRefs.current.get(key)
+      if (!container || !row) return
+      const containerRect = container.getBoundingClientRect()
+      const rowRect = row.getBoundingClientRect()
+      const margin = 12
+      let delta = 0
+      if (rowRect.top < containerRect.top + margin) {
+        delta = rowRect.top - containerRect.top - margin
+      } else if (rowRect.bottom > containerRect.bottom - margin) {
+        delta = rowRect.bottom - containerRect.bottom + margin
+      }
+      if (delta === 0) return
+      container.scrollBy({ top: delta, behavior: reduceMotion ? 'auto' : 'smooth' })
+    },
+    [reduceMotion],
+  )
+
+  const syncActive = useCallback(
+    (time: number) => {
+      if (!startedRef.current) return
+      const list = entriesRef.current
+      let activeIndex = -1
+      for (let index = 0; index < list.length; index += 1) {
+        if (list[index].start <= time) activeIndex = index
+        else break
+      }
+      const activeEntry = activeIndex >= 0 ? list[activeIndex] : null
+      const key = activeEntry ? entryKey(activeEntry, activeIndex) : null
+      if (key !== activeKeyRef.current) {
+        activeKeyRef.current = key
+        setActiveKey(key)
+        if (key && followRef.current) scrollToKey(key)
+      }
+
+      let wordIndex: number | null = null
+      const words = activeEntry?.words
+      if (words && words.length > 0) {
+        for (let index = 0; index < words.length; index += 1) {
+          if (words[index].start <= time) wordIndex = index
+          else break
+        }
+      }
+      if (wordIndex !== activeWordRef.current) {
+        activeWordRef.current = wordIndex
+        setActiveWordIndex(wordIndex)
+      }
+
+      if (progressBarRef.current && playingKeyRef.current === key && activeEntry) {
+        const span = Math.max(MIN_FRAGMENT, activeEntry.end - activeEntry.start)
+        const percent = Math.min(100, Math.max(0, ((time - activeEntry.start) / span) * 100))
+        progressBarRef.current.style.width = `${percent}%`
+      }
+    },
+    [scrollToKey],
+  )
+
+  const cancelPendingSeek = useCallback(() => {
+    if (pendingSeekRef.current != null) {
+      window.clearTimeout(pendingSeekRef.current)
+      pendingSeekRef.current = null
     }
   }, [])
 
-  const stop = useCallback(() => {
-    cancelLoop()
-    fragmentRef.current = null
-    audioRef.current?.pause()
-    setPlayingKey(null)
-    setPosition(0)
-  }, [cancelLoop])
+  const enableFollow = useCallback(() => {
+    followRef.current = true
+    setFollow(true)
+    if (activeKeyRef.current) scrollToKey(activeKeyRef.current)
+  }, [scrollToKey])
+
+  const advanceFrom = useCallback((fragment: Fragment) => {
+    if (!autoAdvanceRef.current) return
+    const list = entriesRef.current
+    const index = list.findIndex((item, i) => entryKey(item, i) === fragment.key)
+    const next = index >= 0 ? list[index + 1] : undefined
+    if (next) {
+      playRef.current({ key: entryKey(next, index + 1), start: next.start, end: next.end })
+    }
+  }, [])
 
   const playFragment = useCallback(
     (fragment: Fragment) => {
-      const audio = audioRef.current
-      if (!audio) return
-      cancelLoop()
-      fragmentRef.current = fragment
-      setPlayingKey(fragment.key)
-      setPosition(0)
-      lastPaintRef.current = 0
-
-      const startLoop = () => {
-        cancelLoop()
-        const tick = (now: number) => {
-          const el = audioRef.current
-          const current = fragmentRef.current
-          if (!el || !current) return
-          if (el.currentTime >= current.end - STOP_EPSILON) {
-            el.pause()
-            fragmentRef.current = null
-            setPlayingKey(null)
-            setPosition(0)
-            cancelLoop()
-            if (autoAdvanceRef.current) {
-              const list = entriesRef.current
-              const index = list.findIndex((item, i) => entryKey(item, i) === current.key)
-              const next = index >= 0 ? list[index + 1] : undefined
-              if (next) {
-                playRef.current({
-                  key: entryKey(next, index + 1),
-                  start: next.start,
-                  end: next.end,
-                })
-              }
-            }
-            return
-          }
-          // Автопауза на конце файла (если end вышел за длительность).
-          if (el.ended) {
-            stop()
-            return
-          }
-          if (now - lastPaintRef.current >= PAINT_INTERVAL_MS) {
-            lastPaintRef.current = now
-            setPosition(Math.max(0, el.currentTime - current.start))
-          }
-          rafRef.current = requestAnimationFrame(tick)
-        }
-        rafRef.current = requestAnimationFrame(tick)
-      }
-
-      const seekAndPlay = () => {
-        audio.currentTime = Math.max(0, fragment.start)
-        void audio.play().then(startLoop).catch(() => stop())
-      }
-
-      if (audio.readyState >= 1 /* HAVE_METADATA */) {
-        seekAndPlay()
-      } else {
-        const onReady = () => {
-          audio.removeEventListener('loadedmetadata', onReady)
-          seekAndPlay()
-        }
-        audio.addEventListener('loadedmetadata', onReady)
-        audio.load()
-      }
+      followRef.current = true
+      setFollow(true)
+      playback.playRange(fragment, () => advanceFrom(fragment))
     },
-    [cancelLoop, stop],
+    [advanceFrom, playback],
   )
+
   useEffect(() => {
     playRef.current = playFragment
   }, [playFragment])
 
-  // Останавливаем воспроизведение при смене задачи и размонтировании.
-  useEffect(() => stop, [jobId, stop])
+  const toggleFragment = useCallback(
+    (fragment: Fragment) => {
+      followRef.current = true
+      setFollow(true)
+      playback.toggleRange(fragment, () => advanceFrom(fragment))
+    },
+    [advanceFrom, playback],
+  )
 
-  const toggle = (fragment: Fragment) => {
-    if (playingKey === fragment.key) stop()
-    else playFragment(fragment)
-  }
+  const onWordClick = useCallback(
+    (event: ReactMouseEvent<HTMLSpanElement>, time: number) => {
+      if (event.detail > 1) return
+      const selection = window.getSelection()
+      if (selection && !selection.isCollapsed) return
+      cancelPendingSeek()
+      pendingSeekRef.current = window.setTimeout(() => {
+        pendingSeekRef.current = null
+        followRef.current = true
+        setFollow(true)
+        playback.playFrom(time)
+      }, 220)
+    },
+    [cancelPendingSeek, playback],
+  )
+
+  useEffect(() => {
+    const query = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const update = () => setReduceMotion(query.matches)
+    update()
+    query.addEventListener('change', update)
+    return () => query.removeEventListener('change', update)
+  }, [])
+
+  useEffect(() => {
+    playingKeyRef.current = playback.playingKey
+  }, [playback.playingKey])
+
+  useEffect(() => {
+    startedRef.current = playback.started
+  }, [playback.started])
+
+  useEffect(() => {
+    followRef.current = follow
+  }, [follow])
+
+  useEffect(() => playback.subscribe(syncActive), [playback, syncActive])
+
+  useEffect(() => {
+    if (activeKeyRef.current == null && playback.timeRef.current <= 0) return
+    syncActive(playback.timeRef.current)
+  }, [entries, syncActive, playback.timeRef])
+
+  useEffect(() => cancelPendingSeek, [cancelPendingSeek])
+
+  // Слежение за активной репликой отключаем при ручной прокрутке/навигации.
+  useEffect(() => {
+    const container = scrollRef.current
+    if (!container) return
+    const disable = () => {
+      if (!followRef.current) return
+      followRef.current = false
+      setFollow(false)
+    }
+    const onKey = (event: KeyboardEvent) => {
+      if (
+        ['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', ' '].includes(event.key)
+      ) {
+        disable()
+      }
+    }
+    container.addEventListener('wheel', disable, { passive: true })
+    container.addEventListener('touchmove', disable, { passive: true })
+    container.addEventListener('pointerdown', disable)
+    container.addEventListener('keydown', onKey)
+    return () => {
+      container.removeEventListener('wheel', disable)
+      container.removeEventListener('touchmove', disable)
+      container.removeEventListener('pointerdown', disable)
+      container.removeEventListener('keydown', onKey)
+    }
+  }, [])
 
   const beginEdit = useCallback(
     (key: string, text: string) => {
       if (!onSaveText) return
+      cancelPendingSeek()
       setEditingKey(key)
       setDraftText(text)
       setEditError(null)
     },
-    [onSaveText],
+    [cancelPendingSeek, onSaveText],
   )
 
   const saveEdit = useCallback(
@@ -347,12 +457,16 @@ function TranscriptTable({
     [onResetText],
   )
 
-  const openContextMenu = useCallback((event: ReactMouseEvent) => {
-    const selected = window.getSelection()?.toString().trim()
-    if (!selected) return
-    event.preventDefault()
-    setContextMenu({ x: event.clientX, y: event.clientY, term: selected })
-  }, [])
+  const openContextMenu = useCallback(
+    (event: ReactMouseEvent) => {
+      const selected = window.getSelection()?.toString().trim()
+      if (!selected) return
+      cancelPendingSeek()
+      event.preventDefault()
+      setContextMenu({ x: event.clientX, y: event.clientY, term: selected })
+    },
+    [cancelPendingSeek],
+  )
 
   const selectedEntries = onAssignSpeaker
     ? entries.filter((entry, index) => selectedKeys.has(entryKey(entry, index)))
@@ -536,13 +650,21 @@ function TranscriptTable({
           checked={autoAdvance}
           onChange={(event) => setAutoAdvance(event.target.checked)}
         />
-        {playingKey ? (
+        {playback.playingKey && playback.playing ? (
           <span className="flex items-center gap-1 font-medium text-primary">
             <span aria-hidden className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-primary" />
             воспроизведение фрагмента
           </span>
         ) : (
-          <span>Двойной клик по тексту — правка; ПКМ по выделению — в глоссарий</span>
+          <span>
+            Клик по слову — переход; двойной клик по тексту — правка; ПКМ по выделению — в
+            глоссарий
+          </span>
+        )}
+        {!follow && (
+          <Button variant="secondary" size="sm" onClick={enableFollow}>
+            К активной реплике
+          </Button>
         )}
         {onAssignSpeaker && (
           <Checkbox
@@ -712,10 +834,8 @@ function TranscriptTable({
         </Alert>
       )}
 
-      <audio ref={audioRef} preload="metadata" src={`/api/jobs/${jobId}/audio`} className="hidden" />
-
       <Card className="overflow-hidden">
-        <div className="max-h-[28rem] overflow-auto">
+        <div ref={scrollRef} className="max-h-[28rem] overflow-auto">
           <table className="block w-full border-collapse text-sm md:table">
             <thead className="sticky top-0 z-10 hidden bg-surface-3 text-left text-xs uppercase text-muted md:table-header-group">
               <tr>
@@ -732,20 +852,24 @@ function TranscriptTable({
             <tbody className="block md:table-row-group">
               {entries.map((entry, index) => {
                 const key = entryKey(entry, index)
-                const playing = playingKey === key
+                const playing = playback.playingKey === key && playback.playing
+                const active = activeKey === key
                 const editing = editingKey === key && onSaveText != null
                 const selected = selectedKeys.has(key)
-                const span = Math.max(MIN_FRAGMENT, entry.end - entry.start)
-                const percent = playing ? Math.min(100, Math.max(0, (position / span) * 100)) : 0
+                const words = karaokeWords(entry)
                 const pieces = speakerPieces(speakers, entry)
                 return (
                   <tr
                     key={key}
+                    ref={(element) => {
+                      if (element) rowRefs.current.set(key, element)
+                      else rowRefs.current.delete(key)
+                    }}
                     className={cn(
                       'group mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border p-3',
                       'md:mb-0 md:table-row md:rounded-none md:border-x-0 md:border-b-0 md:border-t md:p-0',
-                      playing && 'bg-info-soft',
-                      !playing && selected && 'bg-warn-soft',
+                      active && 'bg-info-soft',
+                      !active && selected && 'bg-warn-soft',
                     )}
                   >
                     {onAssignSpeaker && (
@@ -768,7 +892,7 @@ function TranscriptTable({
                         }
                         variant={playing ? 'primary' : 'secondary'}
                         size="sm"
-                        onClick={() => toggle({ key, start: entry.start, end: entry.end })}
+                        onClick={() => toggleFragment({ key, start: entry.start, end: entry.end })}
                       >
                         {playing ? (
                           <Pause aria-hidden className="h-3.5 w-3.5" />
@@ -873,8 +997,32 @@ function TranscriptTable({
                         </div>
                       ) : (
                         <div className="flex items-start gap-1.5">
-                          <div className="break-words" onDoubleClick={() => beginEdit(key, entry.text)}>
-                            {entry.text}
+                          <div
+                            className="break-words"
+                            onDoubleClick={() => beginEdit(key, entry.text)}
+                          >
+                            {words
+                              ? words.map((word, wordIndex) => {
+                                  const wordActive = active && wordIndex === activeWordIndex
+                                  return (
+                                    <span key={`${wordIndex}-${word.start}`}>
+                                      <span
+                                        className={cn(
+                                          'cursor-pointer rounded transition-colors',
+                                          wordActive
+                                            ? 'bg-primary-soft text-primary-soft-fg'
+                                            : 'hover:text-primary',
+                                        )}
+                                        title={`Перейти к ${formatTime(word.start)}`}
+                                        onClick={(event) => onWordClick(event, word.start)}
+                                      >
+                                        {word.text}
+                                      </span>
+                                      {wordIndex < words.length - 1 ? ' ' : ''}
+                                    </span>
+                                  )
+                                })
+                              : entry.text}
                           </div>
                           {onSaveText && (
                             <IconButton
@@ -915,8 +1063,9 @@ function TranscriptTable({
                       {playing && (
                         <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-surface-3">
                           <div
-                            className="h-full rounded-full bg-primary transition-[width] duration-100 ease-linear"
-                            style={{ width: `${percent}%` }}
+                            ref={progressBarRef}
+                            className="h-full rounded-full bg-primary"
+                            style={{ width: '0%' }}
                           />
                         </div>
                       )}
