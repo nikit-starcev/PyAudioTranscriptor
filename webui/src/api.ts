@@ -563,6 +563,8 @@ export type AssetInfo = {
   fraction: number | null
   installed: boolean
   downloadable: boolean
+  /** Установлен в служебный каталог `web-data/bin` (можно удалить из UI). */
+  managed: boolean
   path: string
   platform: string
   artifact: AssetArtifact | null

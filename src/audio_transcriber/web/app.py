@@ -1329,6 +1329,44 @@ def register_api(
         after = parse_last_event_id(last_event_id)
         return sse_response(stream_bus(deps_bus, after))
 
+    @router.delete("/assets/{key}")
+    def delete_asset(key: str) -> dict[str, object]:
+        """Удаляет установленный бинарный ресурс из ``web-data/bin/<key>``.
+
+        Удаляются только бинарные ресурсы (не pip-пакеты). Путь разрешается
+        строго внутри ``bin_dir`` — симлинк/выход наружу отклоняется. Коды:
+        ``404`` — ресурс неизвестен или не установлен, ``400`` — не бинарник
+        или недопустимый путь, ``409`` — идёт установка или каталог занят.
+        """
+        asset = find_asset(key)
+        if asset is None:
+            raise HTTPException(status_code=404, detail="Неизвестный внешний ресурс")
+        if asset.kind != KIND_BINARY:
+            raise HTTPException(
+                status_code=400,
+                detail="Удаление поддерживается только для бинарных ресурсов",
+            )
+        if binary_installer.active_key() == asset.key:
+            raise HTTPException(
+                status_code=409, detail="Идёт установка ресурса — дождитесь завершения"
+            )
+        directory = _resolve_within(paths.bin_dir, paths.bin_dir / asset.key)
+        if directory is None:
+            raise HTTPException(status_code=400, detail="Недопустимый путь ресурса")
+        if not directory.is_dir() or directory.is_symlink():
+            raise HTTPException(status_code=404, detail="Ресурс не установлен")
+        try:
+            shutil.rmtree(directory)
+        except OSError as exc:
+            logger.warning("Не удалось удалить ресурс %s: %s", asset.key, exc)
+            raise HTTPException(
+                status_code=409,
+                detail="Не удалось удалить ресурс — возможно, он используется",
+            ) from exc
+        binary_installer.clear(asset, directory)
+        logger.info("Ресурс %s удалён из %s", asset.key, directory)
+        return {"deleted": asset.key, "path": str(directory)}
+
     def _cache_stats() -> tuple[int, int]:
         """Число файлов и суммарный размер общего постадийного кэша.
 

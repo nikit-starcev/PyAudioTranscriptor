@@ -139,6 +139,27 @@ function BinaryRequirements({ requirements, onChanged }: Props) {
     }
   }
 
+  const remove = async (asset: AssetInfo) => {
+    if (
+      !window.confirm(
+        `Удалить установленный ресурс «${asset.label}»? Файлы будут удалены из служебного каталога.`,
+      )
+    ) {
+      return
+    }
+    setBusy(asset.key)
+    setError(null)
+    try {
+      await api(`/api/assets/${asset.key}`, { method: 'DELETE' })
+      await refresh()
+      onChangedRef.current?.()
+    } catch (cause) {
+      setError(errorMessage(cause))
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const canInstallPip = installer !== null
   // Требования: либо из плана мастера, либо — автономно — из реестра ресурсов.
   const summary = useMemo(() => {
@@ -253,6 +274,17 @@ function BinaryRequirements({ requirements, onChanged }: Props) {
                       onClick={() => asset && void install(asset)}
                     >
                       {running ? 'Обновление…' : 'Обновить'}
+                    </Button>
+                  )}
+                  {installed && isBinary && asset?.managed && (
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      loading={busy === assetKey}
+                      disabled={busy !== null || running}
+                      onClick={() => asset && void remove(asset)}
+                    >
+                      Удалить
                     </Button>
                   )}
                   {requirement.links.map((link) => (

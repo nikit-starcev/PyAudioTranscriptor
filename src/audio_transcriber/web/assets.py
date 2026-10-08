@@ -41,6 +41,7 @@ from pathlib import Path
 
 from audio_transcriber.web.deps import DEPENDENCIES, DependencySpec, module_available
 from audio_transcriber.web.models import DownloadBus
+from audio_transcriber.web.settings import default_settings
 
 logger = logging.getLogger(__name__)
 
@@ -476,6 +477,16 @@ def configured_binary(asset: AssetSpec, settings: object) -> str:
     return raw.strip() if isinstance(raw, str) else ""
 
 
+def _is_within(root: Path, candidate: Path) -> bool:
+    """Лежит ли ``candidate`` внутри ``root`` после разворачивания симлинков."""
+    try:
+        resolved_root = root.resolve()
+        resolved = candidate.resolve()
+    except (OSError, ValueError):
+        return False
+    return resolved == resolved_root or resolved_root in resolved.parents
+
+
 def _find_member(directory: Path, name: str) -> Path | None:
     """Рекурсивно ищет файл с именем ``name`` внутри ``directory``."""
     if not directory.is_dir():
@@ -837,6 +848,41 @@ class BinaryInstaller:
         updated = replace(current, **patch)
         save(updated)
 
+    def clear(self, asset: AssetSpec, directory: Path) -> None:
+        """Сбрасывает настройки и состояние после удаления каталога ресурса.
+
+        Настройки трогаются только если их путь указывал внутрь ``directory``
+        (удаляемый бинарник/каталог библиотек); тогда возвращается значение по
+        умолчанию, а не путь в уже удалённом каталоге.
+        """
+        self._reset_settings(asset, directory)
+        with self.lock:
+            self._states.pop(asset.key, None)
+
+    def _reset_settings(self, asset: AssetSpec, directory: Path) -> None:
+        if self._settings_store is None:
+            return
+        load = getattr(self._settings_store, "load", None)
+        save = getattr(self._settings_store, "save", None)
+        if load is None or save is None:
+            return
+        current = load()
+        defaults = default_settings()
+        patch: dict[str, str] = {}
+        for field_name in (asset.settings_field, asset.lib_settings_field):
+            if not field_name:
+                continue
+            configured = getattr(current, field_name, "")
+            if (
+                isinstance(configured, str)
+                and configured.strip()
+                and _is_within(directory, Path(configured).expanduser())
+            ):
+                patch[field_name] = str(getattr(defaults, field_name))
+        if not patch:
+            return
+        save(replace(current, **patch))
+
     def _run(self, asset: AssetSpec, artifact: AssetArtifact) -> None:
         tracker = _Tracker(installer=self, key=asset.key, total=artifact.size)
 
@@ -923,6 +969,7 @@ def asset_payload(
             {
                 "installed": module_available(asset.module) if asset.module else False,
                 "downloadable": False,
+                "managed": False,
                 "spec": asset.spec,
                 "module": asset.module,
             }
@@ -938,6 +985,7 @@ def asset_payload(
         {
             "installed": path is not None,
             "downloadable": artifact is not None,
+            "managed": path is not None and _is_within(bin_root, path),
             "path": str(path) if path is not None else "",
             "platform": f"{target_os}/{target_arch}",
             "artifact": artifact_payload(artifact),

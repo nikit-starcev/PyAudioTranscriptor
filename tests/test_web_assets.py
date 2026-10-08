@@ -411,6 +411,74 @@ def test_install_nemo_has_no_artifact_400(web_paths: WebPaths) -> None:
     assert "соберите" in response.json()["detail"].lower()
 
 
+def _stage_binary(web_paths: WebPaths, key: str) -> tuple[Path, Path]:
+    """Кладёт бинарник в ``bin/<key>/<key>`` и возвращает (каталог, файл)."""
+    directory = web_paths.bin_dir / key
+    binary = directory / key
+    directory.mkdir(parents=True, exist_ok=True)
+    binary.write_bytes(b"bin")
+    return directory, binary
+
+
+def test_delete_binary_asset_removes_dir_and_resets_settings(web_paths: WebPaths) -> None:
+    directory, binary = _stage_binary(web_paths, "whisper-cli")
+    app = create_app(paths=web_paths, heartbeat=0.05)
+    with TestClient(app) as client:
+        store = client.app.state.settings_store  # type: ignore[attr-defined]
+        settings = store.load()
+        settings.whisper_cpp_binary = str(binary)
+        settings.whisper_cpp_lib_path = str(directory)
+        store.save(settings)
+
+        response = client.delete("/api/assets/whisper-cli")
+
+        assert response.status_code == 200
+        assert response.json()["deleted"] == "whisper-cli"
+        assert not directory.exists()
+        saved = store.load()
+        assert saved.whisper_cpp_binary == "whisper-cli"
+        assert saved.whisper_cpp_lib_path == ""
+
+        payload = client.get("/api/assets").json()
+        whisper = next(item for item in payload["assets"] if item["key"] == "whisper-cli")
+        assert whisper["installed"] is False
+        assert whisper["managed"] is False
+
+
+def test_delete_binary_asset_not_installed_404(web_paths: WebPaths) -> None:
+    with TestClient(create_app(paths=web_paths, heartbeat=0.05)) as client:
+        assert client.delete("/api/assets/whisper-cli").status_code == 404
+
+
+def test_delete_binary_asset_unknown_404(web_paths: WebPaths) -> None:
+    with TestClient(create_app(paths=web_paths, heartbeat=0.05)) as client:
+        assert client.delete("/api/assets/nope").status_code == 404
+
+
+def test_delete_binary_asset_pip_400(web_paths: WebPaths) -> None:
+    with TestClient(create_app(paths=web_paths, heartbeat=0.05)) as client:
+        assert client.delete("/api/assets/gigaam").status_code == 400
+
+
+def test_delete_binary_asset_refuses_outside_bin_dir(
+    web_paths: WebPaths, tmp_path: Path
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    marker = outside / "keep.txt"
+    marker.write_text("keep")
+    web_paths.bin_dir.mkdir(parents=True, exist_ok=True)
+    link = web_paths.bin_dir / "whisper-cli"
+    link.symlink_to(outside, target_is_directory=True)
+
+    with TestClient(create_app(paths=web_paths, heartbeat=0.05)) as client:
+        response = client.delete("/api/assets/whisper-cli")
+
+    assert response.status_code == 400
+    assert marker.exists()
+    assert link.exists()
+
+
 def _assets_events_route(app: object) -> object:
     stack = list(app.routes)  # type: ignore[attr-defined]
     while stack:
