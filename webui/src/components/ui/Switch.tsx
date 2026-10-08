@@ -1,3 +1,4 @@
+import { useId } from 'react'
 import type { ReactNode } from 'react'
 
 import { cn } from './cn'
@@ -8,6 +9,7 @@ export type SwitchProps = {
   label?: ReactNode
   disabled?: boolean
   id?: string
+  name?: string
   'aria-label'?: string
   className?: string
 }
@@ -18,12 +20,17 @@ export function Switch({
   label,
   disabled = false,
   id,
+  name,
   className,
   'aria-label': ariaLabel,
 }: SwitchProps) {
+  const reactId = useId()
+  const controlId = id ?? `switch-${reactId.replace(/[^a-zA-Z0-9_-]/g, '')}`
+
   const control = (
     <button
-      id={id}
+      id={controlId}
+      name={name ?? controlId}
       type="button"
       role="switch"
       aria-checked={checked}
@@ -51,9 +58,11 @@ export function Switch({
   if (label == null) return control
 
   return (
-    <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-text">
+    <span className="inline-flex items-center gap-2 text-sm text-text">
       {control}
-      <span>{label}</span>
-    </label>
+      <label htmlFor={controlId} className="cursor-pointer">
+        {label}
+      </label>
+    </span>
   )
 }

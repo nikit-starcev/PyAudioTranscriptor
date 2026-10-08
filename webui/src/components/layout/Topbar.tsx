@@ -17,6 +17,10 @@ function asrTone(device: AsrDeviceInfo | null): BadgeTone {
 }
 
 function Topbar({ version, asrDevice, onOpenNav }: Props) {
+  const asrTitle = asrDevice
+    ? `${asrDevice.label}${asrDevice.details.length ? ` · ${asrDevice.details.join('; ')}` : ''} · ${asrDevice.note}`
+    : ''
+
   return (
     <header className="sticky top-0 z-30 border-b border-border bg-surface/90 backdrop-blur">
       <div className="flex h-14 items-center gap-3 px-3 sm:px-6">
@@ -41,21 +45,25 @@ function Topbar({ version, asrDevice, onOpenNav }: Props) {
           <span className="truncate text-sm font-semibold">AudioTranscriber</span>
         </a>
 
-        <div className="ml-auto flex shrink-0 items-center gap-2">
+        <div className="ml-auto flex min-w-0 items-center gap-2">
           {asrDevice && (
             <div className="hidden min-w-0 lg:block">
-              <Tooltip
-                label={`${asrDevice.label}${asrDevice.details.length ? ` · ${asrDevice.details.join('; ')}` : ''} · ${asrDevice.note}`}
-              >
-                <Badge tone={asrTone(asrDevice)} className="max-w-[26rem]">
+              <Tooltip label={asrTitle} className="min-w-0">
+                <Badge
+                  tone={asrTone(asrDevice)}
+                  title={asrTitle}
+                  className="max-w-[16rem] min-w-0"
+                >
                   <span className="min-w-0 truncate">ASR: {asrDevice.label}</span>
                 </Badge>
               </Tooltip>
             </div>
           )}
           {version && (
-            <span className="hidden sm:inline-flex">
-              <Badge tone="neutral">v{version}</Badge>
+            <span className="hidden shrink-0 sm:inline-flex">
+              <Badge tone="neutral" title={`Версия ${version}`}>
+                v{version}
+              </Badge>
             </span>
           )}
           <ThemeToggle />

@@ -1,9 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
-import { Pause, Pencil, Play, X } from 'lucide-react'
+import { Pause, Pencil, Play, Scissors, X } from 'lucide-react'
 
 import { formatTime, speakerName, type Entry, type SpeakerInfo } from '../api'
-import { Alert, Button, Card, Checkbox, IconButton, Input, Select, Textarea, cn } from './ui'
+import {
+  Alert,
+  Button,
+  Card,
+  Checkbox,
+  IconButton,
+  Input,
+  Select,
+  Textarea,
+  Tooltip,
+  cn,
+} from './ui'
+import { TRANSCRIPT_MARKS } from './transcriptMarks'
 import GlossaryQuickModal from './GlossaryQuickModal'
 
 type Props = {
@@ -89,6 +101,22 @@ const MIN_FRAGMENT = 0.05
 const STOP_EPSILON = 0.005
 //: Как часто обновлять прогресс (мс), чтобы не ререндерить таблицу каждый кадр.
 const PAINT_INTERVAL_MS = 100
+
+type MarkProps = { markKey: string; label: string }
+
+function Mark({ markKey, label }: MarkProps) {
+  const visual = TRANSCRIPT_MARKS[markKey]
+  if (!visual) return null
+  const { Icon, tone } = visual
+  return (
+    <Tooltip label={label}>
+      <span className={cn('inline-flex items-center', tone)}>
+        <Icon aria-hidden className="h-4 w-4" />
+        <span className="sr-only">{label}</span>
+      </span>
+    </Tooltip>
+  )
+}
 
 function TranscriptTable({
   jobId,
@@ -714,7 +742,7 @@ function TranscriptTable({
                   <tr
                     key={key}
                     className={cn(
-                      'border-t border-border',
+                      'group border-t border-border',
                       playing && 'bg-info-soft',
                       !playing && selected && 'bg-warn-soft',
                     )}
@@ -781,22 +809,32 @@ function TranscriptTable({
                           ))}
                         </div>
                         {onSplitEntry && (
-                          <Button
-                            variant="secondary"
+                          <IconButton
+                            aria-label="Разделить реплику по времени на двух говорящих"
+                            title="Разделить реплику"
                             size="sm"
-                              className="mt-0.5 shrink-0"
-                            title="Разделить реплику по времени на двух говорящих"
+                            className={cn(
+                              'mt-0.5 shrink-0 opacity-0 transition-opacity',
+                              'focus-visible:opacity-100 group-hover:opacity-100',
+                              'group-focus-within:opacity-100 pointer-coarse:opacity-100',
+                            )}
                             onClick={() => beginSplit(entry, index)}
                           >
-                            разделить
-                          </Button>
+                            <Scissors aria-hidden className="h-3.5 w-3.5" />
+                          </IconButton>
                         )}
                       </div>
                     </td>
-                    <td className="whitespace-nowrap px-3 py-1.5 text-base">
-                      {entry.low_confidence && <span title="низкая уверенность">⚠</span>}
-                      {entry.low_speaker_confidence && <span title="говорящий под вопросом">?</span>}
-                      {entry.overlap && <span title="наложение речи">⇄</span>}
+                    <td className="whitespace-nowrap px-3 py-1.5">
+                      <span className="inline-flex items-center gap-1.5">
+                        {entry.low_confidence && (
+                          <Mark markKey="low_confidence" label="низкая уверенность" />
+                        )}
+                        {entry.low_speaker_confidence && (
+                          <Mark markKey="speaker_uncertain" label="говорящий под вопросом" />
+                        )}
+                        {entry.overlap && <Mark markKey="overlap" label="наложение речи" />}
+                      </span>
                     </td>
                     <td className="px-3 py-1.5" onContextMenu={(event) => openContextMenu(event)}>
                       {editing ? (

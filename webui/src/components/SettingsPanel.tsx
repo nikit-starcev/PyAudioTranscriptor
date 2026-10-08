@@ -169,7 +169,7 @@ function ToggleRow({
       />
       <span>
         {label}
-        <span className="block text-xs text-muted">{hint}</span>
+        <span className="mt-0.5 block max-w-prose text-pretty text-xs text-muted">{hint}</span>
       </span>
     </label>
   )
@@ -479,17 +479,6 @@ function SettingsPanel({ onSaved }: Props) {
           {error}
         </Alert>
       )}
-      {status && (
-        <Alert tone="success" live onDismiss={() => setStatus(null)}>
-          {status}
-        </Alert>
-      )}
-
-      <div className="flex justify-end">
-        <Button variant="primary" loading={busy} onClick={() => void save()}>
-          Сохранить
-        </Button>
-      </div>
 
       <Card>
         <CardHeader title="Режимы обработки" />
@@ -718,7 +707,7 @@ function SettingsPanel({ onSaved }: Props) {
           </Field>
 
           {settings.llm_provider === 'llama' ? (
-            <p className="rounded-md bg-surface-2 px-3 py-1.5 text-xs text-muted">
+            <p className="max-w-prose text-pretty rounded-md bg-surface-2 px-3 py-1.5 text-xs text-muted">
               Локальный llama.cpp: модель GGUF и бинарник задаются выше, в блоке «Распознавание:
               бэкенд и модели». Текст не покидает машину.
             </p>
@@ -868,7 +857,7 @@ function SettingsPanel({ onSaved }: Props) {
               ))}
             </Select>
           </Field>
-          <p className="rounded-md bg-surface-2 px-3 py-1.5 text-xs text-muted">
+          <p className="max-w-prose text-pretty rounded-md bg-surface-2 px-3 py-1.5 text-xs text-muted">
             {ENGINE_HINTS[settings.diarization_engine] ?? ''}
           </p>
 
@@ -998,7 +987,7 @@ function SettingsPanel({ onSaved }: Props) {
                 />
               </Field>
             </div>
-            <p className="text-xs text-muted">
+            <p className="max-w-prose text-pretty text-xs text-muted">
               Перекрытие должно быть меньше окна. Требуются sherpa-onnx и модель эмбеддингов (см.
               выше/каталог моделей). Порог — в единицах евклидова расстояния при linkage=ward.
             </p>
@@ -1182,7 +1171,12 @@ function SettingsPanel({ onSaved }: Props) {
         </CardContent>
       </Card>
 
-      <div className="flex justify-end">
+      <div className="sticky bottom-4 z-20 flex flex-wrap items-center justify-end gap-3 rounded-lg border border-border bg-surface/95 px-4 py-3 shadow-md backdrop-blur">
+        {status && (
+          <span aria-live="polite" className="mr-auto text-xs font-medium text-success">
+            {status}
+          </span>
+        )}
         <Button variant="primary" loading={busy} onClick={() => void save()}>
           Сохранить
         </Button>

@@ -39,7 +39,7 @@ export function Field({
           <span>{error}</span>
         </p>
       ) : hint ? (
-        <p className="text-xs text-muted">{hint}</p>
+        <p className="max-w-prose text-pretty text-xs text-muted">{hint}</p>
       ) : null}
     </div>
   )

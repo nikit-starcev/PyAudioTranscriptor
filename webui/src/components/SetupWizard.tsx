@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Check, Circle } from 'lucide-react'
+import { Check, CheckCircle2, Circle, CircleDot } from 'lucide-react'
 
 import {
   api,
@@ -275,24 +275,37 @@ function SetupWizard({ report, onRecheck, onDone, onChanged }: Props) {
           {steps.map((step, stepIndex) => {
             const active = stepIndex === index
             const ok = step.status === 'ok'
+            const state = active ? 'current' : ok ? 'done' : 'upcoming'
+            const stateLabel =
+              state === 'current' ? 'текущий шаг' : state === 'done' ? 'выполнен' : 'предстоит'
             return (
               <li key={step.id}>
                 <button
                   type="button"
                   onClick={() => setIndex(stepIndex)}
                   aria-current={active ? 'step' : undefined}
+                  title={`${step.title} — ${stateLabel}`}
                   className={cn(
                     'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
                     'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
-                    active
-                      ? 'bg-primary-soft text-primary-soft-fg'
-                      : 'text-muted hover:bg-surface-2 hover:text-text',
+                    state === 'current'
+                      ? 'bg-primary-soft text-primary-soft-fg ring-1 ring-primary'
+                      : state === 'done'
+                        ? 'bg-success-soft text-success-soft-fg hover:opacity-90'
+                        : 'text-muted hover:bg-surface-2 hover:text-text',
                   )}
                 >
-                  <span aria-hidden className={ok ? 'text-success' : 'text-warn'}>
-                    {ok ? <Check className="h-3 w-3" /> : <Circle className="h-2 w-2" />}
+                  <span aria-hidden>
+                    {state === 'current' ? (
+                      <CircleDot className="h-3.5 w-3.5 text-primary" />
+                    ) : state === 'done' ? (
+                      <CheckCircle2 className="h-3.5 w-3.5 text-success" />
+                    ) : (
+                      <Circle className="h-3.5 w-3.5" />
+                    )}
                   </span>
                   {step.title}
+                  <span className="sr-only"> — {stateLabel}</span>
                 </button>
               </li>
             )
@@ -513,23 +526,18 @@ function SetupWizard({ report, onRecheck, onDone, onChanged }: Props) {
         >
           Назад
         </Button>
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" onClick={onDone}>
-            Закрыть
+        {index < STEP_ORDER.length - 1 ? (
+          <Button
+            variant="primary"
+            onClick={() => setIndex((value) => Math.min(STEP_ORDER.length - 1, value + 1))}
+          >
+            Далее
           </Button>
-          {index < STEP_ORDER.length - 1 ? (
-            <Button
-              variant="primary"
-              onClick={() => setIndex((value) => Math.min(STEP_ORDER.length - 1, value + 1))}
-            >
-              Далее
-            </Button>
-          ) : (
-            <Button variant="primary" onClick={onDone}>
-              Готово
-            </Button>
-          )}
-        </div>
+        ) : (
+          <Button variant="primary" onClick={onDone}>
+            Готово
+          </Button>
+        )}
       </CardFooter>
     </Card>
   )

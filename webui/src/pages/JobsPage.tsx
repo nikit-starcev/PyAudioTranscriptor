@@ -22,9 +22,11 @@ function JobsPage() {
         onRecheck={() => void app.recheckDoctor()}
       />
 
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_22rem]">
+      <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <JobList />
-        <FilesPanel />
+        <div className="lg:sticky lg:top-20">
+          <FilesPanel />
+        </div>
       </div>
     </div>
   )

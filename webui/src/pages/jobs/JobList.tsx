@@ -27,8 +27,7 @@ function JobList() {
   return (
     <Card>
       <CardHeader
-        title="Задачи"
-        description="Все запуски обработки"
+        title="Все запуски обработки"
         actions={
           <>
             <Checkbox

@@ -4,7 +4,8 @@ import { formatDuration, type Entry } from '../../api'
 import { useApp } from '../../app/useApp'
 import EditorPanel from '../../components/EditorPanel'
 import TranscriptTable from '../../components/TranscriptTable'
-import { EmptyState, Input } from '../../components/ui'
+import { EmptyState, Input, cn } from '../../components/ui'
+import { TRANSCRIPT_MARKS } from '../../components/transcriptMarks'
 
 function TranscriptTab({ jobId }: { jobId: string }) {
   const app = useApp()
@@ -45,14 +46,22 @@ function TranscriptTab({ jobId }: { jobId: string }) {
       </div>
 
       <div className="flex flex-wrap items-center gap-4 text-xs text-muted">
-        {result.marks.map((mark) => (
-          <span key={mark.key} className="inline-flex items-center gap-1">
-            <span aria-hidden className="text-base">
-              {mark.symbol}
+        {result.marks.map((mark) => {
+          const visual = TRANSCRIPT_MARKS[mark.key]
+          const Icon = visual?.Icon
+          return (
+            <span key={mark.key} className="inline-flex items-center gap-1">
+              {Icon ? (
+                <Icon aria-hidden className={cn('h-4 w-4', visual.tone)} />
+              ) : (
+                <span aria-hidden className="text-base">
+                  {mark.symbol}
+                </span>
+              )}
+              {mark.label}
             </span>
-            {mark.label}
-          </span>
-        ))}
+          )
+        })}
         <span className="tabular-nums">
           {app.filteredEntries.length} из {result.entries.length}
         </span>
