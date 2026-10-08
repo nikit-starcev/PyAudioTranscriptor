@@ -83,6 +83,31 @@ def test_none_is_not_attached_to_named_speaker() -> None:
     assert [entry.text for entry in merged] == ["привет", "шум", "продолжаю"]
 
 
+def test_merges_same_speaker_across_natural_pause() -> None:
+    # Пауза 3 с внутри речи одного говорящего — естественная, не разрывает
+    # реплику (порог по умолчанию 5 с, #113).
+    entries = [
+        _entry(0.0, 1.0, "первая", _SPEAKER_1),
+        _entry(4.0, 5.0, "вторая", _SPEAKER_1),
+    ]
+
+    merged = SentenceMerger().merge(entries)
+
+    assert len(merged) == 1
+    assert merged[0].text == "первая вторая"
+
+
+def test_default_gap_breaks_long_silence() -> None:
+    entries = [
+        _entry(0.0, 1.0, "первая", _SPEAKER_1),
+        _entry(20.0, 21.0, "вторая", _SPEAKER_1),
+    ]
+
+    merged = SentenceMerger().merge(entries)
+
+    assert [entry.text for entry in merged] == ["первая", "вторая"]
+
+
 def test_large_gap_breaks_utterance() -> None:
     entries = [
         _entry(0.0, 1.0, "первая", _SPEAKER_1),

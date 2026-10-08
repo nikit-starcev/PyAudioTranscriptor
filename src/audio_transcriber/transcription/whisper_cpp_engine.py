@@ -55,9 +55,9 @@ logger = logging.getLogger(__name__)
 #: ``pipeline._asr_cache_params``): при изменении логики, влияющей на результат
 #: при тех же параметрах (отказ от лишнего перекодирования входа, чанкинг
 #: длинных файлов, пословные таймстемпы, учёт фактического денойза #83,
-#: посимвольная/пословная сшивка стыков кусков #94), старый кэш должен
-#: инвалидироваться.
-ASR_IMPL_VERSION = 6
+#: посимвольная/пословная сшивка стыков кусков #94, нормализация длительности
+#: слов с ``start == end`` #113), старый кэш должен инвалидироваться.
+ASR_IMPL_VERSION = 7
 
 #: Таймаут одного вызова whisper-cli (секунды). Битая входная дорожка или
 #: дедлок GPU/Vulkan может повесить распознавание навсегда; по истечении
@@ -340,6 +340,63 @@ def _parse_whisper_output(
     result = raw.get("result")
     detected = result.get("language") if isinstance(result, dict) else None
     return segments, detected if isinstance(detected, str) else None
+
+
+MIN_WORD_DURATION = 0.02
+
+
+def _ensure_word_durations(words: list[WordTimestamp]) -> list[WordTimestamp]:
+    """Гарантирует словам различимую положительную длительность.
+
+    whisper.cpp иногда отдаёт токену одинаковые ``offsets.from`` и
+    ``offsets.to`` — слово нулевой длительности (``start == end``), в UI это
+    выглядит как склеенный таймкод (``0:26.60:26.6``). Идущие подряд такие
+    слова делят интервал до начала следующего слова, если оно начинается
+    позже; иначе каждому даётся :data:`MIN_WORD_DURATION`. Инвертированные
+    интервалы (``end < start``) сначала сводятся к нулю.
+    """
+    if not words:
+        return words
+    result = [
+        replace(word, end=word.start) if word.end < word.start else word
+        for word in words
+    ]
+    total = len(result)
+    index = 0
+    while index < total:
+        current = result[index]
+        if current.end > current.start:
+            index += 1
+            continue
+        start = current.start
+        stop = index
+        while (
+            stop < total
+            and result[stop].start == start
+            and result[stop].end <= result[stop].start
+        ):
+            stop += 1
+        count = stop - index
+        next_start = result[stop].start if stop < total else None
+        if next_start is not None and next_start > start:
+            step = max((next_start - start) / count, MIN_WORD_DURATION)
+        else:
+            step = MIN_WORD_DURATION
+        for offset in range(count):
+            word = result[index + offset]
+            result[index + offset] = replace(word, end=start + step * (offset + 1))
+        index = stop
+    return result
+
+
+def _with_word_durations(
+    segments: list[TranscriptionSegment],
+) -> list[TranscriptionSegment]:
+    """Применяет :func:`_ensure_word_durations` к словам каждого сегмента."""
+    return [
+        replace(segment, words=_ensure_word_durations(list(segment.words)))
+        for segment in segments
+    ]
 
 
 def _shift_words(
@@ -1196,6 +1253,12 @@ class WhisperCppRecognizer:
                     # Даже без чанкинга whisper.cpp может разрезать слово
                     # границей сегмента — сшиваем и снимаем служебный флаг.
                     segments = _stitch_chunk_words(segments)
+
+        if self._word_timestamps:
+            # Нулевые/инвертированные длительности слов чиним после чанкинга и
+            # сшивки — все потребители (диаризация, склейка, экспорт) должны
+            # видеть валидные интервалы (#113).
+            segments = _with_word_durations(segments)
 
         # Длительность берём из декодированного аудио. Если по какой-то причине
         # она неизвестна, откатываемся к концу последней реплики.

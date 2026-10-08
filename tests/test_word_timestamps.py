@@ -19,6 +19,7 @@ from audio_transcriber.domain.models import TranscriptionSegment, WordTimestamp
 from audio_transcriber.transcription import whisper_cpp_engine as whisper_module
 from audio_transcriber.transcription.whisper_cpp_engine import (
     WhisperCppRecognizer,
+    _ensure_word_durations,
     _stitch_chunk_words,
     _word_timestamps,
 )
@@ -101,6 +102,63 @@ def test_word_timestamps_marks_continuation_word() -> None:
 def test_word_timestamps_ignores_non_list_tokens() -> None:
     assert _word_timestamps(None) == []
     assert _word_timestamps("нет") == []
+
+
+# --- Нулевые длительности слов (#113) ---------------------------------------
+
+
+def test_ensure_word_durations_fills_zero_length_run() -> None:
+    words = [
+        WordTimestamp("Далее", 26.56, 26.56),
+        WordTimestamp("тогда", 26.56, 26.56),
+        WordTimestamp("переходим.", 26.56, 28.54),
+    ]
+
+    result = _ensure_word_durations(words)
+
+    assert all(word.end > word.start for word in result)
+    # Идущие подряд нулевые слова делят интервал до следующего слова.
+    assert result[0].end == pytest.approx(26.58)
+    assert result[1].end == pytest.approx(26.60)
+    assert result[2] == words[2]
+
+
+def test_ensure_word_durations_fills_gap_to_next_word() -> None:
+    words = [
+        WordTimestamp("нет", 38.25, 38.25),
+        WordTimestamp("пользователя", 45.71, 49.67),
+    ]
+
+    result = _ensure_word_durations(words)
+
+    assert result[0].end == pytest.approx(45.71)
+
+
+def test_ensure_word_durations_trailing_zero_gets_min_duration() -> None:
+    words = [
+        WordTimestamp("начало", 10.0, 11.0),
+        WordTimestamp("конец", 12.0, 12.0),
+    ]
+
+    result = _ensure_word_durations(words)
+
+    assert result[1].start == pytest.approx(12.0)
+    assert result[1].end > result[1].start
+
+
+def test_ensure_word_durations_keeps_valid_words_untouched() -> None:
+    words = [WordTimestamp("привет", 0.0, 0.5), WordTimestamp("мир", 0.5, 1.0)]
+
+    assert _ensure_word_durations(words) == words
+
+
+def test_ensure_word_durations_normalizes_inverted() -> None:
+    words = [WordTimestamp("слово", 7.48, 6.47), WordTimestamp("ещё", 7.53, 7.81)]
+
+    result = _ensure_word_durations(words)
+
+    assert result[0].end >= result[0].start
+    assert result[0].end > result[0].start
 
 
 # --- Сшивка слов на стыке кусков --------------------------------------------
@@ -412,3 +470,38 @@ def test_chunked_engine_shifts_word_offsets(
     assert starts == [0.0, 28.0, 56.0]
     assert [round(segment.words[0].start, 3) for segment in segments] == starts
     assert [round(segment.words[0].end, 3) for segment in segments] == [0.4, 28.4, 56.4]
+
+
+def test_engine_repairs_zero_duration_words(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Движок не отдаёт слов нулевой длительности (#113)."""
+
+    monkeypatch.setattr(
+        whisper_module,
+        "probe_audio",
+        lambda _p: AudioProbe("wav", "pcm_s16le", SAMPLE_RATE, 1, 2.0),
+    )
+    tokens = [
+        _token(" Далее", 26560, 26560, 0.7),
+        _token(" тогда", 26560, 26560, 0.8),
+        _token(" переходим.", 26560, 28540, 0.99),
+    ]
+    _install_popen(
+        monkeypatch,
+        lambda _i: [
+            {
+                "offsets": {"from": 26560, "to": 28540},
+                "text": " Далее тогда переходим.",
+                "tokens": tokens,
+            }
+        ],
+    )
+
+    segments, _language, _duration = WhisperCppRecognizer(
+        _model(tmp_path), word_timestamps=True
+    ).transcribe(Path("input.wav"))
+
+    words = segments[0].words
+    assert [word.text for word in words] == ["Далее", "тогда", "переходим."]
+    assert all(word.end > word.start for word in words)
