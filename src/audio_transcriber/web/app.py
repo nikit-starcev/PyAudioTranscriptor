@@ -279,6 +279,9 @@ _EXPORT_MEDIA_TYPES: dict[str, str] = {
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "json": "application/json",
     "srt": "application/x-subrip",
+    "vtt": "text/vtt",
+    "md": "text/markdown; charset=utf-8",
+    "pdf": "application/pdf",
 }
 
 _PLACEHOLDER_HTML = """<!doctype html>
@@ -2212,13 +2215,15 @@ def register_api(
         return FileResponse(target, media_type=media_type, filename=target.name)
 
     @router.get("/jobs/{job_id}/export")
-    def job_export(job_id: str, fmt: str = "txt") -> Response:
+    def job_export(job_id: str, fmt: str = "txt", highlight: bool = False) -> Response:
         """Прямая выгрузка стенограммы в выбранном формате (без протокола).
 
         Переиспользует текущий JSON результата (уже с применёнными именами
         говорящих) и существующие экспортёры ``export/*``. Резюме **не**
         вычисляется: отдаётся именно стенограмма, а не протокол. Файл
         собирается во временном каталоге — результаты задачи не перезаписываются.
+        ``highlight`` включает пословную подсветку в субтитрах (srt/vtt), если
+        у реплик есть пословные таймстемпы (#45).
         """
         job = _require_job(store, job_id)
         value = fmt.strip().casefold()
@@ -2226,7 +2231,8 @@ def register_api(
             export_format = ExportFormat(value)
         except ValueError as exc:
             raise HTTPException(
-                status_code=400, detail="fmt должен быть txt, docx, json или srt"
+                status_code=400,
+                detail="fmt должен быть txt, docx, json, srt, vtt, md или pdf",
             ) from exc
         payload = _require_result(paths, job)
         source = Path(job.source_path)
@@ -2236,7 +2242,7 @@ def register_api(
         tmp_dir = Path(tempfile.mkdtemp(prefix="audio-transcriber-export-"))
         target = tmp_dir / f"{source.stem}.{value}"
         try:
-            create_exporter(export_format).export(result, target)
+            create_exporter(export_format, highlight_words=highlight).export(result, target)
         except Exception as exc:  # сбой экспорта не должен ронять сервер
             shutil.rmtree(tmp_dir, ignore_errors=True)
             raise HTTPException(

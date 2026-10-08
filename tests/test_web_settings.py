@@ -165,7 +165,7 @@ def test_build_job_config_word_timestamps(
 
 
 def test_put_settings_rejects_invalid_formats(client: TestClient) -> None:
-    response = client.put("/api/settings", json={"export_formats": ["txt", "pdf"]})
+    response = client.put("/api/settings", json={"export_formats": ["txt", "xyz"]})
 
     assert response.status_code == 400
     assert "формат" in response.json()["detail"]

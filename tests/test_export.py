@@ -10,12 +10,20 @@ import pytest
 from docx import Document
 
 from audio_transcriber.domain.enums import ExportFormat
-from audio_transcriber.domain.models import Speaker, TranscriptEntry, TranscriptionResult
+from audio_transcriber.domain.models import (
+    Speaker,
+    TranscriptEntry,
+    TranscriptionResult,
+    WordTimestamp,
+)
 from audio_transcriber.export.docx_exporter import DocxExporter
 from audio_transcriber.export.factory import create_exporter
 from audio_transcriber.export.json_exporter import JsonExporter
+from audio_transcriber.export.markdown_exporter import MarkdownExporter
+from audio_transcriber.export.pdf_exporter import PdfExporter
 from audio_transcriber.export.srt_exporter import SrtExporter
 from audio_transcriber.export.txt_exporter import TxtExporter
+from audio_transcriber.export.vtt_exporter import VttExporter
 
 
 @pytest.fixture
@@ -93,6 +101,9 @@ def test_docx_exporter_creates_readable_document(
         (ExportFormat.DOCX, DocxExporter),
         (ExportFormat.JSON, JsonExporter),
         (ExportFormat.SRT, SrtExporter),
+        (ExportFormat.VTT, VttExporter),
+        (ExportFormat.MARKDOWN, MarkdownExporter),
+        (ExportFormat.PDF, PdfExporter),
     ],
 )
 def test_factory_creates_matching_exporter(
@@ -256,3 +267,143 @@ def test_high_speaker_confidence_has_no_marker(
     TxtExporter().export(result, output_path)
 
     assert "[говорящий под вопросом]" not in output_path.read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def words_result(tmp_path: Path) -> TranscriptionResult:
+    ivan = Speaker(id="SPEAKER_00", display_name="Иван")
+    return TranscriptionResult(
+        source_path=tmp_path / "call.mp3",
+        language="ru",
+        duration=2.0,
+        entries=[
+            TranscriptEntry(
+                start=0.0,
+                end=1.5,
+                text="Привет, как дела?",
+                speaker=ivan,
+                words=[
+                    WordTimestamp(text="Привет,", start=0.0, end=0.5, probability=0.9),
+                    WordTimestamp(text="как", start=0.5, end=0.9, probability=0.8),
+                    WordTimestamp(text="дела?", start=0.9, end=1.5, probability=0.7),
+                ],
+            ),
+        ],
+        speakers=[ivan],
+    )
+
+
+def test_vtt_exporter_writes_header_and_dotted_timestamps(
+    sample_result: TranscriptionResult, tmp_path: Path
+) -> None:
+    output_path = tmp_path / "out.vtt"
+
+    VttExporter().export(sample_result, output_path)
+
+    content = output_path.read_text(encoding="utf-8")
+    assert content.startswith("WEBVTT\n")
+    assert "00:00:00.000 --> 00:00:01.500" in content
+    assert "<v Иван>Привет, как дела?" in content
+    # HTML-подобная разметка не добавлена: без пословных меток cue простой.
+    assert "<c>" not in content
+
+
+def test_vtt_exporter_escapes_markup_symbols(tmp_path: Path) -> None:
+    result = TranscriptionResult(
+        source_path=tmp_path / "call.mp3",
+        language="ru",
+        duration=1.0,
+        entries=[TranscriptEntry(start=0.0, end=1.0, text="a < b & c > d")],
+    )
+    output_path = tmp_path / "out.vtt"
+
+    VttExporter().export(result, output_path)
+
+    content = output_path.read_text(encoding="utf-8")
+    assert "a &lt; b &amp; c &gt; d" in content
+
+
+def test_vtt_highlights_words_only_with_word_timestamps(
+    words_result: TranscriptionResult, sample_result: TranscriptionResult, tmp_path: Path
+) -> None:
+    highlighted_path = tmp_path / "words.vtt"
+    plain_path = tmp_path / "plain.vtt"
+
+    VttExporter(highlight_words=True).export(words_result, highlighted_path)
+    VttExporter(highlight_words=True).export(sample_result, plain_path)
+
+    highlighted = highlighted_path.read_text(encoding="utf-8")
+    assert "<00:00:00.000><c>Привет,</c>" in highlighted
+    assert "<00:00:00.500><c>как</c>" in highlighted
+    # Без пословных меток подсветка не включается (гейт #45).
+    assert "<c>" not in plain_path.read_text(encoding="utf-8")
+
+
+def test_srt_highlights_words_only_with_word_timestamps(
+    words_result: TranscriptionResult, sample_result: TranscriptionResult, tmp_path: Path
+) -> None:
+    highlighted_path = tmp_path / "words.srt"
+    plain_path = tmp_path / "plain.srt"
+
+    SrtExporter(highlight_words=True).export(words_result, highlighted_path)
+    SrtExporter(highlight_words=True).export(sample_result, plain_path)
+
+    highlighted = highlighted_path.read_text(encoding="utf-8")
+    assert '<font color="#00BFFF">Привет,</font>' in highlighted
+    assert "<font" not in plain_path.read_text(encoding="utf-8")
+
+
+def test_factory_passes_highlight_flag_to_subtitle_exporters() -> None:
+    assert isinstance(create_exporter(ExportFormat.VTT, highlight_words=True), VttExporter)
+    assert isinstance(create_exporter(ExportFormat.SRT, highlight_words=True), SrtExporter)
+    # Не-субтитровые форматы флаг игнорируют, но создаются штатно.
+    assert isinstance(create_exporter(ExportFormat.MARKDOWN, highlight_words=True), MarkdownExporter)
+
+
+def test_markdown_exporter_writes_metadata_and_transcript(
+    sample_result: TranscriptionResult, tmp_path: Path
+) -> None:
+    result = replace(sample_result, participants=["Иван", "Мария"], summary=_SUMMARY)
+    output_path = tmp_path / "out.md"
+
+    MarkdownExporter().export(result, output_path)
+
+    content = output_path.read_text(encoding="utf-8")
+    assert content.startswith("# call.mp3")
+    assert "- Язык: ru" in content
+    assert "- Длительность: 00:00:05" in content
+    assert "## Участники" in content
+    assert "## Резюме встречи" in content
+    assert "## Расшифровка" in content
+    assert "[00:00:00] **Иван:** Привет, как дела?" in content
+    assert "[00:00:03] **?:** Без определённого говорящего" in content
+
+
+def test_markdown_exporter_escapes_special_characters(tmp_path: Path) -> None:
+    result = TranscriptionResult(
+        source_path=tmp_path / "call.mp3",
+        language="ru",
+        duration=1.0,
+        entries=[TranscriptEntry(start=0.0, end=1.0, text="*курсив* [ссылка] #тег")],
+    )
+    output_path = tmp_path / "out.md"
+
+    MarkdownExporter().export(result, output_path)
+
+    content = output_path.read_text(encoding="utf-8")
+    assert r"\*курсив\*" in content
+    assert r"\[ссылка\]" in content
+    assert r"\#тег" in content
+
+
+def test_pdf_exporter_creates_non_empty_pdf(
+    sample_result: TranscriptionResult, tmp_path: Path
+) -> None:
+    result = replace(sample_result, participants=["Иван", "Мария"], summary=_SUMMARY)
+    output_path = tmp_path / "out.pdf"
+
+    PdfExporter().export(result, output_path)
+
+    data = output_path.read_bytes()
+    assert data.startswith(b"%PDF-")
+    assert len(data) > 500
