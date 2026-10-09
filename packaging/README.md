@@ -84,3 +84,11 @@ uv pip install --python /tmp/portable-venv/bin/python \
 
 `doctor` может ругаться на внешние бинарники/модели — это ожидаемо, они
 ставятся отдельно. Важно, что процесс стартует и импорты движков резолвятся.
+
+## Готовые сборки из CI
+
+Workflow `build-portable.yml` собирает бандл по тегам `v*` и вручную
+(`workflow_dispatch`). При запуске по тегу каталог бандла упаковывается в один
+архив (`audio-transcriber-<версия>-<os>-<arch>.tar.gz` для Linux/macOS, `.zip`
+для Windows) и **прикладывается к GitHub Release** тега; при ручном запуске —
+только workflow-артефакт `portable-<os>-<arch>`.

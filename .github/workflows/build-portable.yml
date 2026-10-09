@@ -11,8 +11,11 @@ on:
 
 # Собираем бандлы под каждую host-ОС: PyInstaller не умеет кросс-сборку,
 # поэтому runner = целевая ОС. Секреты не нужны — модели не качаются.
+#
+# `contents: write` нужен только для загрузки ассетов в GitHub Release при
+# запуске по тегу; `workflow_dispatch` релиз не трогает (только artifact).
 permissions:
-  contents: read
+  contents: write
 
 # Один прогон на ref; не отменяем идущую сборку тега (её результат нужен).
 concurrency:
@@ -74,3 +77,68 @@ jobs:
           path: dist/audio-transcriber/
           if-no-files-found: error
           retention-days: 14
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        # Версия для имён релизных файлов берётся из тега (vX.Y.Z -> X.Y.Z).
+        # При ручном запуске без тега — fallback из git describe (в релиз
+        # такие файлы всё равно не попадают, см. условия ниже).
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(git describe --tags --always 2>/dev/null || echo 0.0.0)"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: ${version}"
+
+      - name: Package bundle (tar.gz)
+        # Portable-бандл — каталог; в Release кладём его одним архивом.
+        # Linux/macOS: tar.gz. Архив кладём в корень checkout, не в dist,
+        # чтобы он не попал ни в бандл, ни в artifact-загрузку выше.
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os != 'Windows'
+        shell: bash
+        run: |
+          archive="audio-transcriber-${{ steps.version.outputs.version }}-${{ matrix.target }}-${{ matrix.arch }}.tar.gz"
+          tar -czf "$archive" -C dist audio-transcriber
+          echo "Создан архив: ${archive}"
+
+      - name: Package bundle (zip)
+        # Windows-бандл пакуем в zip штатным bsdtar (System32\tar.exe):
+        # он корректно тянет большие каталоги, в отличие от Compress-Archive.
+        # `-a` выбирает формат по суффиксу `.zip`; сжатие задаём явно (deflate),
+        # чтобы архив не получился несжатым.
+        if: startsWith(github.ref, 'refs/tags/v') && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = "audio-transcriber-${{ steps.version.outputs.version }}-${{ matrix.target }}-${{ matrix.arch }}.zip"
+          tar -a -c -f $archive --options zip:compression=deflate -C dist audio-transcriber
+          Write-Host "Создан архив: $archive"
+
+      - name: Upload bundle to GitHub Release
+        # Только на тег: прикладываем архив бандла к Release, который
+        # параллельно создаёт release.yml. Обычные workflow-артефакты выше
+        # остаются и для workflow_dispatch, и как дубль.
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          ext="tar.gz"
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then ext="zip"; fi
+          archive="audio-transcriber-${{ steps.version.outputs.version }}-${{ matrix.target }}-${{ matrix.arch }}.${ext}"
+          # release.yml создаёт Release параллельно — ждём его появления
+          # (до ~10 минут), затем заливаем ассет. Тело и имя релиза не трогаем.
+          deadline=$((SECONDS + 600))
+          until gh release view "$tag" >/dev/null 2>&1; do
+            if (( SECONDS >= deadline )); then
+              echo "::error::GitHub Release для тега $tag не появился за 10 минут — проверьте workflow release.yml."
+              exit 1
+            fi
+            echo "Ожидание Release $tag (release.yml)… прошло ${SECONDS}s"
+            sleep 15
+          done
+          gh release upload "$tag" "$archive" --clobber

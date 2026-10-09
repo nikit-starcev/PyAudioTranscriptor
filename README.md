@@ -406,8 +406,12 @@ python scripts/build_portable.py --target linux --out dist    # windows | macos
 `audio-transcriber.exe`). Флаг `--clean` удаляет предыдущую сборку.
 
 CI собирает бандлы под Linux/Windows/macOS (Apple Silicon, `macos-14`) по
-тегам `v*` и вручную (`workflow_dispatch`) — workflow `build-portable.yml`,
-артефакты `portable-<os>-<arch>`.
+тегам `v*` и вручную (`workflow_dispatch`) — workflow `build-portable.yml`.
+На `workflow_dispatch` доступны workflow-артефакты `portable-<os>-<arch>`; при
+запуске по тегу `v*` тот же бандл дополнительно упаковывается в один архив
+(`audio-transcriber-<версия>-<os>-<arch>.tar.gz` для Linux/macOS, `.zip` для
+Windows) и **прикладывается к GitHub Release** этого тега — рядом с wheel/sdist
+от `release.yml`.
 
 ### Запуск
 
@@ -464,8 +468,10 @@ python scripts/build_installer.py --target linux \
 ### Получение из CI
 
 Workflow `build-installers.yml` собирает инсталляторы под Linux/Windows/macOS
-(Apple Silicon) по тегам `v*` и вручную (`workflow_dispatch`). Артефакты —
-`installer-<os>-<arch>` (внутри инсталлятор и его `.sha256`).
+(Apple Silicon) по тегам `v*` и вручную (`workflow_dispatch`). На
+`workflow_dispatch` доступны workflow-артефакты `installer-<os>-<arch>` (внутри
+инсталлятор и его `.sha256`); при запуске по тегу `v*` инсталлятор и `.sha256`
+дополнительно **прикладываются к GitHub Release** этого тега (release assets).
 
 ### Подпись и нотаризация
 
