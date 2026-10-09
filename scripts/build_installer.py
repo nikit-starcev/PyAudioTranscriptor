@@ -49,6 +49,8 @@ _OS_TO_TARGET = {
 
 DEFAULT_BUNDLE_DIR = Path("dist") / BUNDLE_DIRNAME
 
+MACOS_APP_NAME = "AudioTranscriptor"
+
 INSTALLERS_SUBDIR = Path("packaging") / "installers"
 
 ICON_SOURCE = Path("webui") / "public" / "favicon.svg"
@@ -110,6 +112,11 @@ def bundle_executable(bundle_dir: Path, target: str) -> Path:
 def installer_script(target: str, name: str) -> Path:
     """Путь к платформенному сборщику внутри ``packaging/installers/``."""
     return repo_root() / INSTALLERS_SUBDIR / target / name
+
+
+def macos_app_dir(out_dir: Path) -> Path:
+    """Путь к создаваемому .app (имя совпадает с якорем build-app.sh)."""
+    return Path(out_dir) / f"{MACOS_APP_NAME}.app"
 
 
 def validate_target(target: str, host: str) -> None:
@@ -513,7 +520,7 @@ def _build_macos(
             version,
         ]
     )
-    app_dir = out_dir / "AudioTranscriber.app"
+    app_dir = macos_app_dir(out_dir)
     if plan.enabled:
         _sign_macos_app(app_dir, plan)
     _run(

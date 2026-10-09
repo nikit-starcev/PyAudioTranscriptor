@@ -62,6 +62,16 @@ def test_bundle_executable() -> None:
     )
 
 
+def test_macos_app_dir() -> None:
+    assert build_installer.macos_app_dir(Path("/tmp/out")) == Path("/tmp/out/AudioTranscriptor.app")
+
+
+def test_macos_app_dir_matches_builder() -> None:
+    script = _REPO_ROOT / "packaging" / "installers" / "macos" / "build-app.sh"
+    content = script.read_text(encoding="utf-8")
+    assert f'APP_ID="{build_installer.MACOS_APP_NAME}"' in content
+
+
 def test_parse_args_with_bundle_dir() -> None:
     args = build_installer.parse_args(
         ["--target", "linux", "--bundle-dir", "/tmp/bundle", "--out", "/tmp/out"]
