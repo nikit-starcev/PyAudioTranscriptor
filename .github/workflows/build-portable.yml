@@ -1,0 +1,73 @@
+name: Build portable bundle
+
+on:
+  # Вручную — для отладки сборки без выпуска тега.
+  workflow_dispatch:
+  # По тегам vX.Y.Z — вместе с Release (release.yml), но не на каждый push,
+  # чтобы не тратить раннеры: сборка тянет PyTorch и занимает десятки минут.
+  push:
+    tags:
+      - "v*"
+
+# Собираем бандлы под каждую host-ОС: PyInstaller не умеет кросс-сборку,
+# поэтому runner = целевая ОС. Секреты не нужны — модели не качаются.
+permissions:
+  contents: read
+
+# Один прогон на ref; не отменяем идущую сборку тега (её результат нужен).
+concurrency:
+  group: build-portable-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-portable:
+    name: ${{ matrix.target }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    # PyInstaller + тяжёлые зависимости (PyTorch и т.п.) — с запасом по времени.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: linux
+            arch: x86_64
+          - runner: windows-latest
+            target: windows
+            arch: x86_64
+          # Apple Silicon (arm64). Intel Mac (x86_64) не поддерживается.
+          - runner: macos-14
+            target: macos
+            arch: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # hatch-vcs выводит версию из git-тегов: нужна вся история и теги.
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        # Ставим именно системный `python` 3.12, а не `uv run`: сборщик
+        # (scripts/build_portable.py) сам создаёт изолированное CPU-окружение.
+        # `uv sync`/`uv run` здесь недопустимы — они тянут CUDA-сборку torch
+        # (индекс cu126 по умолчанию на Linux/Windows, см. pyproject.toml).
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build portable bundle
+        run: python scripts/build_portable.py --target ${{ matrix.target }} --out dist
+
+      - name: Upload portable bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: portable-${{ matrix.target }}-${{ matrix.arch }}
+          path: dist/audio-transcriber/
+          if-no-files-found: error
+          retention-days: 14
