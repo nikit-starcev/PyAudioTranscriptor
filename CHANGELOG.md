@@ -7,12 +7,21 @@
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-09
+
 ### Fixed
 
 - **Сборка бандла/инсталляторов на Windows** (#50): `scripts/build_portable.py` и
   `scripts/build_installer.py` печатали кириллицу и падали на cp1252-консоли Windows
   (`UnicodeEncodeError`) — вывод принудительно переводится в UTF-8; в CI-сборках
   добавлен `PYTHONUTF8=1`.
+
+### Changed
+
+- **Артефакты дистрибуции в GitHub Release** (#50): при пуше тега `vX.Y.Z` portable-бандлы
+  (`tar.gz`/`zip`) и инсталляторы (`.AppImage`/`.exe`/`.dmg` + `.sha256`) прикладываются
+  к GitHub Release как assets (а не только как workflow-artifacts с ограниченным сроком);
+  при `workflow_dispatch` — только artifacts.
 
 ## [0.6.0] - 2026-10-09
 
