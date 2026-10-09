@@ -29,6 +29,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     # portable-бандл идёт ~до 90 мин; инсталлятор добавляет упаковку/подпись.
     timeout-minutes: 120
+    env:
+      # UTF-8 stdout на Windows-консоли (cp1252): скрипты печатают кириллицу.
+      PYTHONUTF8: "1"
     strategy:
       fail-fast: false
       matrix:

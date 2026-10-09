@@ -25,6 +25,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     # PyInstaller + тяжёлые зависимости (PyTorch и т.п.) — с запасом по времени.
     timeout-minutes: 90
+    env:
+      # UTF-8 stdout на Windows-консоли (cp1252): скрипт печатает кириллицу.
+      PYTHONUTF8: "1"
     strategy:
       fail-fast: false
       matrix:

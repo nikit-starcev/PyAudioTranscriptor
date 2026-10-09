@@ -299,8 +299,20 @@ def build(target: str, out_dir: Path, *, clean: bool = False) -> Path:
     return bundle
 
 
+def _force_utf8_stdout() -> None:
+    """Не падать на cp1252-консоли Windows при выводе кириллицы."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Точка входа скрипта."""
+    _force_utf8_stdout()
     args = parse_args(argv)
     bundle = build(args.target, args.out, clean=args.clean)
     size = _format_size(_directory_size(bundle))

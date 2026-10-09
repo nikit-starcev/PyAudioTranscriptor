@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Сборка бандла/инсталляторов на Windows** (#50): `scripts/build_portable.py` и
+  `scripts/build_installer.py` печатали кириллицу и падали на cp1252-консоли Windows
+  (`UnicodeEncodeError`) — вывод принудительно переводится в UTF-8; в CI-сборках
+  добавлен `PYTHONUTF8=1`.
+
 ## [0.6.0] - 2026-10-09
 
 ### Added
