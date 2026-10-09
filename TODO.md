@@ -668,6 +668,13 @@
   **Intel Mac не поддерживается.** Автозагрузчик уже есть основа (`web/models.py`).
   Ориентиры: Buzz (PyInstaller/.dmg/Flatpak/Snap/AppImage), Ollama/GPT4All/LM Studio. Сложность: средняя/высокая; зависит от #23.
 
+  ✅ **Автоскачивание моделей + улучшения Docker — сделано (Unreleased):**
+  команда `audio-transcriber models list|download|delete` и `web --download-models`
+  (ядро вынесено в пакет `audio_transcriber.models`, веб переиспользует; каталог дополнен
+  whisper `large-v3`/`base`); Docker — healthcheck, тома `/data`(+`voices`), `restart`/`init`,
+  порт из `PORT`, опциональный ROCm (`--build-arg TORCH_INDEX`, непроверено), `.env.example`.
+  **Остаётся:** шаг 3 — portable-бандл Windows/macOS, шаг 4 — подписанные инсталляторы.
+
 - **Ноутбук/календарь: архив записей, привязка к датам/встречам, заметки.** (#99)
   Суть: архив — привязка стенограмм к датам/встречам, заметки, поиск по архиву (текст/говорящий/дата).
   Зачем: из «файлов» — в рабочий архив; быстрый доступ к фактам прошедших встреч.

@@ -9,6 +9,16 @@
 
 ### Added
 
+- **Дистрибуция: скачивание моделей из CLI + улучшения Docker** (#50, шаг 2+ и «автоскачивание»):
+  команда `audio-transcriber models list|download [--all|<id>…]|delete` и флаг `web --download-models` —
+  модели качаются без веб-UI (идемпотентно, с проверкой свободного места, ретраями и HF-токеном для
+  gated; ядро вынесено в пакет `audio_transcriber.models`, веб-API переиспользует его). Каталог
+  дополнен whisper `large-v3` и `base`. Docker: healthcheck (`/api/health`), тома `/data` и
+  `/data/voices`, `restart: unless-stopped`/`init`/`stop_grace_period`, порт из `PORT`, опциональный
+  ROCm (`--build-arg TORCH_INDEX`, непроверено), подсказка `entrypoint` про отсутствующие модели,
+  чистка слоёв/`.dockerignore`, `.env.example`. Portable-бандл Win/macOS и подписанные инсталляторы
+  (шаги 3–4) остаются открытыми.
+
 - **Семантическая правка текста LLM (suggest-only, MVP)** (#75): опциональный проход
   (флаг `LLM_CORRECT_SEMANTIC`, по умолчанию **выключен**) — LLM предлагает минимальные
   правки «нелогичных» фрагментов после ASR, **ничего не применяется автоматически**.
