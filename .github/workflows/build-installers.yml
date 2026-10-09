@@ -1,0 +1,114 @@
+name: Build installers
+
+on:
+  # Вручную — для отладки сборки без выпуска тега.
+  workflow_dispatch:
+  # По тегам vX.Y.Z — вместе с Release (release.yml) и portable-бандлом.
+  # На каждый push не запускаем: сборка тянет PyTorch и внешние тулы
+  # (Inno Setup, create-dmg, AppImage) и занимает десятки минут.
+  #
+  # `release: types: [published]` намеренно не включён: release.yml создаёт
+  # Release сразу после пуша тега, поэтому такой триггер дал бы второй,
+  # дублирующий прогон на тот же артефакт.
+  push:
+    tags:
+      - "v*"
+
+# Артефакты загружаются штатным токеном, запись в репозиторий не нужна.
+permissions:
+  contents: read
+
+# Один прогон на ref; не отменяем идущую сборку тега (её результат нужен).
+concurrency:
+  group: build-installers-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-installers:
+    name: ${{ matrix.target }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    # portable-бандл идёт ~до 90 мин; инсталлятор добавляет упаковку/подпись.
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: linux
+            arch: x86_64
+          - runner: windows-latest
+            target: windows
+            arch: x86_64
+          # Apple Silicon (arm64). Intel Mac (x86_64) не поддерживается.
+          - runner: macos-14
+            target: macos
+            arch: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # hatch-vcs выводит версию из git-тегов: нужна вся история и теги.
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python 3.12
+        # Системный `python` 3.12 — как в build-portable.yml: сборщик сам
+        # создаёт изолированное CPU-окружение, `uv sync`/`uv run` не нужны.
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install AppImage tooling (Linux)
+        if: runner.os == 'Linux'
+        # appimagetool сам скачивает scripts/build_installer.py; здесь ставим
+        # только рантайм FUSE, нужный AppImage (имя пакета зависит от версии
+        # Ubuntu: t64 на 24.04+).
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfuse2t64 || sudo apt-get install -y libfuse2
+
+      - name: Install create-dmg (macOS)
+        if: runner.os == 'macOS'
+        # create-dmg собирает .dmg; codesign/notarytool идут с Xcode в runner.
+        run: brew install create-dmg
+
+      - name: Install Inno Setup (Windows)
+        if: runner.os == 'Windows'
+        # Inno Setup даёт iscc.exe (компилятор .iss) для .exe-инсталлятора.
+        run: choco install innosetup --no-progress -y
+
+      - name: Build portable bundle
+        run: python scripts/build_portable.py --target ${{ matrix.target }} --out dist
+
+      - name: Build installer
+        # Секреты подписи передаём как env. Если секрет не заведён, GitHub
+        # подставляет пустую строку (dormant-подпись) — сборка не падает,
+        # инсталлятор получается неподписанным. Имена переменных — см.
+        # packaging/SIGNING.md.
+        env:
+          WINDOWS_CERT_FILE: ${{ secrets.WINDOWS_CERT_FILE }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: >-
+          python scripts/build_installer.py
+          --target ${{ matrix.target }}
+          --bundle-dir dist/audio-transcriber
+          --out dist-installers
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.target }}-${{ matrix.arch }}
+          # Внутри — инсталлятор и его .sha256 (оба кладёт build_installer.py).
+          path: dist-installers/
+          if-no-files-found: error
+          retention-days: 14
