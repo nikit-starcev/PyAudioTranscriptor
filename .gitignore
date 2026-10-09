@@ -31,6 +31,11 @@ MANIFEST
 #   before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
+#   Но спека portable-бандла проекта — отслеживаемый исходник.
+!packaging/pyinstaller/*.spec
+
+# Portable-бандл (PyInstaller one-dir) — артефакты локальной сборки.
+dist-portable/
 
 # Installer logs
 pip-log.txt
