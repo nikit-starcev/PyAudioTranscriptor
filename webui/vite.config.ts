@@ -9,7 +9,10 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     proxy: {
-      '/api': 'http://127.0.0.1:8790',
+      // changeOrigin: false — Host проксируется как есть (origin браузера,
+      // напр. :5173). Иначе Host меняется на :8790 и CSRF-guard (#87) отклоняет
+      // POST, сравнивая Origin (:5173) с Host (:8790).
+      '/api': { target: 'http://127.0.0.1:8790', changeOrigin: false },
     },
   },
   build: {
