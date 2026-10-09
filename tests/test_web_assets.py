@@ -479,6 +479,228 @@ def test_delete_binary_asset_refuses_outside_bin_dir(
     assert link.exists()
 
 
+def test_delete_binary_asset_refuses_external_path(
+    web_paths: WebPaths, tmp_path: Path
+) -> None:
+    external = tmp_path / "external-whisper-cli"
+    external.write_bytes(b"bin")
+    external.chmod(0o755)
+
+    app = create_app(paths=web_paths, heartbeat=0.05)
+    with TestClient(app) as client:
+        store = client.app.state.settings_store  # type: ignore[attr-defined]
+        settings = store.load()
+        settings.whisper_cpp_binary = str(external)
+        store.save(settings)
+
+        response = client.delete("/api/assets/whisper-cli")
+
+    assert response.status_code == 400
+    assert "вне служебного каталога" in response.json()["detail"]
+    assert external.exists()
+
+
+def test_delete_binary_asset_removes_managed_nested_dir(web_paths: WebPaths) -> None:
+    nested = web_paths.bin_dir / "whisper-custom"
+    nested.mkdir(parents=True, exist_ok=True)
+    binary = nested / "whisper-cli"
+    binary.write_bytes(b"bin")
+
+    app = create_app(paths=web_paths, heartbeat=0.05)
+    with TestClient(app) as client:
+        store = client.app.state.settings_store  # type: ignore[attr-defined]
+        settings = store.load()
+        settings.whisper_cpp_binary = str(binary)
+        settings.whisper_cpp_lib_path = str(nested)
+        store.save(settings)
+
+        response = client.delete("/api/assets/whisper-cli")
+
+    assert response.status_code == 200
+    assert not nested.exists()
+    assert store.load().whisper_cpp_binary == "whisper-cli"
+
+
+# --- массовые операции (#115) ----------------------------------------------
+
+
+def test_asset_batch_installer_runs_sequentially() -> None:
+    order: list[str] = []
+
+    def run_one(key: str) -> bool:
+        order.append(key)
+        return key != "b"
+
+    batch = web_assets.AssetBatchInstaller(run_one)
+    assert batch.start(["a", "b", "a"]) is True
+    batch.wait(5)
+
+    state = batch.state()
+    assert state.status == web_assets.STATUS_DONE
+    assert order == ["a", "b"]
+    assert state.keys == ("a", "b")
+    assert state.total == 2
+    assert state.done == 2
+    assert state.completed == ("a",)
+    assert state.failed == ("b",)
+    assert batch.is_running() is False
+
+
+def test_delete_all_binaries_removes_every_installed(web_paths: WebPaths) -> None:
+    whisper_dir, _ = _stage_binary(web_paths, "whisper-cli")
+    llama_dir, _ = _stage_binary(web_paths, "llama-server")
+
+    app = create_app(paths=web_paths, heartbeat=0.05)
+    with TestClient(app) as client:
+        response = client.post("/api/assets/delete-all")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert {"whisper-cli", "llama-server"} <= set(payload["deleted"])
+        assert not whisper_dir.exists()
+        assert not llama_dir.exists()
+
+        listing = client.get("/api/assets").json()
+        by_key = {item["key"]: item for item in listing["assets"]}
+        assert by_key["whisper-cli"]["installed"] is False
+        assert by_key["llama-server"]["installed"] is False
+
+
+def test_delete_all_selected_only_deletes_chosen(web_paths: WebPaths) -> None:
+    whisper_dir, _ = _stage_binary(web_paths, "whisper-cli")
+    llama_dir, _ = _stage_binary(web_paths, "llama-server")
+
+    app = create_app(paths=web_paths, heartbeat=0.05)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/assets/delete-all", json={"keys": ["whisper-cli"]}
+        )
+
+        assert response.status_code == 200
+        assert response.json()["deleted"] == ["whisper-cli"]
+        assert not whisper_dir.exists()
+        assert llama_dir.exists()
+
+
+def test_delete_all_empty_is_ok(web_paths: WebPaths) -> None:
+    app = create_app(paths=web_paths, heartbeat=0.05)
+    with TestClient(app) as client:
+        response = client.post("/api/assets/delete-all")
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted": [], "failed": [], "requested": 0}
+
+
+def test_delete_all_refuses_outside_bin_dir(web_paths: WebPaths, tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    marker = outside / "keep.txt"
+    marker.write_text("keep")
+    web_paths.bin_dir.mkdir(parents=True, exist_ok=True)
+    link = web_paths.bin_dir / "whisper-cli"
+    link.symlink_to(outside, target_is_directory=True)
+
+    app = create_app(paths=web_paths, heartbeat=0.05)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/assets/delete-all", json={"keys": ["whisper-cli"]}
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["deleted"] == []
+    assert payload["failed"] == [
+        {"key": "whisper-cli", "reason": "Недопустимый путь ресурса"}
+    ]
+    assert marker.exists()
+    assert link.exists()
+
+
+def test_delete_all_unknown_key_reported(web_paths: WebPaths) -> None:
+    app = create_app(paths=web_paths, heartbeat=0.05)
+    with TestClient(app) as client:
+        response = client.post("/api/assets/delete-all", json={"keys": ["nope"]})
+
+    assert response.status_code == 200
+    assert response.json()["failed"] == [{"key": "nope", "reason": "неизвестный ресурс"}]
+
+
+def test_install_all_selected_binary(web_paths: WebPaths, tmp_path: Path) -> None:
+    data = _tar_gz({"whisper-bin-ubuntu-x64/whisper-cli": b"bin"})
+    artifact = _artifact(data)
+    app = create_app(paths=web_paths, asset_downloader=_fake_fetch(data), heartbeat=0.05)
+    with TestClient(app) as client:
+        import audio_transcriber.web.app as app_module
+
+        original = app_module.resolve_artifact
+        app_module.resolve_artifact = lambda _asset, **_kw: artifact  # type: ignore[assignment]
+        try:
+            response = client.post(
+                "/api/assets/install-all",
+                json={"keys": ["whisper-cli"], "kind": "binary"},
+            )
+            assert response.status_code == 200
+            assert response.json()["started"] == ["whisper-cli"]
+            client.app.state.asset_batch.wait(5)  # type: ignore[attr-defined]
+        finally:
+            app_module.resolve_artifact = original  # type: ignore[assignment]
+
+        state = client.app.state.binary_installer.state("whisper-cli")  # type: ignore[attr-defined]
+        assert state.status == web_assets.STATUS_DONE
+        saved = client.app.state.settings_store.load()  # type: ignore[attr-defined]
+        assert saved.whisper_cpp_binary == state.path
+        batch = client.app.state.asset_batch.state()  # type: ignore[attr-defined]
+        assert batch.completed == ("whisper-cli",)
+
+
+def test_install_all_skips_installed(web_paths: WebPaths) -> None:
+    _stage_binary(web_paths, "whisper-cli")
+    app = create_app(paths=web_paths, heartbeat=0.05)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/assets/install-all",
+            json={"keys": ["whisper-cli"], "kind": "binary"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["started"] == []
+    assert payload["skipped"] == [{"key": "whisper-cli", "reason": "уже установлено"}]
+
+
+def test_install_all_rejects_unknown_kind(web_paths: WebPaths) -> None:
+    app = create_app(paths=web_paths, heartbeat=0.05)
+    with TestClient(app) as client:
+        response = client.post("/api/assets/install-all", json={"kind": "model"})
+
+    assert response.status_code == 400
+
+
+def test_install_all_conflicts_with_single_install(web_paths: WebPaths) -> None:
+    block = threading.Event()
+    data = _tar_gz({"whisper-cli": b"bin"})
+
+    def blocking_fetch(url: str, destination: Path, on_progress: Callable[[int], None]) -> None:
+        block.wait(5)
+        destination.write_bytes(data)
+        on_progress(len(data))
+
+    app = create_app(paths=web_paths, asset_downloader=blocking_fetch, heartbeat=0.05)
+    with TestClient(app) as client:
+        import audio_transcriber.web.app as app_module
+
+        original = app_module.resolve_artifact
+        app_module.resolve_artifact = lambda _asset, **_kw: _artifact(data)  # type: ignore[assignment]
+        try:
+            assert client.post("/api/assets/whisper-cli/install").status_code == 202
+            response = client.post("/api/assets/install-all", json={"kind": "binary"})
+            assert response.status_code == 409
+        finally:
+            block.set()
+            client.app.state.binary_installer.wait(5)  # type: ignore[attr-defined]
+            app_module.resolve_artifact = original  # type: ignore[assignment]
+
+
 def _assets_events_route(app: object) -> object:
     stack = list(app.routes)  # type: ignore[attr-defined]
     while stack:

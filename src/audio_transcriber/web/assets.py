@@ -35,7 +35,7 @@ import threading
 import time
 import urllib.request
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -55,8 +55,10 @@ __all__ = [
     "STATUS_IDLE",
     "STATUS_RUNNING",
     "AssetArtifact",
+    "AssetBatchInstaller",
     "AssetError",
     "AssetSpec",
+    "BatchState",
     "BinaryInstaller",
     "BinaryState",
     "ChecksumError",
@@ -925,6 +927,109 @@ class BinaryInstaller:
             path=str(binary),
             fraction=1.0,
         )
+
+
+@dataclass(slots=True)
+class BatchState:
+    """Состояние массовой установки внешних ресурсов (#115)."""
+
+    status: str = STATUS_IDLE
+    total: int = 0
+    done: int = 0
+    current: str = ""
+    keys: tuple[str, ...] = ()
+    completed: tuple[str, ...] = ()
+    failed: tuple[str, ...] = ()
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "total": self.total,
+            "done": self.done,
+            "current": self.current,
+            "keys": list(self.keys),
+            "completed": list(self.completed),
+            "failed": list(self.failed),
+        }
+
+
+class AssetBatchInstaller:
+    """Последовательная фоновая установка нескольких ресурсов (#115).
+
+    Каждый ресурс ставится через ``run_one`` (существующие установщики
+    пакетов и бинарников работают по одному за раз — очередь просто ждёт
+    завершения текущего). Прогресс каждого ресурса идёт в общую SSE-шину;
+    здесь хранится только сводка очереди.
+    """
+
+    def __init__(self, run_one: Callable[[str], bool]) -> None:
+        self._run_one = run_one
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._active = False
+        self._state = BatchState()
+
+    def is_running(self) -> bool:
+        with self._lock:
+            return self._active
+
+    def state(self) -> BatchState:
+        """Снимок сводки массовой установки."""
+        with self._lock:
+            return replace(self._state)
+
+    def wait(self, timeout: float | None = None) -> None:
+        """Ожидает завершения очереди (используется в тестах)."""
+        with self._lock:
+            thread = self._thread
+        if thread is not None:
+            thread.join(timeout)
+
+    def start(self, keys: Sequence[str]) -> bool:
+        """Запускает очередь; ``False`` — если массовая установка уже идёт."""
+        ordered = tuple(dict.fromkeys(keys))
+        with self._lock:
+            if self._active:
+                return False
+            self._active = True
+            self._state = BatchState(
+                status=STATUS_RUNNING, total=len(ordered), keys=ordered
+            )
+            thread = threading.Thread(
+                target=self._run,
+                args=(ordered,),
+                name="asset-batch-install",
+                daemon=True,
+            )
+            self._thread = thread
+        thread.start()
+        return True
+
+    def _run(self, keys: tuple[str, ...]) -> None:
+        completed: list[str] = []
+        failed: list[str] = []
+        try:
+            for key in keys:
+                with self._lock:
+                    self._state.current = key
+                try:
+                    ok = bool(self._run_one(key))
+                except Exception as exc:  # noqa: BLE001 — установщики/сеть: очередь продолжается
+                    logger.warning("Массовая установка: сбой на %s: %s", key, exc)
+                    ok = False
+                if ok:
+                    completed.append(key)
+                else:
+                    failed.append(key)
+                with self._lock:
+                    self._state.done += 1
+                    self._state.completed = tuple(completed)
+                    self._state.failed = tuple(failed)
+        finally:
+            with self._lock:
+                self._active = False
+                self._state.status = STATUS_DONE
+                self._state.current = ""
 
 
 def _shorten(text: str, limit: int = 300) -> str:
