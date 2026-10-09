@@ -6,6 +6,16 @@
 
 ## Сделано (недавнее)
 
+- ✅ **Упаковка/дистрибуция: Docker, автоскачивание моделей, portable-бандл, инсталляторы** (#50):
+  шаг 0 — денойз вынесен во внешний Rust-CLI `deep-filter` (снят блокер `numpy<2`/`DeepFilterLib`≤cp311);
+  шаг 1 — Python `>=3.12,<3.15`; шаг 2 — Docker (Linux/Vulkan, multi-stage, том `/data`, rootless #104)
+  + healthcheck/тома/опц. ROCm; «автоскачивание» — CLI `audio-transcriber models list|download|delete`
+  и `web --download-models` (ядро `audio_transcriber.models`; каталог + whisper `large-v3`/`base`);
+  шаг 3 — portable one-dir (`scripts/build_portable.py` + PyInstaller `packaging/pyinstaller/`,
+  CI `build-portable.yml`, лаунчеры `packaging/launchers/`; проверено — полный `transcribe` в заморозке);
+  шаг 4 — инсталляторы AppImage/`.exe`(Inno)/`.dmg` (`scripts/build_installer.py`, CI `build-installers.yml`)
+  с опциональной подписью (`packaging/SIGNING.md`; AppImage собрана+запущена). Подпись/публикация — #118.
+
 - ✅ **Семантическая правка текста LLM (suggest-only MVP)** (#75): опциональный (флаг
   `LLM_CORRECT_SEMANTIC`, по умолчанию выкл.) под-шаг после `correct_terms` — LLM предлагает
   минимальные спановые правки «нелогичных» фрагментов; строгий JSON, детерминированная
@@ -643,40 +653,12 @@
   Как: `watchdog` или периодический скан; каталог в конфиге/вебе; не дублировать обработанные.
   Ориентиры: Buzz, Scriberr. Сложность: низкая.
 
-- **Упаковка/дистрибуция: инсталлятор, Docker, автоскачивание моделей.** (#50)
-  Суть: упростить установку — инсталлятор (PyInstaller/Tauri/Electron) или Docker-образ +
-  **автоскачивание моделей** при первом запуске.
-  Зачем: сейчас Python 3.14 + uv + бинарники/модели + DeepFilterNet из исходников — высокий порог.
-  Как (по итогам разведки): Python 3.14 **не** блокер (cp314-колёса есть), блокер — **DeepFilterNet**
-  (`numpy<2`, `DeepFilterLib` ≤cp311).
-  ✅ **Шаг 0 — сделано:** Python-пакет `deepfilternet` убран; денойз идёт внешним Rust-CLI
-  **`deep-filter`** (DeepFilterNet v0.5.6+, настройка `DEEP_FILTER_BINARY`, фолбэк `shutil.which`).
-  Linux x86_64 — статическая `*-x86_64-unknown-linux-musl` сборка; модель встроена в бинарник
-  (скачивание весов не нужно). Обработка чанками (30 с, crossfade) → пик ~0.2–0.3 ГБ/час.
-  В `pyproject.toml` extra `denoise` удалён, `uv.lock` без `--no-deps`-костыля; `doctor` проверяет
-  бинарник `deep-filter`; веб-пункт пакетной установки денойза убран (ставится вручную).
-  ✅ **Шаг 1 — сделано:** зафиксирован Python `>=3.12,<3.15` (приоритет 3.12/3.13), снят
-  3.14-only синтаксис.
-  ✅ **Шаг 2 — сделано:** Docker-образ (Linux x86_64, Vulkan) — `Dockerfile` (multi-stage),
-  `docker-compose.yml`, `.dockerignore`, `entrypoint.sh`. Внутри: `whisper-cli` и `llama-server`
-  (Vulkan; llama.cpp собран из исходников), `deep-filter`, `ffmpeg`, torch **CPU** и extras
-  `web`/`gigaam`/`sherpa`; данные/модели — том `/data`, GPU — `/dev/dri` (только Linux),
-  веб-сервер от непривилегированного пользователя. README, раздел «Docker».
-  **Отложено (по запросу, Шаги 3–4):** portable-бандл Windows/macOS (uv+PyInstaller one-dir;
-  ⚠️ pyannote→torchcodec+shared FFmpeg → нужен waveform-фолбэк) и подписанные инсталляторы
-  (`.exe`/`.dmg`). GPU через Docker — только Linux (Windows — WSL2+NVIDIA, macOS — нет).
-  **Intel Mac не поддерживается.** Автозагрузчик уже есть основа (`web/models.py`).
-  Ориентиры: Buzz (PyInstaller/.dmg/Flatpak/Snap/AppImage), Ollama/GPT4All/LM Studio. Сложность: средняя/высокая; зависит от #23.
-
-  ✅ **Автоскачивание моделей + улучшения Docker — сделано (Unreleased):**
-  команда `audio-transcriber models list|download|delete` и `web --download-models`
-  (ядро вынесено в пакет `audio_transcriber.models`, веб переиспользует; каталог дополнен
-  whisper `large-v3`/`base`); Docker — healthcheck, тома `/data`(+`voices`), `restart`/`init`,
-  порт из `PORT`, опциональный ROCm (`--build-arg TORCH_INDEX`, непроверено), `.env.example`.
-  ✅ **Шаг 3 — portable-бандл — сделано (Unreleased):** `scripts/build_portable.py` + PyInstaller
-  one-dir (`packaging/pyinstaller/`, только host-ОС), CI `build-portable.yml` (Linux/Windows/macOS-ARM),
-  лаунчеры `packaging/launchers/`; Linux-бандл собран, полный `transcribe` в заморозке прошёл.
-  **Остаётся:** шаг 4 — инсталляторы и подпись (`.exe`/`.dmg`/AppImage).
+- **Подпись и публикация инсталляторов (ожидает сертификатов).** (#118)
+  Инфраструктура готова (#50, шаг 4): `scripts/build_installer.py` собирает AppImage / Windows `.exe`
+  (Inno Setup) / macOS `.dmg`; CI `build-installers.yml`; подпись по env-секретам
+  (`packaging/SIGNING.md`), но **dormant** — без сертификатов артефакты неподписанные. Осталось
+  (внешняя зависимость): Windows Authenticode + Apple Developer ID (+ notarization), завести
+  GitHub-secrets, прогнать сборку и опубликовать артефакты. AppImage подписи не требует.
 
 - **Ноутбук/календарь: архив записей, привязка к датам/встречам, заметки.** (#99)
   Суть: архив — привязка стенограмм к датам/встречам, заметки, поиск по архиву (текст/говорящий/дата).

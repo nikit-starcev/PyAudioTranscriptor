@@ -9,6 +9,15 @@
 
 ### Added
 
+- **Инсталляторы (AppImage / `.exe` / `.dmg`) + заготовка подписи** (#50, шаг 4): `scripts/build_installer.py`
+  собирает из one-dir инсталлятор под host-ОС + `.sha256`; `packaging/installers/` — Linux **AppImage**
+  (`appimagetool`, AppDir/`AppRun`/`.desktop`), Windows **Inno Setup** (`audio-transcriber.iss` +
+  `build-inno.ps1`), macOS **`.app`/`.dmg`** (`create-dmg`→`hdiutil`); иконки генерируются из
+  `webui/public/favicon.svg`. Подпись/нотаризация — опционально по env (`WINDOWS_CERT_*`, `APPLE_*`),
+  без них сборка выходит неподписанной. CI `build-installers.yml` (matrix Linux/Windows/macOS-ARM,
+  артефакты `installer-<os>-<arch>`); `packaging/SIGNING.md`. Проверено на Linux: AppImage собрана и
+  запущена (`web`+`/api/health`=200). Публикация подписанных — #118.
+
 - **Portable-бандл (one-dir) + CI-сборка** (#50, шаг 3): `scripts/build_portable.py` собирает
   PyInstaller one-dir (`packaging/pyinstaller/audio-transcriber.spec`; сборка только под host-ОС,
   иначе — понятная ошибка), результат `dist/audio-transcriber/` (~1.4 ГиБ, без CUDA/torchcodec,
