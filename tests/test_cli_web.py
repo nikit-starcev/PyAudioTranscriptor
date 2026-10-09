@@ -156,3 +156,37 @@ def test_health_reports_server_address(
     assert payload["status"] == "ok"
     assert payload["host"] == "127.0.0.1"
     assert payload["port"] == 8767
+
+
+def test_web_download_models_runs_before_serve(
+    serve_calls: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--download-models`` скачивает модели до запуска сервера."""
+    from audio_transcriber.cli import models_cmd
+
+    calls: list[str] = []
+    monkeypatch.setattr(cli_app, "is_port_available", _always_free)
+    monkeypatch.setattr(
+        models_cmd, "download_for_web", lambda **_: calls.append("download") or 0
+    )
+
+    result = runner.invoke(app, ["web", "--no-browser", "--download-models"])
+
+    assert result.exit_code == 0, _combined_output(result)
+    assert calls == ["download"]
+    assert serve_calls["port"] == net.DEFAULT_WEB_PORT
+
+
+def test_web_download_models_failure_aborts(
+    serve_calls: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """При неудачном скачивании сервер не стартует."""
+    from audio_transcriber.cli import models_cmd
+
+    monkeypatch.setattr(cli_app, "is_port_available", _always_free)
+    monkeypatch.setattr(models_cmd, "download_for_web", lambda **_: 1)
+
+    result = runner.invoke(app, ["web", "--no-browser", "--download-models"])
+
+    assert result.exit_code == 1
+    assert serve_calls == {}

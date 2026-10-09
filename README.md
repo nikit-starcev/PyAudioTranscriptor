@@ -45,6 +45,7 @@
 - [Интерактивный интерфейс (TUI)](#интерактивный-интерфейс-tui)
 - [Использование (вручную, через uv)](#использование-вручную-через-uv)
   - [Основные параметры команды `transcribe`](#основные-параметры-команды-transcribe)
+  - [Скачивание моделей через CLI (`models`)](#скачивание-моделей-через-cli-models)
   - [Повышение точности распознавания](#повышение-точности-распознавания)
   - [Чанкинг длинных записей (whisper.cpp)](#чанкинг-длинных-записей-whispercpp)
   - [Глоссарий терминов](#глоссарий-терминов)
@@ -682,6 +683,46 @@ uv run audio-transcriber transcribe --help
 | `--glossary` | — | Путь(и) к файлам глоссария; можно несколько раз или через запятую | — |
 | `--verbose` | `-v` | Подробный режим логирования (уровень DEBUG) | выключен |
 | `--version` | — | Показать версию и выйти | — |
+
+### Скачивание моделей через CLI (`models`)
+
+Модели можно получить без веб-интерфейса — командой `models` (удобно для
+Docker и скриптов, а также как шаг first-run):
+
+```bash
+# каталог: id, назначение, размер, статус (present/missing), путь
+uv run audio-transcriber models list
+
+# скачать отсутствующие модели (идемпотентно: уже скачанные пропускаются)
+uv run audio-transcriber models download whisper-large-v3-turbo
+uv run audio-transcriber models download whisper-small qwen2.5-7b-instruct-q4_k_m
+
+# скачать все отсутствующие модели каталога (gated без токена — пропускаются)
+uv run audio-transcriber models download --all
+
+# удалить файлы модели
+uv run audio-transcriber models delete whisper-small
+```
+
+Модели кладутся туда же, куда их пишет веб-интерфейс: каталог из
+`AUDIO_TRANSCRIBER_MODELS_DIR`, иначе `<web-data>/models`. Каталог можно
+переопределить флагом `--models-root` у любой подкоманды. Пути из `config.env`
+(`WHISPER_CPP_MODEL`, `LLM_MODEL`, `PYANNOTE_LOCAL_MODEL`, `GIGAAM_MODEL_PATH`,
+`DIARIZATION_ESTIMATE_MODEL`) учитываются как явные.
+
+Gated-модель диаризации pyannote требует токен Hugging Face: задайте `HF_TOKEN`
+в `config.env` или сохраните токен в `web-data/secrets.json` (как в UI). При
+`models download <id>` для gated-модели без токена команда завершается с кодом
+1; в режиме `--all` такие модели мягко пропускаются.
+
+Скачивание проверяет свободное место, продолжает прерванную загрузку, повторяет
+попытку при ошибке сети и возвращает код 1 при неудаче. Чтобы скачать нужные
+текущему `config.env` модели до старта сервера, используйте флаг
+`--download-models`:
+
+```bash
+uv run audio-transcriber web --download-models
+```
 
 ### Повышение точности распознавания
 

@@ -1,22 +1,33 @@
-"""Совместимый фасад над :mod:`audio_transcriber.models` для веб-слоя.
+"""Каталог моделей и скачивание с Hugging Face — без зависимости от веб-слоя.
 
-Каталог моделей и менеджер скачивания вынесены в нейтральный пакет
-``audio_transcriber.models`` (issue #50) без зависимости от FastAPI, чтобы их
-переиспользовал CLI. Здесь сохранены прежние имена: веб-API и его тесты
-импортируют ``audio_transcriber.web.models``, поэтому модуль лишь
-переэкспортирует публичный API.
+Пакет переиспользуют и веб-API (:mod:`audio_transcriber.web.models`
+переэкспортирует публичный API), и CLI-команда ``models``.
 """
 
 from __future__ import annotations
 
-from audio_transcriber.models import (
-    DEFAULT_HEARTBEAT,
+from audio_transcriber.models.catalog import (
     KIND_GIGAAM,
     KIND_LLM,
     KIND_PYANNOTE,
     KIND_SHERPA,
     KIND_WHISPER,
     MODEL_CATALOG,
+    LocalModelStatus,
+    ModelEntry,
+    ModelError,
+    ModelFile,
+    configured_path,
+    delete_model_files,
+    dir_size,
+    find_model,
+    free_space,
+    local_status,
+    primary_path,
+    resolve_target,
+)
+from audio_transcriber.models.download import (
+    DEFAULT_HEARTBEAT,
     STATUS_CANCELLED,
     STATUS_DONE,
     STATUS_DOWNLOADING,
@@ -27,20 +38,8 @@ from audio_transcriber.models import (
     Downloader,
     DownloadState,
     HfDownloader,
-    LocalModelStatus,
     ModelDownloadManager,
-    ModelEntry,
-    ModelError,
-    ModelFile,
-    configured_path,
-    delete_model_files,
-    dir_size,
-    find_model,
-    free_space,
-    local_status,
     model_payload,
-    primary_path,
-    resolve_target,
 )
 
 __all__ = [

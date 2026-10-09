@@ -15,6 +15,7 @@ from audio_transcriber.cleaning.repetition_filter import (
     DEFAULT_REPEAT_SIMILARITY,
 )
 from audio_transcriber.cli.env_config import as_bool, collect_env_kwargs
+from audio_transcriber.cli.models_cmd import models_app
 from audio_transcriber.config.defaults import (
     DEFAULT_DEEP_FILTER_BINARY,
     DEFAULT_DIARIZATION_ENGINE,
@@ -1410,9 +1411,27 @@ def web(
         "--reload",
         help="Автоперезапуск сервера при изменении кода (для разработки).",
     ),
+    download_models: bool = typer.Option(
+        False,
+        "--download-models",
+        help=(
+            "Перед стартом скачать отсутствующие модели, нужные config.env "
+            "(gated-модели без токена пропускаются)."
+        ),
+    ),
 ) -> None:
     """Запустить локальный веб-интерфейс транскрибации (127.0.0.1)."""
     actual_port = _resolve_web_port(ctx, host, port)
+
+    if download_models:
+        from audio_transcriber.cli.models_cmd import download_for_web
+
+        if download_for_web():
+            typer.echo(
+                "Не удалось скачать часть моделей — исправьте ошибки и повторите.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
 
     try:
         from audio_transcriber.web.app import serve
@@ -1674,6 +1693,7 @@ def glossary_remove(
 
 
 app.add_typer(glossary_app, name="glossary")
+app.add_typer(models_app, name="models")
 
 
 if __name__ == "__main__":
