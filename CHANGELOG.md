@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-10-09
+
 ### Fixed
 
 - **Инсталляторы: Windows и привязка к GitHub Release** (#50): `build-inno.ps1` и `run-web.ps1`
