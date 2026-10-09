@@ -227,3 +227,12 @@ def test_run_llm_postprocess_flag_on_saves_but_does_not_apply(
     assert len(stored) == 1
     assert stored[0]["before"] == "бред"
     assert stored[0]["after"] == "смысл"
+
+
+def test_user_prompt_example_uses_realistic_confidence() -> None:
+    """Пример в промпте не должен содержать confidence 0.0 (модель его копирует)."""
+    from audio_transcriber.llm.semantic import _user_prompt
+
+    prompt = _user_prompt("[0:00] Спикер 1: негулируем чтобы было")
+    assert '"confidence": 0.0' not in prompt
+    assert "не копируй" in prompt
