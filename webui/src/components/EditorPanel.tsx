@@ -45,7 +45,6 @@ function EditorPanel({ jobId, onResult }: Props) {
   // Редакторская проверка (#51).
   const [fixCommon, setFixCommon] = useState(true)
   const [checkSpelling, setCheckSpelling] = useState(true)
-  const [checkSemantic, setCheckSemantic] = useState(true)
   const [respectEdits, setRespectEdits] = useState(true)
   const [checkBusy, setCheckBusy] = useState(false)
   const [applyBusy, setApplyBusy] = useState(false)
@@ -125,7 +124,7 @@ function EditorPanel({ jobId, onResult }: Props) {
               dry_run: true,
               fix_common: fixCommon,
               check_spelling: checkSpelling,
-              check_semantic: checkSemantic,
+              check_semantic: false,
               respect_edited: respectEdits,
             }),
           }),
@@ -150,7 +149,7 @@ function EditorPanel({ jobId, onResult }: Props) {
     } finally {
       setCheckBusy(false)
     }
-  }, [jobId, fixCommon, checkSpelling, checkSemantic, respectEdits, runActionTask])
+  }, [jobId, fixCommon, checkSpelling, respectEdits, runActionTask])
 
   const applySelected = useCallback(async () => {
     setApplyBusy(true)
@@ -167,7 +166,7 @@ function EditorPanel({ jobId, onResult }: Props) {
               selection: selected.map((item) => item.id),
               fix_common: fixCommon,
               check_spelling: checkSpelling,
-              check_semantic: checkSemantic,
+              check_semantic: false,
               respect_edited: respectEdits,
             }),
           }),
@@ -192,7 +191,6 @@ function EditorPanel({ jobId, onResult }: Props) {
     selected,
     fixCommon,
     checkSpelling,
-    checkSemantic,
     respectEdits,
     runActionTask,
   ])
@@ -241,7 +239,7 @@ function EditorPanel({ jobId, onResult }: Props) {
             <Button
               variant="secondary"
               loading={checkBusy}
-              disabled={busy || (!fixCommon && !checkSpelling && !checkSemantic)}
+              disabled={busy || (!fixCommon && !checkSpelling)}
               title="Найти опечатки и частые ошибки в текущей стенограмме"
               onClick={() => void checkText()}
             >
@@ -256,12 +254,6 @@ function EditorPanel({ jobId, onResult }: Props) {
               label="Орфография"
               checked={checkSpelling}
               onChange={(event) => setCheckSpelling(event.target.checked)}
-            />
-            <Checkbox
-              label="Семантика (LLM)"
-              checked={checkSemantic}
-              onChange={(event) => setCheckSemantic(event.target.checked)}
-              title="Показать сохранённые предложения семантической правки LLM (если они есть у задачи)"
             />
             <Checkbox
               label="Не трогать изменённые вручную"

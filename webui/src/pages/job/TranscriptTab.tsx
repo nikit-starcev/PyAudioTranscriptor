@@ -3,6 +3,7 @@ import { Search } from 'lucide-react'
 import { formatDuration, type Entry } from '../../api'
 import { useApp } from '../../app/useApp'
 import EditorPanel from '../../components/EditorPanel'
+import SemanticSuggestionsPanel from '../../components/SemanticSuggestionsPanel'
 import TranscriptTable from '../../components/TranscriptTable'
 import { EmptyState, Input, cn } from '../../components/ui'
 import { TRANSCRIPT_MARKS } from '../../components/transcriptMarks'
@@ -94,6 +95,8 @@ function TranscriptTab({ jobId }: { jobId: string }) {
       />
 
       <EditorPanel jobId={jobId} onResult={app.setResult} />
+
+      <SemanticSuggestionsPanel jobId={jobId} onResult={app.setResult} />
     </div>
   )
 }
