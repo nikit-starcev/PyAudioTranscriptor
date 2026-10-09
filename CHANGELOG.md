@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-09
+
 ### Added
 
 - **Инсталляторы (AppImage / `.exe` / `.dmg`) + заготовка подписи** (#50, шаг 4): `scripts/build_installer.py`
@@ -27,7 +29,6 @@
   `build-portable.yml` (matrix Linux / Windows / macOS-ARM, `workflow_dispatch` + теги `v*`,
   артефакты `portable-<os>-<arch>`), лаунчеры `packaging/launchers/` (bash/`.command`/`.bat`/`.ps1`).
   Проверено на Linux: полный `transcribe` в замороженном бандле (`EXIT=0`), `web`+`/api/health`.
-  Подпись и инсталляторы (шаг 4) остаются открытыми.
 
 - **Дистрибуция: скачивание моделей из CLI + улучшения Docker** (#50, шаг 2+ и «автоскачивание»):
   команда `audio-transcriber models list|download [--all|<id>…]|delete` и флаг `web --download-models` —
@@ -36,15 +37,16 @@
   дополнен whisper `large-v3` и `base`. Docker: healthcheck (`/api/health`), тома `/data` и
   `/data/voices`, `restart: unless-stopped`/`init`/`stop_grace_period`, порт из `PORT`, опциональный
   ROCm (`--build-arg TORCH_INDEX`, непроверено), подсказка `entrypoint` про отсутствующие модели,
-  чистка слоёв/`.dockerignore`, `.env.example`. Portable-бандл Win/macOS и подписанные инсталляторы
-  (шаги 3–4) остаются открытыми.
+  чистка слоёв/`.dockerignore`, `.env.example`.
 
 - **Семантическая правка текста LLM (suggest-only, MVP)** (#75): опциональный проход
   (флаг `LLM_CORRECT_SEMANTIC`, по умолчанию **выключен**) — LLM предлагает минимальные
   правки «нелогичных» фрагментов после ASR, **ничего не применяется автоматически**.
   Строгий JSON (`before`/`after`/`reason`/`confidence`), детерминированная локализация
   `before`, фильтр по `LLM_SEMANTIC_MIN_CONFIDENCE`; предложения (`Suggestion(kind="semantic")`)
-  сохраняются в sidecar и показываются в редакторе (accept/reject — текущий флоу).
+  сохраняются в sidecar; в редакторе — отдельный блок **«Предложения семантической правки (LLM)»**
+  с автозагрузкой и accept/reject («Принять все / Отклонить все / Применить выбранные»),
+  без авто-применения.
 
 - **Массовые операции с бинарными пакетами** (#115): в разделе «Бинарные
   пакеты» — «Скачать все» / «Установить все» (ставят все отсутствующие ресурсы
