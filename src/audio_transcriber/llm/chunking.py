@@ -86,6 +86,34 @@ def transcript_lines(
         yield f"{label}: {entry.text.strip()}"
 
 
+def iter_entry_chunks(
+    entries: list[TranscriptEntry], labels: dict[str, str], *, max_chars: int
+) -> list[list[tuple[int, str]]]:
+    """Режет стенограмму на фрагменты по ~``max_chars`` символов.
+
+    В отличие от :func:`iter_transcript_chunks`, каждая строка фрагмента
+    возвращается вместе с индексом исходной реплики: это нужно этапам, которые
+    должны знать, к какой реплике относится найденный фрагмент (семантические
+    правки, #75). Пустые реплики пропускаются.
+    """
+    chunks: list[list[tuple[int, str]]] = []
+    current: list[tuple[int, str]] = []
+    size = 0
+    for index, entry in enumerate(entries):
+        if not entry.text.strip():
+            continue
+        label = labels.get(entry.speaker.id, "?") if entry.speaker else "?"
+        line = f"{label}: {entry.text.strip()}"
+        if current and size + len(line) > max_chars:
+            chunks.append(current)
+            current, size = [], 0
+        current.append((index, line))
+        size += len(line) + 1
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def iter_transcript_chunks(
     entries: list[TranscriptEntry], labels: dict[str, str], *, max_chars: int
 ) -> list[str]:
@@ -94,18 +122,10 @@ def iter_transcript_chunks(
     Нужно, потому что длинная стенограмма превышает контекст LLM — тогда
     результат считается по фрагментам и объединяется.
     """
-    chunks: list[str] = []
-    current: list[str] = []
-    size = 0
-    for line in transcript_lines(entries, labels):
-        if current and size + len(line) > max_chars:
-            chunks.append("\n".join(current))
-            current, size = [], 0
-        current.append(line)
-        size += len(line) + 1
-    if current:
-        chunks.append("\n".join(current))
-    return chunks
+    return [
+        "\n".join(line for _index, line in chunk)
+        for chunk in iter_entry_chunks(entries, labels, max_chars=max_chars)
+    ]
 
 
 # Запас под контекст LLM: на 4096 токенов безопасно ~6000 символов русского

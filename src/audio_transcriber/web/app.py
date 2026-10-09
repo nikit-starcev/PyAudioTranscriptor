@@ -109,6 +109,11 @@ from audio_transcriber.domain.enums import AsrBackend, ExportFormat
 from audio_transcriber.domain.models import Speaker, TranscriptEntry, TranscriptionResult
 from audio_transcriber.export.factory import create_exporter
 from audio_transcriber.llm.client import create_llm_client, probe_openai_server
+from audio_transcriber.llm.semantic import (
+    load_stored_edits,
+    semantic_suggestions_path,
+    suggestions_from_stored_edits,
+)
 from audio_transcriber.protocol import ProtocolArtifacts, generate_protocol
 from audio_transcriber.storage.glossary_builder import build_active_glossary
 from audio_transcriber.storage.prompts_db import PromptsDB
@@ -550,6 +555,8 @@ class CorrectTextRequest(BaseModel):
     ``dry_run=True`` возвращает только список предложений, ничего не сохраняя.
     ``selection`` — id выбранных предложений; ``None`` — применить все.
     ``fix_common``/``check_spelling`` включают соответствующие виды проверки.
+    ``check_semantic`` добавляет сохранённые предложения семантической правки
+    LLM (#75), если они есть у задачи (по умолчанию выключено).
     ``respect_edited=True`` (по умолчанию) не трогает реплики с ручными правками.
     """
 
@@ -557,6 +564,7 @@ class CorrectTextRequest(BaseModel):
     selection: list[str] | None = None
     fix_common: bool = True
     check_spelling: bool = True
+    check_semantic: bool = False
     respect_edited: bool = True
 
 
@@ -574,6 +582,10 @@ class SettingsUpdate(BaseModel):
     export_formats: list[str] | None = None
     llm_enabled: bool | None = None
     llm_summary: bool | None = None
+    #: Семантическая правка LLM (#75, suggest-only). Поле обязано присутствовать
+    #: и здесь, и в ``WebSettings`` — иначе pydantic молча отбросит его при PUT.
+    llm_correct_semantic: bool | None = None
+    llm_semantic_min_confidence: float | None = None
     denoise: bool | None = None
     deep_filter_binary: str | None = None
     mark_overlap: bool | None = None
@@ -2599,7 +2611,11 @@ def register_api(
         if not isinstance(entries, list):
             raise HTTPException(status_code=400, detail="В результате нет реплик")
         request = payload or CorrectTextRequest()
-        if not request.fix_common and not request.check_spelling:
+        if (
+            not request.fix_common
+            and not request.check_spelling
+            and not request.check_semantic
+        ):
             raise HTTPException(
                 status_code=400, detail="Не выбран ни один вид проверки"
             )
@@ -2636,6 +2652,16 @@ def register_api(
                     f"Поиск правок: {index + 1}/{total}",
                     0.05 + 0.85 * (index + 1) / total,
                 )
+
+        if request.check_semantic:
+            # Предложения семантической правки LLM (#75) сохранены на прогоне
+            # рядом с результатом. Позиции LLM не используем — заново
+            # локализуем ``before`` в текущем тексте; ничего не применяем сами.
+            for suggestion in _stored_semantic_suggestions(
+                config_builder, job_id, job, entries, respect_edited=request.respect_edited
+            ):
+                groups.setdefault(suggestion.index, []).append(suggestion)
+
         suggestions = [item for group in groups.values() for item in group]
 
         if request.dry_run:
@@ -3429,6 +3455,48 @@ def _require_result(paths: WebPaths, job: Job) -> dict[str, object]:
     if result is None:
         raise HTTPException(status_code=404, detail="Результат ещё не готов")
     return result
+
+
+def _stored_semantic_suggestions(
+    config_builder: ConfigBuilder,
+    job_id: str,
+    job: Job,
+    entries: list[object],
+    *,
+    respect_edited: bool,
+) -> list[Suggestion]:
+    """Предложения семантической правки (#75) из файла задачи, если он есть.
+
+    Позиции берутся не из файла, а пересчитываются по текущему тексту реплик
+    (:func:`suggestions_from_stored_edits`): файл хранит лишь ``before``/``after``,
+    поэтому правки остаются корректными после правок текста. Уверенность уже
+    отфильтрована при сохранении, поэтому здесь порог не применяется повторно.
+    Реплики с ручными правками (#26) по умолчанию пропускаются. Любой сбой
+    (нет файла/конфига) — пустой список: редактор не должен падать.
+    """
+    try:
+        config = config_builder(job_id, Path(job.source_path))
+        stored = load_stored_edits(
+            semantic_suggestions_path(config.output_dir, config.input_file.stem)
+        )
+    except Exception as exc:  # noqa: BLE001 — файл/конфиг может отсутствовать
+        logger.warning("Семантические предложения недоступны: %s", exc)
+        return []
+    if not stored:
+        return []
+
+    texts: list[str] = []
+    edited: set[int] = set()
+    for index, raw in enumerate(entries):
+        text = raw.get("text") if isinstance(raw, Mapping) else None
+        texts.append(text if isinstance(text, str) else "")
+        if isinstance(raw, Mapping) and raw.get("edited"):
+            edited.add(index)
+
+    suggestions = suggestions_from_stored_edits(texts, stored, min_confidence=0.0)
+    if respect_edited:
+        return [item for item in suggestions if item.index not in edited]
+    return suggestions
 
 
 def _result_samples(result: Mapping[str, object]) -> dict[str, str]:

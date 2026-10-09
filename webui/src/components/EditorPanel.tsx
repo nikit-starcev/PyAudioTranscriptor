@@ -24,6 +24,7 @@ type Notice = { kind: 'info' | 'error'; text: string }
 const KIND_LABELS: Record<string, string> = {
   common: 'частые ошибки',
   spelling: 'орфография',
+  semantic: 'семантика (LLM)',
 }
 
 function kindLabel(kind: string): string {
@@ -44,6 +45,7 @@ function EditorPanel({ jobId, onResult }: Props) {
   // Редакторская проверка (#51).
   const [fixCommon, setFixCommon] = useState(true)
   const [checkSpelling, setCheckSpelling] = useState(true)
+  const [checkSemantic, setCheckSemantic] = useState(true)
   const [respectEdits, setRespectEdits] = useState(true)
   const [checkBusy, setCheckBusy] = useState(false)
   const [applyBusy, setApplyBusy] = useState(false)
@@ -123,6 +125,7 @@ function EditorPanel({ jobId, onResult }: Props) {
               dry_run: true,
               fix_common: fixCommon,
               check_spelling: checkSpelling,
+              check_semantic: checkSemantic,
               respect_edited: respectEdits,
             }),
           }),
@@ -147,7 +150,7 @@ function EditorPanel({ jobId, onResult }: Props) {
     } finally {
       setCheckBusy(false)
     }
-  }, [jobId, fixCommon, checkSpelling, respectEdits, runActionTask])
+  }, [jobId, fixCommon, checkSpelling, checkSemantic, respectEdits, runActionTask])
 
   const applySelected = useCallback(async () => {
     setApplyBusy(true)
@@ -164,6 +167,7 @@ function EditorPanel({ jobId, onResult }: Props) {
               selection: selected.map((item) => item.id),
               fix_common: fixCommon,
               check_spelling: checkSpelling,
+              check_semantic: checkSemantic,
               respect_edited: respectEdits,
             }),
           }),
@@ -182,7 +186,16 @@ function EditorPanel({ jobId, onResult }: Props) {
     } finally {
       setApplyBusy(false)
     }
-  }, [jobId, onResult, selected, fixCommon, checkSpelling, respectEdits, runActionTask])
+  }, [
+    jobId,
+    onResult,
+    selected,
+    fixCommon,
+    checkSpelling,
+    checkSemantic,
+    respectEdits,
+    runActionTask,
+  ])
 
   const toggleSuggestion = useCallback((id: string) => {
     setRejected((current) => {
@@ -228,7 +241,7 @@ function EditorPanel({ jobId, onResult }: Props) {
             <Button
               variant="secondary"
               loading={checkBusy}
-              disabled={busy || (!fixCommon && !checkSpelling)}
+              disabled={busy || (!fixCommon && !checkSpelling && !checkSemantic)}
               title="Найти опечатки и частые ошибки в текущей стенограмме"
               onClick={() => void checkText()}
             >
@@ -243,6 +256,12 @@ function EditorPanel({ jobId, onResult }: Props) {
               label="Орфография"
               checked={checkSpelling}
               onChange={(event) => setCheckSpelling(event.target.checked)}
+            />
+            <Checkbox
+              label="Семантика (LLM)"
+              checked={checkSemantic}
+              onChange={(event) => setCheckSemantic(event.target.checked)}
+              title="Показать сохранённые предложения семантической правки LLM (если они есть у задачи)"
             />
             <Checkbox
               label="Не трогать изменённые вручную"

@@ -27,6 +27,8 @@ from audio_transcriber.correction.morph_corrector import MorphTextCorrector
 KIND_COMMON = "common"
 #: Вид правки: орфография (морфология).
 KIND_SPELLING = "spelling"
+#: Вид правки: семантическая правка от LLM (#75, только предложение).
+KIND_SEMANTIC = "semantic"
 
 
 @dataclass(frozen=True, slots=True)

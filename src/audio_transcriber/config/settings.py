@@ -49,6 +49,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_HYBRID_SILENCE_RMS_THRESHOLD,
     DEFAULT_LLM_PROVIDER,
     DEFAULT_LLM_REQUEST_TIMEOUT,
+    DEFAULT_LLM_SEMANTIC_MIN_CONFIDENCE,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
     DEFAULT_NEMO_SPEECH_BINARY,
     DEFAULT_NEMO_SPEECH_DEVICE,
@@ -296,6 +297,13 @@ class AppConfig:
     # Пользовательский шаблон системного промпта резюме (#97). ``None`` —
     # встроенный промпт. Полностью заменяет зашитый формат, когда задан.
     llm_summary_prompt: str | None = None
+    # Семантическая правка LLM (#75): LLM предлагает минимальные замены явно
+    # невозможных мест (следствие ошибки ASR). Только ПРЕДЛОЖЕНИЯ: ничего не
+    # применяется автоматически, список отдаётся в редактор (accept/reject).
+    # По умолчанию выключено: автоправка опасна (см. исследование к #75).
+    llm_correct_semantic: bool = False
+    # Порог уверенности LLM для семантических правок (0..1).
+    llm_semantic_min_confidence: float = DEFAULT_LLM_SEMANTIC_MIN_CONFIDENCE
     # Доп. инструкции пользователя к промптам LLM: инлайн-текст и/или путь к
     # файлу с инструкциями. Подмешиваются в системный промпт каждого этапа.
     llm_prompt_extra: str | None = None
@@ -460,6 +468,18 @@ class AppConfig:
 
         if not isinstance(self.llm_summary, bool):
             raise ConfigurationError("LLM_SUMMARY должно быть true или false")
+
+        if not isinstance(self.llm_correct_semantic, bool):
+            raise ConfigurationError("LLM_CORRECT_SEMANTIC должно быть true или false")
+
+        if isinstance(self.llm_semantic_min_confidence, bool) or not isinstance(
+            self.llm_semantic_min_confidence, (int, float)
+        ):
+            raise ConfigurationError("LLM_SEMANTIC_MIN_CONFIDENCE должно быть числом")
+        if not (0.0 <= self.llm_semantic_min_confidence <= 1.0):
+            raise ConfigurationError(
+                "LLM_SEMANTIC_MIN_CONFIDENCE должно быть числом в диапазоне [0; 1]"
+            )
 
         if self.llm_summary_prompt is not None:
             if not isinstance(self.llm_summary_prompt, str):

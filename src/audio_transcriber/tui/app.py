@@ -389,6 +389,14 @@ class TranscriberApp(App):
                             id="llm_summary",
                         )
                     with Horizontal():
+                        yield Label("Семант. правки (LLM)", classes="field-label")
+                        yield Switch(
+                            value=_to_bool(
+                                self._defaults.get("LLM_CORRECT_SEMANTIC"), default=False
+                            ),
+                            id="llm_semantic",
+                        )
+                    with Horizontal():
                         yield Label("Модель LLM", classes="field-label")
                         yield Input(value=self._defaults.get("LLM_MODEL", ""), id="llm_model")
                     with Horizontal():

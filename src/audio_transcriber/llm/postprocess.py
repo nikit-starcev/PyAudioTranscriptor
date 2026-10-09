@@ -52,11 +52,17 @@ from audio_transcriber.llm.glossary import (
     Glossary,
     write_suggested_terms,
 )
+from audio_transcriber.llm.json_utils import extract_json_object as _extract_json_object
 from audio_transcriber.llm.prompts import (
     PromptRecorder,
     PromptRecordingClient,
     load_extra_instructions,
     max_extra_chars_for_context,
+)
+from audio_transcriber.llm.semantic import (
+    collect_semantic_edits,
+    semantic_suggestions_path,
+    write_semantic_edits,
 )
 from audio_transcriber.llm.summary import summarize_meeting
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
@@ -198,20 +204,7 @@ def build_transcript_for_llm(
     return transcript
 
 
-def _extract_json_object(raw: str) -> dict:
-    """Извлекает первый JSON-объект из ответа LLM (устойчиво к лишнему тексту)."""
-    text = raw.strip()
-    # Снимаем ```json ... ``` обёртку, если LLM её добавила.
-    fence = re.search(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL)
-    if fence:
-        text = fence.group(1).strip()
 
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("В ответе LLM нет JSON-объекта")
-
-    return json.loads(text[start : end + 1])
 
 
 def parse_participants_json(raw: str, labels_by_id: dict[str, str]) -> dict[str, str]:
@@ -658,6 +651,35 @@ def run_llm_postprocess(
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Правка терминов пропущена: %s", exc)
+
+        if config.llm_correct_semantic:
+            # Только ПРЕДЛОЖЕНИЯ: ни одна правка не применяется автоматически.
+            # Список сохраняется рядом с результатом для редактора.
+            try:
+                semantic_edits = collect_semantic_edits(
+                    entries,
+                    llm=_wrap("семантические правки"),
+                    max_chunk_chars=chunk_chars,
+                    min_confidence=config.llm_semantic_min_confidence,
+                )
+                semantic_path = write_semantic_edits(
+                    semantic_suggestions_path(config.output_dir, config.input_file.stem),
+                    semantic_edits,
+                )
+                if semantic_path is not None:
+                    emit(
+                        ProgressEvent(
+                            "llm",
+                            f"Семантические предложения: {len(semantic_edits)} → {semantic_path}",
+                            fraction=None,
+                        )
+                    )
+            except Exception as exc:  # noqa: BLE001 — не роняем конвейер
+                logger.warning("Семантические правки пропущены: %s", exc)
+        else:
+            logger.info(
+                "LLM: семантические правки отключены (LLM_CORRECT_SEMANTIC=false)"
+            )
 
         if names:
             entries, speakers = apply_participant_names(entries, speakers, names)

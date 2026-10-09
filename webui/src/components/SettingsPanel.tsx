@@ -42,6 +42,7 @@ type ToggleKey =
   | 'glossary_enabled'
   | 'llm_enabled'
   | 'llm_summary'
+  | 'llm_correct_semantic'
   | 'denoise'
   | 'mark_overlap'
   | 'merge_same_name_speakers'
@@ -59,6 +60,14 @@ const TOGGLES: { key: ToggleKey; label: string; hint: string }[] = [
   },
   { key: 'llm_enabled', label: 'LLM-постобработка', hint: 'Правка терминов локальной LLM' },
   { key: 'llm_summary', label: 'Резюме встречи', hint: 'Считать резюме при формировании протокола' },
+  {
+    key: 'llm_correct_semantic',
+    label: 'Семантическая правка LLM',
+    hint:
+      'Предлагать минимальные замены явно невозможных после ASR фрагментов ' +
+      '(suggest-only: ничего не применяется автоматически — правки ' +
+      'принимаются в редакторе). Требует включённой LLM-постобработки',
+  },
   { key: 'denoise', label: 'Шумоподавление', hint: 'DeepFilterNet перед распознаванием' },
   { key: 'mark_overlap', label: 'Помечать наложение речи', hint: 'Отмечать реплики поверх друг друга' },
   {
@@ -309,6 +318,8 @@ function SettingsPanel({ onSaved }: Props) {
         export_formats: settings.export_formats,
         llm_enabled: settings.llm_enabled,
         llm_summary: settings.llm_summary,
+        llm_correct_semantic: settings.llm_correct_semantic,
+        llm_semantic_min_confidence: settings.llm_semantic_min_confidence,
         denoise: settings.denoise,
         mark_overlap: settings.mark_overlap,
         merge_same_name_speakers: settings.merge_same_name_speakers,

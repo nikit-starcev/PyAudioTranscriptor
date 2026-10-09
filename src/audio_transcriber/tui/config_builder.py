@@ -135,6 +135,7 @@ def build_config_from_widgets(app: TranscriberApp, input_file: Path) -> AppConfi
     kwargs["llm_enabled"] = app.query_one("#llm", Switch).value
     kwargs["llm_extract_names"] = app.query_one("#llm_names", Switch).value
     kwargs["llm_summary"] = app.query_one("#llm_summary", Switch).value
+    kwargs["llm_correct_semantic"] = app.query_one("#llm_semantic", Switch).value
     llm_model = app.query_one("#llm_model", Input).value.strip()
     kwargs["llm_model"] = Path(llm_model) if llm_model else None
     kwargs["llm_binary"] = app.query_one("#llm_binary", Input).value.strip() or "llama-server"

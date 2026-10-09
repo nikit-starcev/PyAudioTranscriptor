@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -210,3 +211,121 @@ def test_no_checks_selected_returns_400(client: TestClient) -> None:
     )
 
     assert response.status_code == 400
+
+
+# --- Семантические правки LLM (#75, suggest-only) ---------------------------
+
+
+def _write_semantic_edits(web_paths: WebPaths, job_id: str, edits: list[dict]) -> None:
+    path = web_paths.results_dir / job_id / "sample.semantic.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"version": 1, "edits": edits}, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+_SEMANTIC_EDIT = {
+    "index": 2,
+    "before": "пока",
+    "after": "пока что",
+    "reason": "ASR",
+    "confidence": 0.9,
+}
+
+
+def test_semantic_suggestions_are_served_by_dry_run(
+    client: TestClient, web_paths: WebPaths
+) -> None:
+    job_id = _prepared_job(client)
+    _write_semantic_edits(web_paths, job_id, [_SEMANTIC_EDIT])
+
+    response = client.post(
+        f"/api/jobs/{job_id}/correct-text",
+        json={
+            "dry_run": True,
+            "fix_common": False,
+            "check_spelling": False,
+            "check_semantic": True,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    semantic = [item for item in body["suggestions"] if item["kind"] == "semantic"]
+    assert len(semantic) == 1
+    assert semantic[0]["after"] == "пока что"
+    assert semantic[0]["index"] == 2
+    # Ничего не записано без явного применения.
+    fetched = client.get(f"/api/jobs/{job_id}/result").json()
+    assert fetched["entries"][2]["text"] == "пока"
+
+
+def test_semantic_disabled_by_default(client: TestClient, web_paths: WebPaths) -> None:
+    job_id = _prepared_job(client)
+    _write_semantic_edits(web_paths, job_id, [_SEMANTIC_EDIT])
+
+    response = client.post(
+        f"/api/jobs/{job_id}/correct-text",
+        json={"dry_run": True, "fix_common": False, "check_spelling": False},
+    )
+
+    # check_semantic не передан → 400 (ни один вид проверки не выбран).
+    assert response.status_code == 400
+
+
+def test_semantic_selected_suggestion_is_applied(
+    client: TestClient, web_paths: WebPaths
+) -> None:
+    job_id = _prepared_job(client)
+    _write_semantic_edits(web_paths, job_id, [_SEMANTIC_EDIT])
+    preview = client.post(
+        f"/api/jobs/{job_id}/correct-text",
+        json={
+            "dry_run": True,
+            "fix_common": False,
+            "check_spelling": False,
+            "check_semantic": True,
+        },
+    ).json()
+    semantic_ids = [
+        item["id"] for item in preview["suggestions"] if item["kind"] == "semantic"
+    ]
+
+    response = client.post(
+        f"/api/jobs/{job_id}/correct-text",
+        json={
+            "selection": semantic_ids,
+            "fix_common": False,
+            "check_spelling": False,
+            "check_semantic": True,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["applied_count"] == 1
+    assert body["result"]["entries"][2]["text"] == "пока что"
+
+
+def test_semantic_respects_manual_edits(client: TestClient, web_paths: WebPaths) -> None:
+    job_id = _prepared_job(client)
+    _write_semantic_edits(web_paths, job_id, [_SEMANTIC_EDIT])
+    client.patch(
+        f"/api/jobs/{job_id}/transcript",
+        json={"edits": [{"index": 2, "text": "пока!"}]},
+    )
+
+    response = client.post(
+        f"/api/jobs/{job_id}/correct-text",
+        json={
+            "dry_run": True,
+            "fix_common": False,
+            "check_spelling": False,
+            "check_semantic": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert all(
+        item["kind"] != "semantic" for item in response.json()["suggestions"]
+    )
