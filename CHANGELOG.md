@@ -9,6 +9,17 @@
 
 ### Added
 
+- **Portable-бандл (one-dir) + CI-сборка** (#50, шаг 3): `scripts/build_portable.py` собирает
+  PyInstaller one-dir (`packaging/pyinstaller/audio-transcriber.spec`; сборка только под host-ОС,
+  иначе — понятная ошибка), результат `dist/audio-transcriber/` (~1.4 ГиБ, без CUDA/torchcodec,
+  версия из dist-info). Спек исключает `torchcodec` (pyannote деградирует; аудио подаётся нашим
+  PyAV-`load_waveform`), `nvidia`/`triton`/тесты, кладёт SPA-статику и данные пакетов
+  (pyannote/VAD/pymorphy3); зависимости пинятся по `uv.lock` (torch — CPU). CI-workflow
+  `build-portable.yml` (matrix Linux / Windows / macOS-ARM, `workflow_dispatch` + теги `v*`,
+  артефакты `portable-<os>-<arch>`), лаунчеры `packaging/launchers/` (bash/`.command`/`.bat`/`.ps1`).
+  Проверено на Linux: полный `transcribe` в замороженном бандле (`EXIT=0`), `web`+`/api/health`.
+  Подпись и инсталляторы (шаг 4) остаются открытыми.
+
 - **Дистрибуция: скачивание моделей из CLI + улучшения Docker** (#50, шаг 2+ и «автоскачивание»):
   команда `audio-transcriber models list|download [--all|<id>…]|delete` и флаг `web --download-models` —
   модели качаются без веб-UI (идемпотентно, с проверкой свободного места, ретраями и HF-токеном для

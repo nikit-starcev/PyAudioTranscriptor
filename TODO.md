@@ -673,7 +673,10 @@
   (ядро вынесено в пакет `audio_transcriber.models`, веб переиспользует; каталог дополнен
   whisper `large-v3`/`base`); Docker — healthcheck, тома `/data`(+`voices`), `restart`/`init`,
   порт из `PORT`, опциональный ROCm (`--build-arg TORCH_INDEX`, непроверено), `.env.example`.
-  **Остаётся:** шаг 3 — portable-бандл Windows/macOS, шаг 4 — подписанные инсталляторы.
+  ✅ **Шаг 3 — portable-бандл — сделано (Unreleased):** `scripts/build_portable.py` + PyInstaller
+  one-dir (`packaging/pyinstaller/`, только host-ОС), CI `build-portable.yml` (Linux/Windows/macOS-ARM),
+  лаунчеры `packaging/launchers/`; Linux-бандл собран, полный `transcribe` в заморозке прошёл.
+  **Остаётся:** шаг 4 — инсталляторы и подпись (`.exe`/`.dmg`/AppImage).
 
 - **Ноутбук/календарь: архив записей, привязка к датам/встречам, заметки.** (#99)
   Суть: архив — привязка стенограмм к датам/встречам, заметки, поиск по архиву (текст/говорящий/дата).
