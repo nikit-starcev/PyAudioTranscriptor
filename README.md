@@ -39,6 +39,7 @@
 - [Требования](#требования)
 - [Установка](#установка)
 - [Docker](#docker)
+- [Portable-бандл (one-dir)](#portable-бандл-one-dir)
 - [Быстрый запуск (run.sh / config.env)](#быстрый-запуск-без-ручной-установки-и-параметров-в-командной-строке)
 - [Веб-интерфейс](#веб-интерфейс)
   - [OpenAI-совместимый API](#openai-совместимый-api)
@@ -385,6 +386,53 @@ docker run --rm -p 127.0.0.1:8790:8790 \
 | `Permission denied` при записи в `/data` | Владелец `./web-data` не совпадает с uid `app`. Задайте `PUID`/`PGID` (rootful) или `chown -R 1000:1000 web-data voices`. |
 | `attempt to write a readonly database` | Rootless/userns-режим: entrypoint сам определяет режим и не делает `chown` тома (issue #104) — проверьте владельца `./web-data`. |
 | Образ долго собирается | Первая сборка компилирует `llama.cpp` и тянет torch; последующие используют кэш слоёв BuildKit. |
+
+## Portable-бандл (one-dir)
+
+Переносимый **one-dir**-бандл на PyInstaller: каталог `audio-transcriber/` с
+исполняемым файлом и всеми зависимостями, не требующий установленного Python.
+Сборка идёт **только под текущую ОС** (runner = целевая ОС), кросс-сборка не
+поддерживается.
+
+### Сборка
+
+```bash
+# из корня репозитория, на той ОС, для которой собираете
+python scripts/build_portable.py --target linux --out dist    # windows | macos
+```
+
+Результат — `dist/audio-transcriber/` (на Windows исполняемый файл
+`audio-transcriber.exe`). Флаг `--clean` удаляет предыдущую сборку.
+
+CI собирает бандлы под Linux/Windows/macOS (Apple Silicon, `macos-14`) по
+тегам `v*` и вручную (`workflow_dispatch`) — workflow `build-portable.yml`,
+артефакты `portable-<os>-<arch>`.
+
+### Запуск
+
+Скопируйте лаунчер из `packaging/launchers/` внутрь каталога бандла (или рядом
+с ним) и запустите подходящий:
+
+- Linux/macOS — `run-web.sh`; на macOS ещё `run-web.command` двойным щелчком;
+- Windows — `run-web.bat` (или `run-web.ps1`).
+
+Лаунчеры ищут исполняемый файл рядом с собой и запускают
+`audio-transcriber web --port 8790` с открытием браузера (порт можно задать
+переменной `AUDIO_TRANSCRIBER_WEB_PORT` или флагом `--port`; `--no-browser`
+отключает автозапуск браузера). Если бандл рядом не найден — выводится
+понятная ошибка.
+
+### Отличия от Docker и ограничения
+
+- **GPU.** В бандл входит только CPU-окружение: ускорение **Vulkan** не
+  гарантируется, а Windows-сборка идёт **без GPU-ускорения** (как и macOS).
+- **Модели и бинарники** (модели распознавания, `whisper-cli`, `llama-server`,
+  `deep-filter`) в бандл не входят и ставятся отдельно — как при обычной
+  установке (CLI `models`, веб-UI, `doctor`).
+- **Intel Mac** (`x86_64`) не поддерживается: собирается только Apple Silicon
+  (`arm64`).
+- Бандл не заменяет Docker: для воспроизводимого окружения с
+  предустановленными нативными движками используйте Docker.
 
 ## Быстрый запуск (без ручной установки и параметров в командной строке)
 
