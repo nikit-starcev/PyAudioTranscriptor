@@ -637,6 +637,22 @@ export type AssetsResponse = {
   bin_dir: string
 }
 
+/** Результат массовой установки внешних ресурсов (#115). */
+export type AssetInstallAllResponse = {
+  /** Ключи, поставленные в очередь (установка идёт последовательно в фоне). */
+  started: string[]
+  /** Пропущенные ресурсы с причиной (уже установлено, нет артефакта и т.п.). */
+  skipped: { key: string; reason: string }[]
+  running: boolean
+}
+
+/** Результат массового удаления бинарников (#115). */
+export type AssetDeleteAllResponse = {
+  deleted: string[]
+  failed: { key: string; reason: string }[]
+  requested: number
+}
+
 /** Статус фоновой установки опционального пакета (#66). */
 export type DependencyStatus = 'idle' | 'running' | 'done' | 'error'
 

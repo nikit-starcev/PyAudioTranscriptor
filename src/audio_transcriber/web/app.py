@@ -133,6 +133,8 @@ from audio_transcriber.web.asr_device import describe_asr_device
 from audio_transcriber.web.assets import (
     KIND_BINARY,
     KIND_PIP,
+    AssetBatchInstaller,
+    AssetSpec,
     BinaryInstaller,
     FetchFn,
     asset_payload,
@@ -644,6 +646,18 @@ class ProtocolRequest(BaseModel):
     prompt_id: int | None = None
 
 
+class AssetBatchRequest(BaseModel):
+    """Тело массовых операций с внешними ресурсами (#115).
+
+    ``keys`` — обработать только выбранные ресурсы (по умолчанию все);
+    ``kind`` — фильтр вида (``binary`` — «Скачать все», ``pip`` —
+    «Установить все»), ``None`` — без фильтра.
+    """
+
+    keys: list[str] | None = None
+    kind: str | None = None
+
+
 class HfCheckRequest(BaseModel):
     """Тело ``POST /api/doctor/hf-check``: необязательный токен для проверки.
 
@@ -754,6 +768,33 @@ def create_app(
         on_success=doctor_cache.invalidate,
         poll_interval=nemo_poll_interval,
     )
+
+    def _install_batch_item(key: str) -> bool:
+        """Ставит один ресурс для массовой операции (#115), ожидая завершения."""
+        asset = find_asset(key)
+        if asset is None:
+            return False
+        if asset.kind == KIND_PIP:
+            spec = deps_registry.find_dependency(key)
+            if spec is None or not deps_registry.installer_available():
+                return False
+            try:
+                if not dependency_installer.start(spec.key, spec.spec):
+                    return False
+            except InstallerUnavailable:
+                return False
+            dependency_installer.wait()
+            return dependency_installer.state(spec.key).status == deps_registry.DEP_DONE
+        prefer_vulkan = settings_store.load().asr_backend == AsrBackend.WHISPER_CPP.value
+        artifact = resolve_artifact(asset, prefer_vulkan=prefer_vulkan)
+        if artifact is None:
+            return False
+        if not binary_installer.start(asset, artifact):
+            return False
+        binary_installer.wait()
+        return binary_installer.state(asset.key).status == assets_registry.STATUS_DONE
+
+    asset_batch = AssetBatchInstaller(_install_batch_item)
 
     def resolve_model_target(entry: ModelEntry) -> Path:
         return resolve_target(
@@ -876,6 +917,7 @@ def create_app(
     app.state.binary_installer = binary_installer
     app.state.nemo_downloader = nemo_downloader
     app.state.nemo_bus = nemo_bus
+    app.state.asset_batch = asset_batch
     router = APIRouter(prefix="/api")
     register_api(
         router,
@@ -900,6 +942,7 @@ def create_app(
         binary_installer=binary_installer,
         nemo_downloader=nemo_downloader,
         nemo_bus=nemo_bus,
+        asset_batch=asset_batch,
     )
     app.include_router(router)
 
@@ -1270,6 +1313,7 @@ def register_api(
     binary_installer: BinaryInstaller,
     nemo_downloader: NemoSpeechModelDownloader,
     nemo_bus: DownloadBus,
+    asset_batch: AssetBatchInstaller,
 ) -> None:
     """Регистрирует все маршруты API v1 на переданном роутере."""
 
@@ -1807,7 +1851,11 @@ def register_api(
         asset = find_asset(key)
         if asset is None:
             raise HTTPException(status_code=404, detail="Неизвестный внешний ресурс")
-        running = dependency_installer.is_running() or binary_installer.is_running()
+        running = (
+            dependency_installer.is_running()
+            or binary_installer.is_running()
+            or asset_batch.is_running()
+        )
         if asset.kind == KIND_PIP:
             spec = deps_registry.find_dependency(asset.key)
             if spec is None:
@@ -1847,6 +1895,59 @@ def register_api(
             "artifact": artifact.as_dict(),
         }
 
+    @router.post("/assets/install-all")
+    def install_all_assets(payload: AssetBatchRequest | None = None) -> dict[str, object]:
+        """Ставит все отсутствующие внешние ресурсы из allowlist (#115).
+
+        Фильтры необязательны: ``kind`` ограничивает вид ресурса
+        (``binary`` — «Скачать все», ``pip`` — «Установить все»), ``keys`` —
+        конкретные ресурсы. Установка идёт последовательно в фоне (по одному,
+        как и одиночные установки); прогресс — по SSE ``/api/assets/events``.
+        """
+        if (
+            dependency_installer.is_running()
+            or binary_installer.is_running()
+            or asset_batch.is_running()
+        ):
+            raise HTTPException(status_code=409, detail="Установка уже выполняется")
+        requested = set(payload.keys) if payload and payload.keys else None
+        kind = payload.kind if payload else None
+        if kind not in (None, KIND_BINARY, KIND_PIP):
+            raise HTTPException(status_code=400, detail="Неизвестный вид внешнего ресурса")
+        settings = settings_store.load()
+        prefer_vulkan = _prefer_vulkan()
+        started: list[str] = []
+        skipped: list[dict[str, str]] = []
+        installable_pip = deps_registry.installer_available()
+        for asset in assets_registry.ASSETS:
+            if requested is not None and asset.key not in requested:
+                continue
+            if kind is not None and asset.kind != kind:
+                continue
+            info = asset_payload(
+                asset,
+                bin_root=paths.bin_dir,
+                settings=settings,
+                prefer_vulkan=prefer_vulkan,
+            )
+            if info["installed"]:
+                skipped.append({"key": asset.key, "reason": "уже установлено"})
+                continue
+            if asset.kind == KIND_BINARY and not info["downloadable"]:
+                skipped.append({"key": asset.key, "reason": "нет готового артефакта"})
+                continue
+            if asset.kind == KIND_PIP and not installable_pip:
+                skipped.append({"key": asset.key, "reason": "не найден установщик (uv/pip)"})
+                continue
+            started.append(asset.key)
+        if requested is not None:
+            known = {asset.key for asset in assets_registry.ASSETS}
+            for unknown in sorted(requested - known):
+                skipped.append({"key": unknown, "reason": "неизвестный ресурс"})
+        if started and not asset_batch.start(started):
+            raise HTTPException(status_code=409, detail="Установка уже выполняется")
+        return {"started": started, "skipped": skipped, "running": bool(started)}
+
     @router.get("/assets/events")
     async def assets_events(
         last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
@@ -1855,14 +1956,67 @@ def register_api(
         after = parse_last_event_id(last_event_id)
         return sse_response(stream_bus(deps_bus, after))
 
+    def _remove_binary_asset(asset: AssetSpec) -> tuple[int, str, str]:
+        """Удаляет установленный бинарник; возвращает ``(код, причина, путь)``.
+
+        Удаляются только файлы внутри ``bin_dir`` (каталог ``<key>`` или
+        каталог найденного бинарника). Путь разрешается с разворачиванием
+        симлинков; выход наружу отклоняется (issue #86). Внешний бинарник
+        (из ``PATH`` или пользовательского пути) не удаляется — ``400`` с
+        пояснением, чтобы случайно не снести системный файл.
+        """
+        if binary_installer.active_key() == asset.key:
+            return 409, "Идёт установка ресурса — дождитесь завершения", ""
+        candidate = paths.bin_dir / asset.key
+        if candidate.is_symlink():
+            return 400, "Недопустимый путь ресурса", ""
+        directory = _resolve_within(paths.bin_dir, candidate)
+        if directory is not None and candidate.is_dir():
+            try:
+                shutil.rmtree(directory)
+            except OSError as exc:
+                logger.warning("Не удалось удалить ресурс %s: %s", asset.key, exc)
+                return 409, "Не удалось удалить ресурс — возможно, он используется", ""
+            binary_installer.clear(asset, directory)
+            logger.info("Ресурс %s удалён из %s", asset.key, directory)
+            return 200, "", str(directory)
+        settings = settings_store.load()
+        installed = assets_registry.asset_binary_path(
+            asset, bin_root=paths.bin_dir, settings=settings
+        )
+        if installed is None:
+            return 404, "Ресурс не установлен", ""
+        parent = installed.parent
+        resolved_parent = _resolve_within(paths.bin_dir, parent)
+        if (
+            resolved_parent is not None
+            and resolved_parent != paths.bin_dir.resolve()
+            and parent.is_dir()
+            and not parent.is_symlink()
+        ):
+            try:
+                shutil.rmtree(resolved_parent)
+            except OSError as exc:
+                logger.warning("Не удалось удалить ресурс %s: %s", asset.key, exc)
+                return 409, "Не удалось удалить ресурс — возможно, он используется", ""
+            binary_installer.clear(asset, resolved_parent)
+            logger.info("Ресурс %s удалён из %s", asset.key, resolved_parent)
+            return 200, "", str(resolved_parent)
+        return (
+            400,
+            "Ресурс установлен вне служебного каталога — удалите файл вручную",
+            str(installed),
+        )
+
     @router.delete("/assets/{key}")
     def delete_asset(key: str) -> dict[str, object]:
-        """Удаляет установленный бинарный ресурс из ``web-data/bin/<key>``.
+        """Удаляет установленный бинарный ресурс из служебного каталога (#106/#115).
 
-        Удаляются только бинарные ресурсы (не pip-пакеты). Путь разрешается
-        строго внутри ``bin_dir`` — симлинк/выход наружу отклоняется. Коды:
-        ``404`` — ресурс неизвестен или не установлен, ``400`` — не бинарник
-        или недопустимый путь, ``409`` — идёт установка или каталог занят.
+        Работает для всех установленных бинарников: удаляется каталог
+        ``bin_dir/<key>`` либо каталог найденного бинарника внутри ``bin_dir``.
+        Коды: ``404`` — ресурс неизвестен или не установлен, ``400`` — не
+        бинарник или внешний путь вне ``bin_dir``, ``409`` — идёт установка
+        (в т.ч. массовая) или каталог занят.
         """
         asset = find_asset(key)
         if asset is None:
@@ -1872,26 +2026,62 @@ def register_api(
                 status_code=400,
                 detail="Удаление поддерживается только для бинарных ресурсов",
             )
-        if binary_installer.active_key() == asset.key:
+        if asset_batch.is_running():
             raise HTTPException(
-                status_code=409, detail="Идёт установка ресурса — дождитесь завершения"
+                status_code=409, detail="Идёт массовая установка — дождитесь завершения"
             )
-        directory = _resolve_within(paths.bin_dir, paths.bin_dir / asset.key)
-        if directory is None:
-            raise HTTPException(status_code=400, detail="Недопустимый путь ресурса")
-        if not directory.is_dir() or directory.is_symlink():
-            raise HTTPException(status_code=404, detail="Ресурс не установлен")
-        try:
-            shutil.rmtree(directory)
-        except OSError as exc:
-            logger.warning("Не удалось удалить ресурс %s: %s", asset.key, exc)
+        code, reason, path = _remove_binary_asset(asset)
+        if code != 200:
+            raise HTTPException(status_code=code, detail=reason)
+        return {"deleted": asset.key, "path": path}
+
+    @router.post("/assets/delete-all")
+    def delete_all_assets(payload: AssetBatchRequest | None = None) -> dict[str, object]:
+        """Удаляет все установленные (или выбранные ``keys``) бинарники (#115).
+
+        Безопасность: удаляются только файлы внутри служебного каталога;
+        внешние бинарники (``PATH``/пользовательский путь) пропускаются с
+        причиной. Ошибки по отдельным ресурсам не прерывают остальные.
+        """
+        if asset_batch.is_running():
             raise HTTPException(
-                status_code=409,
-                detail="Не удалось удалить ресурс — возможно, он используется",
-            ) from exc
-        binary_installer.clear(asset, directory)
-        logger.info("Ресурс %s удалён из %s", asset.key, directory)
-        return {"deleted": asset.key, "path": str(directory)}
+                status_code=409, detail="Идёт массовая установка — дождитесь завершения"
+            )
+        requested = set(payload.keys) if payload and payload.keys else None
+        settings = settings_store.load()
+        targets: list[AssetSpec] = []
+        failed: list[dict[str, str]] = []
+        for asset in assets_registry.ASSETS:
+            if requested is not None and asset.key not in requested:
+                continue
+            if asset.kind != KIND_BINARY:
+                if requested is not None:
+                    failed.append(
+                        {"key": asset.key, "reason": "удаление только для бинарных ресурсов"}
+                    )
+                continue
+            if requested is None:
+                info = asset_payload(
+                    asset,
+                    bin_root=paths.bin_dir,
+                    settings=settings,
+                    prefer_vulkan=_prefer_vulkan(),
+                )
+                if not info["installed"]:
+                    continue
+            targets.append(asset)
+        if requested is not None:
+            known = {asset.key for asset in assets_registry.ASSETS}
+            for unknown in sorted(requested - known):
+                failed.append({"key": unknown, "reason": "неизвестный ресурс"})
+        deleted: list[str] = []
+        for asset in targets:
+            code, reason, _path = _remove_binary_asset(asset)
+            if code == 200:
+                deleted.append(asset.key)
+            else:
+                failed.append({"key": asset.key, "reason": reason})
+        return {"deleted": deleted, "failed": failed, "requested": len(targets)}
 
     def _cache_stats() -> tuple[int, int]:
         """Число файлов и суммарный размер общего постадийного кэша.
