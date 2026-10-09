@@ -8,6 +8,9 @@
 # Сборка:
 #   docker build -t py-audio-transcriber .
 #
+# AMD ROCm (экспериментально, только для ускорения torch/диаризации) —
+# через build-arg TORCH_INDEX, см. README, раздел «Docker → GPU (ROCm)».
+#
 # Запуск (данные и образцы голоса — на томах):
 #   docker run --rm -p 127.0.0.1:8790:8790 \
 #     -v "$PWD/web-data:/data" -v "$PWD/voices:/data/voices" \
@@ -72,6 +75,12 @@ RUN patchelf --set-rpath '$ORIGIN' build/bin/llama-server \
 # -----------------------------------------------------------------------------
 FROM python:3.13-slim AS builder
 
+# Индекс колёс PyTorch. По умолчанию CPU: GPU в образе даёт Vulkan
+# (whisper.cpp/llama.cpp), а torch нужен только для pyannote-диаризации.
+# Для AMD ROCm можно собрать вариант с ROCm-колёсами (экспериментально):
+#   docker build --build-arg TORCH_INDEX=https://download.pytorch.org/whl/rocm6.2 .
+ARG TORCH_INDEX=https://download.pytorch.org/whl/cpu
+
 # uv — официальный статический бинарник (пин версии для воспроизводимости).
 COPY --from=ghcr.io/astral-sh/uv:0.12.19 /uv /uvx /bin/
 
@@ -89,14 +98,15 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# 1) Зависимости. torch/torchaudio переводим на CPU-индекс: на Linux GPU
-#    работает через Vulkan (whisper.cpp/llama.cpp), а torch нужен только для
-#    pyannote-диаризации. В репозитории те же пакеты привязаны к индексу cu126
-#    (для NVIDIA-хостов), поэтому здесь правим URL индекса на cpu и
-#    пересобираем lock — иначе `--frozen` притянет CUDA-колёса (несколько ГБ).
+# 1) Зависимости. torch/torchaudio берутся с индекса TORCH_INDEX (по умолчанию
+#    CPU: на Linux GPU работает через Vulkan (whisper.cpp/llama.cpp), а torch
+#    нужен только для pyannote-диаризации). В репозитории те же пакеты
+#    привязаны к индексу cu126 (для NVIDIA-хостов), поэтому здесь правим URL
+#    индекса и пересобираем lock — иначе `--frozen` притянет CUDA-колёса
+#    (несколько ГБ).
 COPY pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    sed -i 's#https://download.pytorch.org/whl/cu126#https://download.pytorch.org/whl/cpu#' pyproject.toml \
+    sed -i "s#https://download.pytorch.org/whl/cu126#${TORCH_INDEX}#" pyproject.toml \
     && SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0 uv lock \
     && uv sync --frozen --no-dev --no-install-project \
          --extra web --extra gigaam --extra sherpa
@@ -137,7 +147,8 @@ RUN apt-get update \
          libvulkan1 \
          mesa-vulkan-drivers \
          curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/* \
+         /usr/share/doc/* /usr/share/man/*
 
 # whisper.cpp (Vulkan): бинарник whisper-cli + разделяемые библиотеки в
 # /usr/local/lib (этот каталог уже в поиске динамического загрузчика, поэтому
@@ -201,16 +212,23 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     XDG_CACHE_HOME="/data/.cache" \
     HF_HOME="/data/.cache/huggingface" \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    HOST="0.0.0.0" \
+    PORT="8790"
 
 WORKDIR /app
 EXPOSE 8790
 VOLUME ["/data"]
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD ["curl", "-fsS", "http://127.0.0.1:8790/api/health"]
+# Healthcheck: GET /api/health. Старт может быть долгим (импорт torch/движков,
+# инициализация SDK и подгрузка моделей), поэтому start-period увеличен до 5
+# минут: в это окно неуспешные проверки не переводят контейнер в unhealthy.
+# Порт берётся из $PORT (его же использует CMD), интервал/таймаут/ретраи
+# подобраны так, чтобы сервис под нагрузкой не флапал.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=5 \
+    CMD ["sh", "-c", "curl -fsS \"http://127.0.0.1:${PORT}/api/health\""]
 
-# Веб-UI слушает 0.0.0.0 внутри контейнера; публикация на хост — через compose.
-# ENTRYPOINT запускает app-drop, а CMD можно переопределить (`docker run ... --port`).
+# Веб-UI слушает $HOST:$PORT внутри контейнера; публикация на хост — через
+# compose. ENTRYPOINT запускает app-drop, а CMD можно переопределить.
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["audio-transcriber", "web", "--no-browser", "--host", "0.0.0.0", "--port", "8790"]
+CMD ["sh", "-c", "exec audio-transcriber web --no-browser --host \"${HOST}\" --port \"${PORT}\""]

@@ -218,18 +218,19 @@ llama-models/     # GGUF-модели для LLM (напр. Qwen2.5-7B-Instruct 
 уже лежат `whisper-cli`, `llama-server` (оба с Vulkan), денойзер `deep-filter`,
 `ffmpeg` и Python-окружение (torch **CPU** + extras `web`, `gigaam`, `sherpa`).
 GPU-ускорение — через **Vulkan**, поэтому CUDA/ROCm не требуются: достаточно
-пробросить устройство `/dev/dri`.
+пробросить устройство `/dev/dri`. Для AMD есть также экспериментальный
+ROCm-вариант (ускоряет только torch-диаризацию; см. ниже).
 
 ### Быстрый старт (docker compose)
 
 ```bash
+cp .env.example .env        # необязательно: PORT/HOST/секреты
 docker compose up --build
 # затем: http://127.0.0.1:8790
 ```
 
 Порты публикуются только на localhost (у веб-UI нет аутентификации). Чтобы
-открыть доступ по сети — поменяйте проброс в `docker-compose.yml` на
-`"8790:8790"` (осторожно).
+открыть доступ по сети — задайте `HOST_PORT=0.0.0.0` в `.env` (осторожно).
 
 ### Сборка и запуск вручную
 
@@ -246,6 +247,39 @@ docker run --rm -p 127.0.0.1:8790:8790 \
 если git-контекста нет, её можно задать явно:
 `docker build --build-arg APP_VERSION=0.5.2 -t py-audio-transcriber .`.
 
+### Переменные и `.env`
+
+Compose читает файл `.env` рядом с `docker-compose.yml` (шаблон —
+`.env.example`, сам `.env` в `.gitignore`). Основные переменные:
+
+| Переменная | По умолчанию | Назначение |
+|---|---|---|
+| `HOST_PORT` | `127.0.0.1` | Адрес публикации порта на хосте. |
+| `HOST` | `0.0.0.0` | Адрес прослушивания внутри контейнера. |
+| `PORT` | `8790` | Порт внутри контейнера и на хосте. |
+| `APP_VERSION` | из `.git` | Версия для `/api/health`. |
+| `PUID` / `PGID` | `1000` | uid/gid `app` (только rootful, см. ниже). |
+| `HF_TOKEN` | — | Токен Hugging Face (скачивание gated-моделей). |
+| `LLM_API_KEY` / `API_KEY` | — | Ключи LLM/API; читаются из `config.env`/UI, не из process env. |
+
+Секреты удобнее задавать в UI (мастер первого запуска — сохраняются в
+`./web-data/secrets.json`, права `0600`). `HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN` из
+`.env` подхватываются библиотекой `huggingface_hub` и движком диаризации (в UI
+при этом могут отображаться как незаданные). Ключи `LLM_API_KEY`/`API_KEY`
+веб-приложение берёт только из `config.env` или UI — смонтируйте свой
+`config.env` (см. ниже) либо задайте их в «Настройках». **Не коммитьте `.env` с
+реальными секретами.**
+
+### Healthcheck
+
+- В образе и в compose задан healthcheck `GET /api/health`
+  (`interval=30s`, `timeout=10s`, `start-period=300s`, `retries=5`).
+- Большой `start-period` (5 минут) нужен, потому что старт может быть долгим:
+  импорт `torch`/движков, инициализация SDK и подгрузка моделей. В это окно
+  неудачные проверки не переводят контейнер в `unhealthy`.
+- Порт берётся из `PORT`, поэтому при смене порта healthcheck править не нужно.
+- Статус: `docker inspect --format '{{.State.Health.Status}}' py-audio-transcriber`.
+
 ### GPU (Vulkan) — только Linux
 
 - Контейнеру нужен доступ к видеокарте: `--device /dev/dri` (в compose —
@@ -258,10 +292,34 @@ docker run --rm -p 127.0.0.1:8790:8790 \
   stat -c '%g' /dev/dri/renderD128     # например, 105
   # docker run ... --group-add 105
   ```
-- **На macOS и Windows Docker GPU не пробрасывает** — образ там работает
-  только на CPU (уберите `devices`/`group_add` из compose).
+- **На macOS Docker GPU не пробрасывает** — образ работает только на CPU
+  (уберите `devices`/`group_add` из compose). На Windows обычный Docker Desktop
+  GPU не пробрасывает; для NVIDIA возможен путь WSL2 + драйвер NVIDIA в WSL2.
 - Проверка Vulkan внутри контейнера:
   `docker run --rm --device /dev/dri --entrypoint llama-server py-audio-transcriber --list-devices`
+
+### GPU (ROCm) — AMD, экспериментально (не проверено)
+
+Для AMD-карт с поддержкой ROCm можно собрать вариант, в котором `torch`
+(диаризация pyannote) ставится из ROCm-колёс. ASR/LLM при этом всё равно
+работают через **Vulkan** — ROCm ускоряет только torch-часть.
+
+```bash
+docker build \
+  --build-arg TORCH_INDEX=https://download.pytorch.org/whl/rocm6.2 \
+  -t py-audio-transcriber:rocm .
+docker run --rm -p 127.0.0.1:8790:8790 \
+  -v "$PWD/web-data:/data" -v "$PWD/voices:/data/voices" \
+  --device /dev/kfd --device /dev/dri \
+  --group-add video --group-add render \
+  py-audio-transcriber:rocm
+```
+
+> ⚠️ **Не проверено авторами.** Путь ROCm не тестировался (в частности, на AMD
+> Polaris `gfx803`, который современным ROCm официально не поддерживается).
+> Нужен хостовый ROCm-драйвер и устройства `/dev/kfd` + `/dev/dri`; образ
+> становится существенно больше (ROCm-колёса — несколько ГБ). Дефолтная
+> (Vulkan/CPU) сборка этим не затрагивается.
 
 ### Данные, модели и конфигурация
 
@@ -270,8 +328,9 @@ docker run --rm -p 127.0.0.1:8790:8790 \
   Образцы голоса — `./voices:/data/voices` (→ `/data/voices`).
 - Модели (ggml для whisper.cpp, GGUF для LLM, pyannote, GigaAM, sherpa)
   **скачиваются из UI** при первом запуске в `/data/models` и сохраняются между
-  перезапусками. Токен Hugging Face задаётся в UI (мастер первого запуска) и
-  хранится в томе.
+  перезапусками. Если каталог `/data/models` пуст, entrypoint печатает
+  подсказку со ссылкой на UI (это не ошибка). Токен Hugging Face задаётся в UI
+  (мастер первого запуска) и хранится в томе.
 - В образ встроен контейнерный `config.env` (копия `config.example.env`:
   бинарники — из `PATH`, модели — под `/data`). Свой `config.env` можно
   смонтировать поверх `/app/config.env`, но **пути в нём должны быть валидны
@@ -304,10 +363,28 @@ docker run --rm -p 127.0.0.1:8790:8790 \
   subuid); режим определяется автоматически по `/proc/self/uid_map`.
   Требование: каталоги `./web-data` и `./voices` доступны на запись хостовому
   пользователю (владелец — ваш uid, как при обычном запуске без Docker).
-- **Порт `8790`** (`EXPOSE`), healthcheck — `GET /api/health`.
+- **Порт `8790`** (`EXPOSE`, переопределяется переменной `PORT`) и healthcheck
+  `GET /api/health` (см. выше).
 - Образ не содержит CUDA-колёс (`torch …+cpu`); на AMD/Intel GPU ускорение даёт
   Vulkan в `whisper.cpp`/`llama.cpp`, на NVIDIA-хосте образ работает на CPU
-  (для CUDA используйте обычную установку из исходников).
+  (для CUDA используйте обычную установку из исходников). Для AMD-ускорения
+  torch есть экспериментальный ROCm-вариант (см. выше).
+- Образ **многостадийный**: в финальную стадию попадают только системные
+  библиотеки, нативные движки и `.venv` без dev-зависимостей и CUDA-колёс;
+  временные пакеты сборки и кэши apt/pip вычищаются в том же слое.
+- `docker compose` запускает контейнер с `init: true`, `restart:
+  unless-stopped` и `stop_grace_period: 30s` — корректный проброс сигналов,
+  пожинание зомби-процессов и время текущим задачам на завершение.
+
+### Устранение неполадок
+
+| Симптом | Причина / решение |
+|---|---|
+| Долго `unhealthy` | Сервер не стартует: `docker compose logs audio-transcriber`. Проверьте занятость `PORT` внутри контейнера и ошибки импорта. |
+| GPU не используется | `/dev/dri` не проброшен или нет групп доступа. См. проверку Vulkan выше; задайте числовой GID из `stat -c '%g' /dev/dri/renderD128`. |
+| `Permission denied` при записи в `/data` | Владелец `./web-data` не совпадает с uid `app`. Задайте `PUID`/`PGID` (rootful) или `chown -R 1000:1000 web-data voices`. |
+| `attempt to write a readonly database` | Rootless/userns-режим: entrypoint сам определяет режим и не делает `chown` тома (issue #104) — проверьте владельца `./web-data`. |
+| Образ долго собирается | Первая сборка компилирует `llama.cpp` и тянет torch; последующие используют кэш слоёв BuildKit. |
 
 ## Быстрый запуск (без ручной установки и параметров в командной строке)
 

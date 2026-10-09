@@ -1,6 +1,7 @@
 # PyAudioTranscriptor — локальный веб-UI в контейнере (Linux, GPU через Vulkan).
 #
 # Запуск:
+#   cp .env.example .env      # при необходимости поправьте PORT/HOST/секреты
 #   docker compose up --build
 #   # затем откройте http://127.0.0.1:8790
 #
@@ -20,13 +21,24 @@ services:
       args:
         # Версия проекта для /api/health. Пусто — берётся из .git (hatch-vcs).
         APP_VERSION: "${APP_VERSION:-}"
+        # AMD ROCm (экспериментально): индекс колёс PyTorch. Раскомментируйте
+        # для сборки с ROCm (ускорение torch/диаризации; нужны /dev/kfd и
+        # /dev/dri). ASR/LLM всё равно идут через Vulkan. См. README.
+        # TORCH_INDEX: "${TORCH_INDEX:-https://download.pytorch.org/whl/rocm6.2}"
     image: py-audio-transcriber:latest
     container_name: py-audio-transcriber
 
+    # PID 1 — tini: корректный проброс сигналов и пожинание зомби внешних
+    # процессов (ffmpeg, whisper-cli, установщики пакетов).
+    init: true
+    # Дать текущим задачам время завершиться при `docker compose down`.
+    stop_grace_period: 30s
+
     ports:
       # Публикуем только на localhost: веб-UI не имеет аутентификации.
-      # Чтобы открыть доступ по сети (осторожно!): "8790:8790".
-      - "127.0.0.1:8790:8790"
+      # HOST_PORT меняет адрес публикации на хосте, PORT — порт.
+      # Чтобы открыть доступ по сети (осторожно!): HOST_PORT=0.0.0.0.
+      - "${HOST_PORT:-127.0.0.1}:${PORT:-8790}:${PORT:-8790}"
 
     volumes:
       # Пользовательские данные, БД задач и скачанные модели (models/).
@@ -46,17 +58,45 @@ services:
     environment:
       # Каталог данных внутри контейнера (перекрывает web-data/).
       AUDIO_TRANSCRIBER_WEB_DATA: /data
+      # Адрес/порт веб-сервера внутри контейнера (используются в CMD образа).
+      HOST: "${HOST:-0.0.0.0}"
+      PORT: "${PORT:-8790}"
+      # Секреты (необязательно; пустые значения игнорируются).
+      # HF_TOKEN/HUGGING_FACE_HUB_TOKEN читаются huggingface_hub и движком
+      # диаризации pyannote (скачивание gated-моделей). Чтобы токен
+      # отображался в UI, задайте его в мастере первого запуска — он
+      # сохранится в ./web-data/secrets.json (права 0600). Не коммитьте .env.
+      HF_TOKEN: "${HF_TOKEN:-}"
+      HUGGING_FACE_HUB_TOKEN: "${HUGGING_FACE_HUB_TOKEN:-}"
+      # LLM_API_KEY/API_KEY веб-приложение читает из config.env или UI, а НЕ из
+      # process env: этих переменных здесь недостаточно — смонтируйте config.env
+      # (том ниже) или задайте ключи в UI → «Настройки».
+      LLM_API_KEY: "${LLM_API_KEY:-}"
+      API_KEY: "${API_KEY:-}"
       # Подогнать uid/gid процесса под владельца каталогов на хосте.
       # Нужно, если владелец ./web-data не 1000 (rootful-режим — см. README).
       # В rootless Docker / userns-remap не применяется: entrypoint там не
       # делает chown тома и запускает приложение от контейнерного root,
       # отображённого на хостового пользователя.
-      # PUID: "${UID:-1000}"
-      # PGID: "${GID:-1000}"
+      PUID: "${PUID:-}"
+      PGID: "${PGID:-}"
+
+    # Healthcheck: GET /api/health. $$ — экранирование, чтобы ${PORT} раскрыл
+    # контейнерный shell, а не Compose. start-period большой: старт может быть
+    # долгим из-за импорта torch/движков и подгрузки моделей. Значения
+    # синхронизированы с HEALTHCHECK в Dockerfile.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:$${PORT}/api/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 300s
+      retries: 5
 
     # GPU-Vulkan (только Linux). Для работы без GPU закомментируйте.
     devices:
       - /dev/dri:/dev/dri
+    # Для ROCm-варианта добавьте ещё устройство KFD:
+    #   - /dev/kfd:/dev/kfd
     # Группы для доступа к /dev/dri. Если GPU не виден, укажите числовые GID
     # хоста: `stat -c '%g' /dev/dri/renderD128` (например, group_add: ["105"]).
     group_add:
