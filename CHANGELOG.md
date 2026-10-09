@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Инсталляторы: Windows и привязка к GitHub Release** (#50): `build-inno.ps1` и `run-web.ps1`
+  сохранены как UTF-8 **с BOM** (Windows PowerShell 5.1 без BOM ломал парсер на кириллице —
+  `The string is missing the terminator`); в шаге загрузки инсталляторов к Release теперь
+  берутся только файлы верхнего уровня (подкаталог `icons/` больше не ломает `gh release upload`).
+
 ## [0.6.1] - 2026-10-09
 
 ### Fixed

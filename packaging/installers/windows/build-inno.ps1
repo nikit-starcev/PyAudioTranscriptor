@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)][string]$BundleDir,
     [Parameter(Mandatory = $true)][string]$OutDir,
     [string]$Icon = "",

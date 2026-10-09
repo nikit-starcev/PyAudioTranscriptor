@@ -1,4 +1,4 @@
-# Запуск веб-интерфейса AudioTranscriptor для Windows.
+﻿# Запуск веб-интерфейса AudioTranscriptor для Windows.
 #
 # Поднимает локальный сервер (`audio-transcriber web`) и открывает браузер.
 # Запускается двойным щелчком по web.bat либо из PowerShell:

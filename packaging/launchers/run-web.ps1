@@ -1,4 +1,4 @@
-# Запуск портативного бандла AudioTranscriptor (веб-интерфейс) для Windows.
+﻿# Запуск портативного бандла AudioTranscriptor (веб-интерфейс) для Windows.
 #
 # Рассчитан на one-dir-бандл из `python scripts/build_portable.py`
 # (`audio-transcriber\` с `audio-transcriber.exe` внутри). Исполняемый файл
