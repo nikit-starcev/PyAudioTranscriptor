@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+HERE="$(dirname "$(readlink -f "$0")")"
+EXE="$HERE/usr/bin/audio-transcriber"
+
+if [ ! -x "$EXE" ]; then
+    echo "Ошибка: не найден исполняемый файл бандла: $EXE" >&2
+    exit 1
+fi
+
+if [ "$#" -eq 0 ]; then
+    exec "$EXE" web
+fi
+
+exec "$EXE" "$@"

@@ -37,6 +37,13 @@ MANIFEST
 # Portable-бандл (PyInstaller one-dir) — артефакты локальной сборки.
 dist-portable/
 
+# Инсталляторы — артефакты локальной/CI-сборки.
+dist-installers/
+*.AppImage
+*.dmg
+packaging/installers/*/AppDir/
+packaging/installers/**/.deb-root/
+
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt

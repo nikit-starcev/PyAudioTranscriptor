@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=AudioTranscriptor
+GenericName=Audio Transcription
+Comment=Локальная транскрибация аудио с разделением говорящих
+Exec=audio-transcriber
+Icon=audio-transcriber
+Terminal=false
+Categories=AudioVideo;
+StartupWMClass=audio-transcriber
