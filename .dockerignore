@@ -27,10 +27,11 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+*.egg-info/
 
-# Фронтенд (собранная статика коммитится в src/audio_transcriber/web/static).
-webui/node_modules/
-webui/dist/
+# Фронтенд: собранная статика коммитится в src/audio_transcriber/web/static и
+# попадает в образ через COPY src/. Исходники webui/ в сборке не нужны.
+webui/
 
 # Тесты и CI в образе не нужны.
 tests/
@@ -38,3 +39,11 @@ tests/
 
 # Документы и прочее.
 *.docx
+*.pdf
+*.log
+*.tmp
+*.bak
+*.swp
+.DS_Store
+.idea/
+.vscode/

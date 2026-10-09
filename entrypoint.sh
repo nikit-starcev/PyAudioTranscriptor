@@ -33,6 +33,17 @@
 #   `PUID=$(id -u) PGID=$(id -g) docker compose up`.
 set -eu
 
+# Подсказка, если каталог моделей ещё пуст: модели скачиваются из веб-UI в
+# /data/models и переживают перезапуски, поэтому это не ошибка — просто
+# подсказываем, где их взять.
+warn_missing_models() {
+    if [ -d /data/models ] && [ -z "$(ls -A /data/models 2>/dev/null)" ]; then
+        echo "PyAudioTranscriptor: каталог /data/models пуст — скачайте модели" \
+             "в веб-UI (http://<host>:${PORT:-8790}/) или смонтируйте готовый" \
+             "каталог моделей." >&2
+    fi
+}
+
 if [ "$(id -u)" = "0" ]; then
     # uid контейнерного root на хосте: 0 — «настоящий» root (rootful); иначе
     # имеем user namespace (rootless/userns-remap), где трогать владельца
@@ -62,6 +73,7 @@ if [ "$(id -u)" = "0" ]; then
         # Создаём каталоги конвейера от имени `app`, чтобы они не остались root-owned.
         setpriv --reuid=app --regid=app --clear-groups -- \
             mkdir -p /data/voices /data/models
+        warn_missing_models
 
         # Итоговый набор дополнительных групп: собственные группы `app` (из
         # /etc/group, включая video/render) плюс группы, добавленные через
@@ -84,6 +96,7 @@ if [ "$(id -u)" = "0" ]; then
     # запускается от него: созданные файлы попадут к хостовому пользователю, и
     # хостовый сервер сможет их читать и писать.
     mkdir -p /data/voices /data/models
+    warn_missing_models
     exec "$@"
 fi
 
