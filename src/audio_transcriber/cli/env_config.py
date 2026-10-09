@@ -42,6 +42,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_HYBRID_NO_SPEECH_THRESHOLD,
     DEFAULT_HYBRID_SILENCE_RMS_THRESHOLD,
     DEFAULT_LLM_REQUEST_TIMEOUT,
+    DEFAULT_LLM_SEMANTIC_MIN_CONFIDENCE,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
     DEFAULT_REFERENCE_PREPARE,
     DEFAULT_REFERENCE_TARGET_DBFS,
@@ -390,6 +391,13 @@ def collect_env_kwargs(
         put("llm_suggest_terms", as_bool(val("LLM_SUGGEST_TERMS")))
     if has("LLM_SUMMARY"):
         put("llm_summary", as_bool(val("LLM_SUMMARY"), default=True))
+    if has("LLM_CORRECT_SEMANTIC"):
+        put("llm_correct_semantic", as_bool(val("LLM_CORRECT_SEMANTIC")))
+    if has("LLM_SEMANTIC_MIN_CONFIDENCE"):
+        put(
+            "llm_semantic_min_confidence",
+            as_float(val("LLM_SEMANTIC_MIN_CONFIDENCE"), DEFAULT_LLM_SEMANTIC_MIN_CONFIDENCE),
+        )
     if has("LLM_SUMMARY_PROMPT"):
         put("llm_summary_prompt", val("LLM_SUMMARY_PROMPT"))
     if has("LLM_PROMPT_EXTRA"):

@@ -1162,3 +1162,82 @@ def test_build_job_config_maps_sentence_merge_max_gap(
 
     assert mapped.sentence_merge_max_gap == pytest.approx(2.5)
     assert defaulted.sentence_merge_max_gap == DEFAULT_SENTENCE_MERGE_MAX_GAP
+
+
+# --- #75: семантическая правка LLM (suggest-only) ---------------------------
+
+
+def test_llm_correct_semantic_defaults_off() -> None:
+    base = default_settings({})
+    assert base.llm_correct_semantic is False
+    assert base.llm_semantic_min_confidence == pytest.approx(0.8)
+
+
+def test_llm_correct_semantic_settings_from_env() -> None:
+    settings = default_settings(
+        {
+            "LLM_CORRECT_SEMANTIC": "true",
+            "LLM_SEMANTIC_MIN_CONFIDENCE": "0.65",
+        }
+    )
+
+    assert settings.llm_correct_semantic is True
+    assert settings.llm_semantic_min_confidence == pytest.approx(0.65)
+
+
+def test_llm_correct_semantic_settings_roundtrip() -> None:
+    base = default_settings({})
+    merged = settings_from_mapping(
+        {"llm_correct_semantic": True, "llm_semantic_min_confidence": 0.7}, base=base
+    )
+
+    assert merged.llm_correct_semantic is True
+    env = merged.env_overrides()
+    assert env["LLM_CORRECT_SEMANTIC"] == "true"
+    assert env["LLM_SEMANTIC_MIN_CONFIDENCE"] == "0.7"
+
+
+def test_validate_settings_rejects_bad_semantic_confidence() -> None:
+    settings = default_settings({})
+    settings.llm_semantic_min_confidence = 1.5
+
+    with pytest.raises(SettingsError):
+        validate_settings(settings)
+
+
+def test_put_settings_persists_llm_correct_semantic(client: TestClient) -> None:
+    """Поле не должно молча теряться при PUT (защита от pydantic-дропа)."""
+    assert client.get("/api/settings").json()["llm_correct_semantic"] is False
+
+    response = client.put(
+        "/api/settings",
+        json={"llm_correct_semantic": True, "llm_semantic_min_confidence": 0.7},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["llm_correct_semantic"] is True
+    assert body["llm_semantic_min_confidence"] == pytest.approx(0.7)
+
+    saved = client.get("/api/settings").json()
+    assert saved["llm_correct_semantic"] is True
+    assert saved["llm_semantic_min_confidence"] == pytest.approx(0.7)
+
+
+def test_build_job_config_maps_llm_semantic(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("audio_transcriber.web.config.env_defaults", lambda: {})
+
+    config = build_job_config(
+        audio_file,
+        output_dir=tmp_path / "out",
+        data_dir=tmp_path / "data",
+        overrides={
+            "LLM_CORRECT_SEMANTIC": "true",
+            "LLM_SEMANTIC_MIN_CONFIDENCE": "0.7",
+        },
+    )
+
+    assert config.llm_correct_semantic is True
+    assert config.llm_semantic_min_confidence == pytest.approx(0.7)

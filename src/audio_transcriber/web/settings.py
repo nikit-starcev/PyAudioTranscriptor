@@ -32,6 +32,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_HYBRID_THRESHOLD,
     DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
     DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
+    DEFAULT_LLM_SEMANTIC_MIN_CONFIDENCE,
     DEFAULT_NEMO_SPEECH_BINARY,
     DEFAULT_NEMO_SPEECH_DEVICE,
     DEFAULT_NEMO_SPEECH_MODEL,
@@ -78,6 +79,11 @@ class WebSettings:
     export_formats: list[str] = field(default_factory=lambda: ["txt"])
     llm_enabled: bool = False
     llm_summary: bool = True
+    #: Семантическая правка LLM (#75, suggest-only): LLM предлагает минимальные
+    #: замены явно невозможных мест; ничего не применяется автоматически.
+    llm_correct_semantic: bool = False
+    #: Порог уверенности LLM для семантических правок (0..1).
+    llm_semantic_min_confidence: float = DEFAULT_LLM_SEMANTIC_MIN_CONFIDENCE
     denoise: bool = True
     #: Путь/имя внешнего Rust-CLI ``deep-filter`` (DeepFilterNet) для денойза.
     deep_filter_binary: str = DEFAULT_DEEP_FILTER_BINARY
@@ -168,6 +174,8 @@ class WebSettings:
             "EXPORT_FORMATS": ",".join(self.export_formats),
             "LLM_ENABLED": _format_bool(self.llm_enabled),
             "LLM_SUMMARY": _format_bool(self.llm_summary),
+            "LLM_CORRECT_SEMANTIC": _format_bool(self.llm_correct_semantic),
+            "LLM_SEMANTIC_MIN_CONFIDENCE": str(self.llm_semantic_min_confidence),
             "DENOISE": _format_bool(self.denoise),
             "DEEP_FILTER_BINARY": self.deep_filter_binary,
             "MARK_OVERLAP": _format_bool(self.mark_overlap),
@@ -240,6 +248,11 @@ def default_settings(defaults: Mapping[str, str] | None = None) -> WebSettings:
         export_formats=[fmt.value for fmt in _env_export_formats(dict(source))],
         llm_enabled=_as_bool(source.get("LLM_ENABLED")),
         llm_summary=_as_bool(source.get("LLM_SUMMARY"), default=True),
+        llm_correct_semantic=_as_bool(source.get("LLM_CORRECT_SEMANTIC")),
+        llm_semantic_min_confidence=_as_float(
+            source.get("LLM_SEMANTIC_MIN_CONFIDENCE"),
+            DEFAULT_LLM_SEMANTIC_MIN_CONFIDENCE,
+        ),
         denoise=_as_bool(source.get("DENOISE"), default=True),
         deep_filter_binary=source.get("DEEP_FILTER_BINARY", "").strip()
         or DEFAULT_DEEP_FILTER_BINARY,
@@ -376,6 +389,12 @@ def settings_from_mapping(
         export_formats=_coerce_formats(raw.get("export_formats"), current.export_formats),
         llm_enabled=pick_bool("llm_enabled", current.llm_enabled),
         llm_summary=pick_bool("llm_summary", current.llm_summary),
+        llm_correct_semantic=pick_bool(
+            "llm_correct_semantic", current.llm_correct_semantic
+        ),
+        llm_semantic_min_confidence=pick_float(
+            "llm_semantic_min_confidence", current.llm_semantic_min_confidence
+        ),
         denoise=pick_bool("denoise", current.denoise),
         deep_filter_binary=pick_nonempty(
             "deep_filter_binary", current.deep_filter_binary
@@ -509,6 +528,13 @@ def validate_settings(settings: WebSettings) -> None:
 
     if not isinstance(settings.word_timestamps, bool):
         raise SettingsError("WORD_TIMESTAMPS должно быть true или false")
+
+    if not isinstance(settings.llm_correct_semantic, bool):
+        raise SettingsError("LLM_CORRECT_SEMANTIC должно быть true или false")
+    if not (0.0 <= settings.llm_semantic_min_confidence <= 1.0):
+        raise SettingsError(
+            "LLM_SEMANTIC_MIN_CONFIDENCE должно быть числом в диапазоне [0; 1]"
+        )
 
     if not isinstance(settings.diarization_estimate_enabled, bool):
         raise SettingsError("DIARIZATION_ESTIMATE_ENABLED должно быть true или false")

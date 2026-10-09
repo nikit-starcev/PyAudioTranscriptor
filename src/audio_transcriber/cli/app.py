@@ -43,6 +43,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_HYBRID_SILENCE_RMS_THRESHOLD,
     DEFAULT_LLM_PROVIDER,
     DEFAULT_LLM_REQUEST_TIMEOUT,
+    DEFAULT_LLM_SEMANTIC_MIN_CONFIDENCE,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
     DEFAULT_NEMO_SPEECH_BINARY,
     DEFAULT_NEMO_SPEECH_DEVICE,
@@ -984,6 +985,24 @@ def transcribe(
             "Строить резюме встречи локальной LLM (тема, участники, решения, "
             "открытые вопросы, задачи). По умолчанию включено; применяется, "
             "только когда включена LLM-постобработка (--llm)."
+        ),
+    ),
+    llm_correct_semantic: bool = typer.Option(
+        False,
+        "--llm-semantic/--no-llm-semantic",
+        help=(
+            "Семантическая правка LLM (suggest-only): модель предлагает "
+            "минимальные замены явно невозможных после ASR фрагментов. Ничего "
+            "не применяется автоматически; предложения принимаются в редакторе. "
+            "По умолчанию выключено."
+        ),
+    ),
+    llm_semantic_min_confidence: float = typer.Option(
+        DEFAULT_LLM_SEMANTIC_MIN_CONFIDENCE,
+        "--llm-semantic-min-confidence",
+        help=(
+            "Порог уверенности LLM для семантических правок (0..1). "
+            f"По умолчанию {DEFAULT_LLM_SEMANTIC_MIN_CONFIDENCE}."
         ),
     ),
     llm_prompt_extra: str | None = typer.Option(

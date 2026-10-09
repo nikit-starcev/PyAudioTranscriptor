@@ -33,6 +33,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_ENROLLMENT_MIN_SAMPLE_SECONDS,
     DEFAULT_GIGAAM_MODEL,
     DEFAULT_GLOSSARY_DB,
+    DEFAULT_LLM_SEMANTIC_MIN_CONFIDENCE,
     DEFAULT_LOW_CONFIDENCE_THRESHOLD,
     DEFAULT_NEMO_SPEECH_BINARY,
     DEFAULT_NEMO_SPEECH_DEVICE,
@@ -341,6 +342,12 @@ def build_job_config(
         # Пользовательский шаблон промпта резюме (#97) — из настроек веба.
         llm_summary_prompt=defaults.get("LLM_SUMMARY_PROMPT") or None,
         llm_extract_names=_as_bool(defaults.get("LLM_EXTRACT_NAMES")),
+        # Семантическая правка LLM (#75, suggest-only) и порог её уверенности.
+        llm_correct_semantic=_as_bool(defaults.get("LLM_CORRECT_SEMANTIC")),
+        llm_semantic_min_confidence=_as_float(
+            defaults.get("LLM_SEMANTIC_MIN_CONFIDENCE"),
+            DEFAULT_LLM_SEMANTIC_MIN_CONFIDENCE,
+        ),
         glossary_path=normalize_glossary_paths_tuple(glossary_path_raw or None),
         glossary_db=glossary_db,
         glossary_enabled=_as_bool(defaults.get("GLOSSARY_ENABLED"), default=True),

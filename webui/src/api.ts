@@ -363,6 +363,10 @@ export type WebSettings = {
   export_formats: string[]
   llm_enabled: boolean
   llm_summary: boolean
+  /** Семантическая правка LLM (#75, suggest-only). */
+  llm_correct_semantic: boolean
+  /** Порог уверенности LLM для семантических правок (0..1). */
+  llm_semantic_min_confidence: number
   denoise: boolean
   mark_overlap: boolean
   /** Сводить кластеры с одинаковым уверенным именем в одного говорящего. */
@@ -830,6 +834,8 @@ export type CorrectTextRequest = {
   selection?: string[] | null
   fix_common?: boolean
   check_spelling?: boolean
+  /** Добавить сохранённые семантические предложения LLM (#75). */
+  check_semantic?: boolean
   respect_edited?: boolean
 }
 
