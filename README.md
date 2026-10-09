@@ -40,6 +40,7 @@
 - [Установка](#установка)
 - [Docker](#docker)
 - [Portable-бандл (one-dir)](#portable-бандл-one-dir)
+- [Инсталляторы (Windows, macOS, Linux)](#инсталляторы-windows-macos-linux)
 - [Быстрый запуск (run.sh / config.env)](#быстрый-запуск-без-ручной-установки-и-параметров-в-командной-строке)
 - [Веб-интерфейс](#веб-интерфейс)
   - [OpenAI-совместимый API](#openai-совместимый-api)
@@ -433,6 +434,55 @@ CI собирает бандлы под Linux/Windows/macOS (Apple Silicon, `mac
   (`arm64`).
 - Бандл не заменяет Docker: для воспроизводимого окружения с
   предустановленными нативными движками используйте Docker.
+
+## Инсталляторы (Windows, macOS, Linux)
+
+Из portable-бандла собираются готовые к установке пакеты:
+
+- **Windows** — `.exe` (Inno Setup);
+- **macOS** — `.dmg` (Apple Silicon / arm64);
+- **Linux** — AppImage.
+
+Рядом с каждым инсталлятором кладётся контрольная сумма `.sha256`.
+
+### Сборка
+
+Сначала соберите portable-бандл (см. раздел
+[«Portable-бандл (one-dir)»](#portable-бандл-one-dir)), затем — инсталлятор:
+
+```bash
+# из корня репозитория, на той ОС, для которой собираете
+python scripts/build_portable.py  --target linux --out dist
+python scripts/build_installer.py --target linux \
+  --bundle-dir dist/audio-transcriber --out dist-installers
+```
+
+Результат — инсталлятор и его `.sha256` в `dist-installers/`. Сборка идёт
+**только под host-ОС**: ни portable-бандл, ни инсталлятор не
+кросс-собираются.
+
+### Получение из CI
+
+Workflow `build-installers.yml` собирает инсталляторы под Linux/Windows/macOS
+(Apple Silicon) по тегам `v*` и вручную (`workflow_dispatch`). Артефакты —
+`installer-<os>-<arch>` (внутри инсталлятор и его `.sha256`).
+
+### Подпись и нотаризация
+
+По умолчанию инсталляторы **неподписаны**, и сборка от этого не падает:
+подпись включается только при наличии сертификатов в переменных окружения
+(в CI — GitHub-secrets). Windows использует Authenticode, macOS — Developer ID
+с нотаризацией. Полные инструкции, имена секретов и требования к
+сертификатам — в [packaging/SIGNING.md](packaging/SIGNING.md).
+
+### Ограничения
+
+- **Intel Mac** (`x86_64`) не поддерживается — только Apple Silicon (`arm64`).
+- **GPU** — только Linux (в т.ч. WSL2) с NVIDIA; Windows- и macOS-сборки идут
+  без GPU-ускорения (в бандле CPU-окружение).
+- **Модели и нативные бинарники** (`whisper-cli`, `llama-server`, `deep-filter`,
+  модели распознавания) в инсталлятор не входят и ставятся отдельно — как при
+  обычной установке (CLI `models`, веб-UI, `doctor`).
 
 ## Быстрый запуск (без ручной установки и параметров в командной строке)
 
