@@ -31,7 +31,7 @@ const TABS = [
   { id: 'export', label: 'Экспорт' },
 ]
 
-function JobPage({ jobId }: { jobId: string }) {
+function JobPage({ jobId, initialEntry }: { jobId: string; initialEntry?: number }) {
   const app = useApp()
   const { openJob } = app
   const [chosen, setChosen] = useState<{ jobId: string; tab: string } | null>(null)
@@ -151,7 +151,7 @@ function JobPage({ jobId }: { jobId: string }) {
         <Tabs aria-label="Секции задачи" value={tab} onChange={changeTab} items={TABS} />
 
         <TabPanel value="transcript" active={tab} className="pt-4">
-          <TranscriptTab jobId={jobId} />
+          <TranscriptTab jobId={jobId} initialEntry={initialEntry} />
         </TabPanel>
         <TabPanel value="speakers" active={tab} className="pt-4">
           <SpeakersTab jobId={jobId} />

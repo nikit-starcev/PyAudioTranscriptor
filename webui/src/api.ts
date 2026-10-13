@@ -985,6 +985,113 @@ export function formatEstimate(seconds: number | null): string {
   return rest ? `${hours} ч ${rest} мин` : `${hours} ч`
 }
 
+// --- Архив стенограмм (#99) ------------------------------------------------
+
+/** Запись архива: привязка стенограммы к дате/встрече (#99). */
+export type ArchiveRecord = {
+  job_id: string
+  /** Заголовок встречи (редактируемый). */
+  title: string | null
+  /** Дата встречи в формате ГГГГ-ММ-ДД (редактируемая). */
+  meeting_date: string | null
+  /** Участники/теги. */
+  participants: string[]
+  /** Свободные заметки. */
+  notes: string | null
+  created_at: string | null
+  updated_at: string | null
+  /** Краткая сводка задачи (заполняется сервером). */
+  name?: string
+  source_path?: string
+  status?: string
+  language?: string | null
+  duration?: number | null
+  finished_at?: string | null
+}
+
+/** Ответ ``GET /api/archive`` — записи архива и говорящие для фильтра. */
+export type ArchiveListResponse = {
+  records: ArchiveRecord[]
+  speakers: string[]
+}
+
+/** Результат полнотекстового поиска по архиву — одна реплика (#99). */
+export type ArchiveSearchHit = {
+  job_id: string
+  entry_index: number
+  speaker: string | null
+  snippet: string
+  score: number | null
+  name?: string
+  status?: string
+  title?: string | null
+  meeting_date?: string | null
+}
+
+/** Ответ ``GET /api/archive/search``. */
+export type ArchiveSearchResponse = {
+  query: string
+  hits: ArchiveSearchHit[]
+  total: number
+  limit: number
+  offset: number
+  speakers: string[]
+}
+
+/** Тело ``PATCH /api/archive/{job_id}`` (все поля опциональны). */
+export type ArchiveUpdate = {
+  title?: string
+  meeting_date?: string
+  participants?: string[]
+  notes?: string
+}
+
+export type ArchiveQuery = { date_from?: string; date_to?: string }
+
+function archiveParams(params: Record<string, string | number | undefined | null>): string {
+  const search = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value == null || value === '') continue
+    search.set(key, String(value))
+  }
+  const query = search.toString()
+  return query ? `?${query}` : ''
+}
+
+/** Список записей архива (задачи с готовым результатом), новые по дате сверху. */
+export async function fetchArchive(params: ArchiveQuery = {}): Promise<ArchiveListResponse> {
+  return api<ArchiveListResponse>(`/api/archive${archiveParams(params)}`)
+}
+
+/** Полнотекстовый поиск по текстам стенограмм с фильтрами по говорящему и дате. */
+export async function searchArchive(params: {
+  q: string
+  speaker?: string
+  date_from?: string
+  date_to?: string
+  limit?: number
+  offset?: number
+}): Promise<ArchiveSearchResponse> {
+  return api<ArchiveSearchResponse>(`/api/archive/search${archiveParams(params)}`)
+}
+
+/** Запись архива одной задачи (создаётся с датой по умолчанию при отсутствии). */
+export async function fetchArchiveRecord(jobId: string): Promise<ArchiveRecord> {
+  return api<ArchiveRecord>(`/api/archive/${encodeURIComponent(jobId)}`)
+}
+
+/** Сохраняет заголовок/дату/участников/заметки записи архива. */
+export async function patchArchiveRecord(
+  jobId: string,
+  patch: ArchiveUpdate,
+): Promise<ArchiveRecord> {
+  return api<ArchiveRecord>(`/api/archive/${encodeURIComponent(jobId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+}
+
 export function speakerName(speakers: SpeakerInfo[], id: string | null): string {
   if (id == null) return '—'
   return speakers.find((speaker) => speaker.id === id)?.display_name ?? id

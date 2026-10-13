@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Search } from 'lucide-react'
 
 import { formatDuration, type Entry, type TextSuggestion } from '../../api'
@@ -9,7 +9,7 @@ import TranscriptTable from '../../components/TranscriptTable'
 import { EmptyState, Input, cn } from '../../components/ui'
 import { TRANSCRIPT_MARKS } from '../../components/transcriptMarks'
 
-function TranscriptTab({ jobId }: { jobId: string }) {
+function TranscriptTab({ jobId, initialEntry }: { jobId: string; initialEntry?: number }) {
   const app = useApp()
   const result = app.result
 
@@ -21,6 +21,12 @@ function TranscriptTab({ jobId }: { jobId: string }) {
   const [selectedSuggestionId, setSelectedSuggestionId] = useState<string | null>(null)
   const [hoveredSuggestionId, setHoveredSuggestionId] = useState<string | null>(null)
   const [focusTick, setFocusTick] = useState(0)
+
+  // Переход к реплике из архива (#99): отдельный фокус, чтобы не мешать
+  // переходу из сводки правок (#120).
+  const [deepLinkEntry, setDeepLinkEntry] = useState<Entry | null>(null)
+  const [deepLinkTick, setDeepLinkTick] = useState(0)
+  const deepLinkApplied = useRef<string | null>(null)
 
   const suggestions = useMemo(
     () => [...editorSuggestions, ...semanticSuggestions],
@@ -67,6 +73,20 @@ function TranscriptTab({ jobId }: { jobId: string }) {
     setSelectedSuggestionId(null)
     setHoveredSuggestionId(null)
   }, [jobId])
+
+  // Переход к конкретной реплике из архива (#99): результат загружается
+  // асинхронно, поэтому ждём его появления и наводим фокус один раз.
+  useEffect(() => {
+    if (initialEntry == null || !result) return
+    const key = `${jobId}:${initialEntry}`
+    if (deepLinkApplied.current === key) return
+    const entry = result.entries[initialEntry]
+    if (!entry) return
+    deepLinkApplied.current = key
+    app.setQuery('')
+    setDeepLinkEntry(entry)
+    setDeepLinkTick((tick) => tick + 1)
+  }, [initialEntry, jobId, result, app])
 
   if (!result) {
     return (
@@ -132,8 +152,8 @@ function TranscriptTab({ jobId }: { jobId: string }) {
         suggestionsByEntry={suggestionsByEntry}
         accentSuggestionId={hoveredSuggestionId ?? selectedSuggestionId}
         rejectedSuggestionIds={rejectedSuggestionIds}
-        focusEntry={focusEntry}
-        focusTick={focusTick}
+        focusEntry={focusEntry ?? deepLinkEntry}
+        focusTick={focusTick + deepLinkTick}
         onSaveText={(entry: Entry, text) => {
           const index = result.entries.indexOf(entry)
           if (index < 0) return Promise.resolve()

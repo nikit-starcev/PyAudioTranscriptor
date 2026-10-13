@@ -1,4 +1,5 @@
 import {
+  Archive,
   BookText,
   Cpu,
   ListChecks,
@@ -22,6 +23,7 @@ const NAV: {
   match: NavMatch[]
 }[] = [
   { id: 'jobs', label: 'Задачи', hash: '#/jobs', Icon: ListChecks, match: ['jobs', 'job'] },
+  { id: 'archive', label: 'Архив', hash: '#/archive', Icon: Archive, match: ['archive'] },
   { id: 'models', label: 'Модели', hash: '#/models', Icon: Cpu, match: ['models'] },
   {
     id: 'binaries',

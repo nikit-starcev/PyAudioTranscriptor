@@ -75,6 +75,11 @@ class WebPaths:
         return self.data_dir / "chat.db"
 
     @property
+    def archive_db(self) -> Path:
+        """SQLite-база архива стенограмм: метаданные и полнотекстовый индекс (#99)."""
+        return self.data_dir / "archive.db"
+
+    @property
     def secrets_json(self) -> Path:
         """Секреты (токен Hugging Face) с правами доступа только владельцу."""
         return self.data_dir / "secrets.json"

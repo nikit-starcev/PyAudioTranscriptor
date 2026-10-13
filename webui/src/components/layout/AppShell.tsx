@@ -5,6 +5,7 @@ import { useApp } from '../../app/useApp'
 import { useHashRoute } from '../../app/useHashRoute'
 import { Alert } from '../ui'
 import ActionProgressCard from '../ActionProgressCard'
+import ArchivePage from '../../pages/ArchivePage'
 import BinariesPage from '../../pages/BinariesPage'
 import GlossaryPage from '../../pages/GlossaryPage'
 import JobPage from '../../pages/JobPage'
@@ -21,7 +22,9 @@ function RouteContent({ route }: { route: Route }) {
     case 'jobs':
       return <JobsPage />
     case 'job':
-      return <JobPage jobId={route.id} />
+      return <JobPage jobId={route.id} initialEntry={route.entry} />
+    case 'archive':
+      return <ArchivePage />
     case 'models':
       return <ModelsPage />
     case 'binaries':
