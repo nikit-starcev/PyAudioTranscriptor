@@ -116,7 +116,7 @@ def register_process(proc: subprocess.Popen[str]) -> None:
 class StderrReader:
     """Читает stderr подпроцесса в фоне, хранит хвост и полный буфер."""
 
-    def __init__(self, stream: IO[str]) -> None:
+    def __init__(self, stream: IO[str] | IO[bytes]) -> None:
         self._stream = stream
         self._lines: deque[str] = deque(maxlen=_STDERR_BUFFER_SIZE)
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -127,9 +127,11 @@ class StderrReader:
     def _run(self) -> None:
         try:
             for line in self._stream:
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8", errors="replace")
                 self._lines.append(line.rstrip("\n"))
-        except (OSError, ValueError):
-            pass
+        except (OSError, ValueError) as exc:
+            logger.warning("Чтение stderr подпроцесса прервано: %s", exc)
 
     def tail(self) -> str:
         return "\n".join(list(self._lines)[-_STDERR_TAIL_SIZE:])

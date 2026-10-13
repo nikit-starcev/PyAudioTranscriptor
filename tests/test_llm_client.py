@@ -153,6 +153,24 @@ def test_offload_attempts_cpu_only(model_file: Path) -> None:
     assert LlamaServerClient(model_file, gpu=False)._offload_attempts() == [0]
 
 
+def test_spawn_decodes_stderr_with_replacement(
+    monkeypatch: pytest.MonkeyPatch, model_file: Path
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_popen(_cmd: object, **kwargs: object) -> FakeProc:
+        captured.update(kwargs)
+        return FakeProc(pid=4242)
+
+    monkeypatch.setattr(client_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(LlamaServerClient, "_wait_ready", lambda _self: None)
+
+    with LlamaServerClient(model_file) as client:
+        assert client.is_running
+
+    assert captured.get("errors") == "replace"
+
+
 def test_context_manager_terminates_process_and_unregisters(
     model_file: Path, patch_popen: list[FakeProc]
 ) -> None:

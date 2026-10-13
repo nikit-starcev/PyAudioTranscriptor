@@ -428,6 +428,7 @@ class LlamaServerClient:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
+            errors="replace",
             env=env,
         )
         register_process(proc)
@@ -526,6 +527,11 @@ class LlamaServerClient:
             body = exc.read().decode("utf-8", errors="replace")[-1000:]
             hint = self._http_error_hint(exc.code, body)
             raise LlmError(f"llama-server вернул HTTP {exc.code}: {body}{hint}") from exc
+        except TimeoutError as exc:
+            raise LlmError(
+                f"llama-server не ответил за {self._request_timeout:.0f} с "
+                "(таймаут LLM-запроса)"
+            ) from exc
         except (urllib.error.URLError, OSError) as exc:
             detail = self._stderr.tail() if self._stderr else ""
             raise LlmError(f"Не удалось обратиться к llama-server: {exc} {detail}") from exc
@@ -566,6 +572,11 @@ class LlamaServerClient:
             body = exc.read().decode("utf-8", errors="replace")[-1000:]
             hint = self._http_error_hint(exc.code, body)
             raise LlmError(f"llama-server вернул HTTP {exc.code}: {body}{hint}") from exc
+        except TimeoutError as exc:
+            raise LlmError(
+                f"llama-server не ответил за {self._request_timeout:.0f} с "
+                "(таймаут LLM-запроса)"
+            ) from exc
         except (urllib.error.URLError, OSError) as exc:
             detail = self._stderr.tail() if self._stderr else ""
             raise LlmError(f"Не удалось обратиться к llama-server: {exc} {detail}") from exc
