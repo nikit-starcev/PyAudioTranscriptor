@@ -4,18 +4,30 @@ import {
   api,
   errorMessage,
   type CorrectTextResponse,
+  type Entry,
   type GlossaryApplyResponse,
   type TextSuggestion,
   type TranscriptResult,
 } from '../api'
 import { useActionProgress } from '../actionProgress'
-import { Alert, Button, Card, CardHeader, Checkbox } from './ui'
+import { Alert, Button, Card, CardHeader, Checkbox, cn } from './ui'
+import { renderHighlightedText } from './highlight'
 import ActionProgressCard from './ActionProgressCard'
 
 type Props = {
   jobId: string
   /** Заменить текущий результат после применения правок. */
   onResult: (result: TranscriptResult) => void
+  /** Отдать текущие предложения наверх — для подсветки в стенограмме (#120). */
+  onSuggestions?: (items: TextSuggestion[]) => void
+  /** Выбрать правку: переход к реплике в стенограмме (#120). */
+  onSelect?: (item: TextSuggestion) => void
+  /** Наведение на правку: акцент подсветки в стенограмме (#120). */
+  onHover?: (id: string | null) => void
+  /** Идентификатор выбранной правки (#120). */
+  activeSuggestionId?: string | null
+  /** Отдать список отклонённых правок — для приглушённой подсветки (#120). */
+  onRejectedChange?: (ids: string[]) => void
 }
 
 type Notice = { kind: 'info' | 'error'; text: string }
@@ -36,7 +48,15 @@ function kindLabel(kind: string): string {
  * применение глоссария по кнопке (#32) и проверка/исправление текста (#51).
  * Результат обеих операций сохраняется на сервере и подменяется в UI.
  */
-function EditorPanel({ jobId, onResult }: Props) {
+function EditorPanel({
+  jobId,
+  onResult,
+  onSuggestions,
+  onSelect,
+  onHover,
+  activeSuggestionId,
+  onRejectedChange,
+}: Props) {
   // Применение глоссария (#32).
   const [glossaryBusy, setGlossaryBusy] = useState(false)
   const [glossaryNotice, setGlossaryNotice] = useState<Notice | null>(null)
@@ -52,6 +72,8 @@ function EditorPanel({ jobId, onResult }: Props) {
   const [appliedNotice, setAppliedNotice] = useState<Notice | null>(null)
   const [suggestions, setSuggestions] = useState<TextSuggestion[]>([])
   const [rejected, setRejected] = useState<Set<string>>(new Set())
+  // Реплики текущего результата — контекст правок в сводке (#120).
+  const [contextEntries, setContextEntries] = useState<Entry[]>([])
 
   // Прогресс длительных действий редактора (#58): глоссарий и проверка текста.
   const {
@@ -64,11 +86,22 @@ function EditorPanel({ jobId, onResult }: Props) {
   useEffect(() => {
     setSuggestions([])
     setRejected(new Set())
+    setContextEntries([])
     setGlossaryNotice(null)
     setAppliedNotice(null)
     setEditError(null)
     resetActionProgress()
   }, [jobId, resetActionProgress])
+
+  // Текущие предложения отдаём наверх: стенограмма подсвечивает их в тексте (#120).
+  useEffect(() => {
+    onSuggestions?.(suggestions)
+  }, [suggestions, onSuggestions])
+
+  // Отклонённые правки отдаём наверх: подсветка в стенограмме приглушается (#120).
+  useEffect(() => {
+    onRejectedChange?.(Array.from(rejected))
+  }, [rejected, onRejectedChange])
 
   const selected = useMemo(
     () => suggestions.filter((item) => !rejected.has(item.id)),
@@ -136,6 +169,7 @@ function EditorPanel({ jobId, onResult }: Props) {
         }),
       )
       setSuggestions(response.suggestions)
+      setContextEntries(response.result.entries)
       setRejected(new Set())
       if (response.suggestions.length === 0) {
         const suffix =
@@ -174,6 +208,7 @@ function EditorPanel({ jobId, onResult }: Props) {
       )
       onResult(response.result)
       setSuggestions(response.suggestions)
+      setContextEntries(response.result.entries)
       setRejected(new Set())
       const parts = [`Применено правок: ${response.applied_count}`]
       if (response.skipped_edited > 0) {
@@ -303,12 +338,26 @@ function EditorPanel({ jobId, onResult }: Props) {
               <ul className="max-h-64 space-y-1 overflow-auto rounded-md border border-border bg-surface-2/40 p-2 text-sm">
                 {suggestions.map((item) => {
                   const accepted = !rejected.has(item.id)
+                  const context = contextEntries[item.index]
                   return (
-                    <li key={item.id} className="flex items-start gap-2">
+                    <li
+                      key={item.id}
+                      className={cn(
+                        'flex cursor-pointer items-start gap-2 rounded-md p-1 transition-colors',
+                        activeSuggestionId === item.id
+                          ? 'bg-primary-soft'
+                          : 'hover:bg-surface-2',
+                      )}
+                      title="Перейти к месту правки в стенограмме"
+                      onClick={() => onSelect?.(item)}
+                      onMouseEnter={() => onHover?.(item.id)}
+                      onMouseLeave={() => onHover?.(null)}
+                    >
                       <Checkbox
                         className="mt-1"
                         checked={accepted}
                         onChange={() => toggleSuggestion(item.id)}
+                        onClick={(event) => event.stopPropagation()}
                         aria-label="Применить правку"
                       />
                       <span className="min-w-0 flex-1 break-words">
@@ -325,6 +374,15 @@ function EditorPanel({ jobId, onResult }: Props) {
                         <span className="ml-2 text-xs text-muted">
                           реплика #{item.index + 1} · {item.reason}
                         </span>
+                        {context && (
+                          <span className="mt-0.5 block text-xs text-muted">
+                            {renderHighlightedText(
+                              context.text,
+                              [{ id: item.id, start: item.start, end: item.end }],
+                              `editor-ctx-${item.id}`,
+                            )}
+                          </span>
+                        )}
                       </span>
                     </li>
                   )

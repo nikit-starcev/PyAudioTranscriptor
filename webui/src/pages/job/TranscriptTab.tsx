@@ -1,6 +1,7 @@
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Search } from 'lucide-react'
 
-import { formatDuration, type Entry } from '../../api'
+import { formatDuration, type Entry, type TextSuggestion } from '../../api'
 import { useApp } from '../../app/useApp'
 import EditorPanel from '../../components/EditorPanel'
 import SemanticSuggestionsPanel from '../../components/SemanticSuggestionsPanel'
@@ -11,6 +12,61 @@ import { TRANSCRIPT_MARKS } from '../../components/transcriptMarks'
 function TranscriptTab({ jobId }: { jobId: string }) {
   const app = useApp()
   const result = app.result
+
+  // Правки редактора и семантики (#120) — для подсветки в стенограмме.
+  const [editorSuggestions, setEditorSuggestions] = useState<TextSuggestion[]>([])
+  const [semanticSuggestions, setSemanticSuggestions] = useState<TextSuggestion[]>([])
+  const [editorRejected, setEditorRejected] = useState<string[]>([])
+  const [semanticRejected, setSemanticRejected] = useState<string[]>([])
+  const [selectedSuggestionId, setSelectedSuggestionId] = useState<string | null>(null)
+  const [hoveredSuggestionId, setHoveredSuggestionId] = useState<string | null>(null)
+  const [focusTick, setFocusTick] = useState(0)
+
+  const suggestions = useMemo(
+    () => [...editorSuggestions, ...semanticSuggestions],
+    [editorSuggestions, semanticSuggestions],
+  )
+
+  const rejectedSuggestionIds = useMemo(
+    () => new Set([...editorRejected, ...semanticRejected]),
+    [editorRejected, semanticRejected],
+  )
+
+  // Правки по репликам: ключ — сам объект реплики (совпадает с filteredEntries).
+  const suggestionsByEntry = useMemo(() => {
+    const map = new Map<Entry, TextSuggestion[]>()
+    if (!result) return map
+    for (const item of suggestions) {
+      const entry = result.entries[item.index]
+      if (!entry) continue
+      const list = map.get(entry)
+      if (list) list.push(item)
+      else map.set(entry, [item])
+    }
+    return map
+  }, [suggestions, result])
+
+  const selectedSuggestion =
+    suggestions.find((item) => item.id === selectedSuggestionId) ?? null
+  const focusEntry =
+    selectedSuggestion && result
+      ? result.entries[selectedSuggestion.index] ?? null
+      : null
+
+  // Клик по правке в сводке: сброс фильтра (чтобы реплика была видна) и переход.
+  const navigateToSuggestion = useCallback(
+    (item: TextSuggestion) => {
+      setSelectedSuggestionId(item.id)
+      app.setQuery('')
+      setFocusTick((tick) => tick + 1)
+    },
+    [app],
+  )
+
+  useEffect(() => {
+    setSelectedSuggestionId(null)
+    setHoveredSuggestionId(null)
+  }, [jobId])
 
   if (!result) {
     return (
@@ -73,6 +129,11 @@ function TranscriptTab({ jobId }: { jobId: string }) {
         entries={app.filteredEntries}
         speakers={result.speakers}
         sourceName={app.activeJob?.name}
+        suggestionsByEntry={suggestionsByEntry}
+        accentSuggestionId={hoveredSuggestionId ?? selectedSuggestionId}
+        rejectedSuggestionIds={rejectedSuggestionIds}
+        focusEntry={focusEntry}
+        focusTick={focusTick}
         onSaveText={(entry: Entry, text) => {
           const index = result.entries.indexOf(entry)
           if (index < 0) return Promise.resolve()
@@ -94,9 +155,25 @@ function TranscriptTab({ jobId }: { jobId: string }) {
         undoAvailable={app.speakerUndoAvailable}
       />
 
-      <EditorPanel jobId={jobId} onResult={app.setResult} />
+      <EditorPanel
+        jobId={jobId}
+        onResult={app.setResult}
+        onSuggestions={setEditorSuggestions}
+        onRejectedChange={setEditorRejected}
+        onSelect={navigateToSuggestion}
+        onHover={setHoveredSuggestionId}
+        activeSuggestionId={selectedSuggestionId}
+      />
 
-      <SemanticSuggestionsPanel jobId={jobId} onResult={app.setResult} />
+      <SemanticSuggestionsPanel
+        jobId={jobId}
+        onResult={app.setResult}
+        onSuggestions={setSemanticSuggestions}
+        onRejectedChange={setSemanticRejected}
+        onSelect={navigateToSuggestion}
+        onHover={setHoveredSuggestionId}
+        activeSuggestionId={selectedSuggestionId}
+      />
     </div>
   )
 }

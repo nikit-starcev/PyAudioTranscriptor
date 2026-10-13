@@ -2,7 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { Pause, Pencil, Play, Scissors, X } from 'lucide-react'
 
-import { formatTime, speakerName, type Entry, type SpeakerInfo, type WordTimestamp } from '../api'
+import {
+  formatTime,
+  speakerName,
+  type Entry,
+  type SpeakerInfo,
+  type TextSuggestion,
+  type WordTimestamp,
+} from '../api'
 import { usePlayback } from '../app/playback'
 import {
   Alert,
@@ -16,6 +23,7 @@ import {
   Tooltip,
   cn,
 } from './ui'
+import { renderHighlightedText, type HighlightSpan } from './highlight'
 import { TRANSCRIPT_MARKS } from './transcriptMarks'
 import GlossaryQuickModal from './GlossaryQuickModal'
 
@@ -48,6 +56,16 @@ type Props = {
   onUndoAssign?: () => Promise<void>
   /** Доступна ли одношаговая отмена назначения. */
   undoAvailable?: boolean
+  /** Правки стенограммы по репликам (#120): для подсветки изменяемых фрагментов. */
+  suggestionsByEntry?: Map<Entry, TextSuggestion[]>
+  /** Идентификатор правки в фокусе/под курсором — акцент подсветки (#120). */
+  accentSuggestionId?: string | null
+  /** Идентификаторы отклонённых правок — приглушённая подсветка (#120). */
+  rejectedSuggestionIds?: Set<string>
+  /** Реплика, к которой нужно перейти из сводки правок (#120). */
+  focusEntry?: Entry | null
+  /** Меняется при каждом запросе перехода из сводки правок (#120). */
+  focusTick?: number
 }
 
 type AssignTarget = { speakerId?: string; newName?: string }
@@ -88,6 +106,32 @@ function karaokeWords(entry: Entry): WordTimestamp[] | null {
     .trim()
   const text = entry.text.replace(/\s+/g, ' ').trim()
   return joined === text ? words : null
+}
+
+//: Абсолютные диапазоны слов в нормализованном тексте реплики (слова разделены
+//: одним пробелом) — чтобы подсветить правки внутри караоке-слов (#120).
+function karaokeOffsets(words: WordTimestamp[]): Array<{ start: number; end: number }> {
+  const offsets: Array<{ start: number; end: number }> = []
+  let position = 0
+  for (const word of words) {
+    offsets.push({ start: position, end: position + word.text.length })
+    position += word.text.length + 1
+  }
+  return offsets
+}
+
+//: Пересчитывает диапазоны правок в координаты поддиапазона [start, end) текста.
+function spansWithin(spans: HighlightSpan[], start: number, end: number): HighlightSpan[] {
+  const result: HighlightSpan[] = []
+  for (const span of spans) {
+    if (span.start >= end || span.end <= start) continue
+    result.push({
+      ...span,
+      start: Math.max(span.start, start) - start,
+      end: Math.min(span.end, end) - start,
+    })
+  }
+  return result
 }
 
 type SpeakerPiece = { id: string | null; name: string; extra: boolean }
@@ -141,6 +185,11 @@ function TranscriptTable({
   onAddExtraSpeaker,
   onUndoAssign,
   undoAvailable,
+  suggestionsByEntry,
+  accentSuggestionId,
+  rejectedSuggestionIds,
+  focusEntry,
+  focusTick,
 }: Props) {
   const playback = usePlayback()
   const [autoAdvance, setAutoAdvance] = useState(false)
@@ -161,6 +210,8 @@ function TranscriptTable({
   const startedRef = useRef(false)
   const pendingSeekRef = useRef<number | null>(null)
   const playRef = useRef<(fragment: Fragment) => void>(() => {})
+  //: Последнее слово, запущенное кликом: повторный клик по нему — остановка (#119).
+  const lastWordStartRef = useRef<number | null>(null)
 
   // Ручная правка текста (#26): ключ редактируемой реплики и черновик.
   const [editingKey, setEditingKey] = useState<string | null>(null)
@@ -344,19 +395,34 @@ function TranscriptTable({
   )
 
   const onWordClick = useCallback(
-    (event: ReactMouseEvent<HTMLSpanElement>, time: number) => {
+    (event: ReactMouseEvent<HTMLSpanElement>, entry: Entry, index: number, word: WordTimestamp) => {
       if (event.detail > 1) return
       const selection = window.getSelection()
       if (selection && !selection.isCollapsed) return
       cancelPendingSeek()
+      const key = entryKey(entry, index)
       pendingSeekRef.current = window.setTimeout(() => {
         pendingSeekRef.current = null
         followRef.current = true
         setFollow(true)
-        playback.playFrom(time)
+        // #119: повторный клик по тому же слову останавливает фрагмент.
+        if (
+          playback.playing &&
+          playback.playingKey === key &&
+          lastWordStartRef.current === word.start
+        ) {
+          lastWordStartRef.current = null
+          playback.stop()
+          return
+        }
+        // Клик по слову — ограниченный фрагмент «слово → конец реплики»,
+        // а не воспроизведение записи до конца.
+        lastWordStartRef.current = word.start
+        const fragment: Fragment = { key, start: word.start, end: entry.end }
+        playback.playRange(fragment, () => advanceFrom(fragment))
       }, 220)
     },
-    [cancelPendingSeek, playback],
+    [advanceFrom, cancelPendingSeek, playback],
   )
 
   useEffect(() => {
@@ -378,6 +444,17 @@ function TranscriptTable({
   useEffect(() => {
     followRef.current = follow
   }, [follow])
+
+  // Переход из сводки правок к реплике (#120): прокрутка к ней; автопрокрутка
+  // за воспроизведением на время отключается, чтобы не спорить с переходом.
+  useEffect(() => {
+    if (focusEntry == null) return
+    const index = entries.findIndex((item) => item === focusEntry)
+    if (index < 0) return
+    followRef.current = false
+    setFollow(false)
+    scrollToKey(entryKey(focusEntry, index))
+  }, [focusTick, focusEntry, entries, scrollToKey])
 
   useEffect(() => playback.subscribe(syncActive), [playback, syncActive])
 
@@ -657,8 +734,8 @@ function TranscriptTable({
           </span>
         ) : (
           <span>
-            Клик по слову — переход; двойной клик по тексту — правка; ПКМ по выделению — в
-            глоссарий
+            Клик по слову — прослушать фрагмент (повторный клик — стоп); двойной клик по
+            тексту — правка; ПКМ по выделению — в глоссарий
           </span>
         )}
         {!follow && (
@@ -858,6 +935,24 @@ function TranscriptTable({
                 const selected = selectedKeys.has(key)
                 const words = karaokeWords(entry)
                 const pieces = speakerPieces(speakers, entry)
+                const entrySpans: HighlightSpan[] = (
+                  suggestionsByEntry?.get(entry) ?? []
+                ).map((item) => ({
+                  id: item.id,
+                  start: item.start,
+                  end: item.end,
+                  accent: item.id === accentSuggestionId,
+                  rejected: rejectedSuggestionIds?.has(item.id) ?? false,
+                }))
+                // Позиции правок отсчитаны от текста реплики: караоке-слова
+                // берём, только если точно его воссоздают (иначе — текст целиком).
+                const karaoke =
+                  words &&
+                  (entrySpans.length === 0 ||
+                    words.map((word) => word.text).join(' ') === entry.text)
+                    ? words
+                    : null
+                const wordOffsets = karaoke ? karaokeOffsets(karaoke) : []
                 return (
                   <tr
                     key={key}
@@ -1001,9 +1096,10 @@ function TranscriptTable({
                             className="break-words"
                             onDoubleClick={() => beginEdit(key, entry.text)}
                           >
-                            {words
-                              ? words.map((word, wordIndex) => {
+                            {karaoke
+                              ? karaoke.map((word, wordIndex) => {
                                   const wordActive = active && wordIndex === activeWordIndex
+                                  const offset = wordOffsets[wordIndex]
                                   return (
                                     <span key={`${wordIndex}-${word.start}`}>
                                       <span
@@ -1013,16 +1109,34 @@ function TranscriptTable({
                                             ? 'bg-primary-soft text-primary-soft-fg'
                                             : 'hover:text-primary',
                                         )}
-                                        title={`Перейти к ${formatTime(word.start)}`}
-                                        onClick={(event) => onWordClick(event, word.start)}
+                                        title={`Прослушать с ${formatTime(word.start)}`}
+                                        onClick={(event) =>
+                                          onWordClick(event, entry, index, word)
+                                        }
                                       >
-                                        {word.text}
+                                        {renderHighlightedText(
+                                          word.text,
+                                          spansWithin(entrySpans, offset.start, offset.end),
+                                          `${key}-w${wordIndex}`,
+                                        )}
                                       </span>
-                                      {wordIndex < words.length - 1 ? ' ' : ''}
+                                      {wordIndex < karaoke.length - 1 ? (
+                                        <span key={`${wordIndex}-space`}>
+                                          {renderHighlightedText(
+                                            ' ',
+                                            spansWithin(
+                                              entrySpans,
+                                              offset.end,
+                                              offset.end + 1,
+                                            ),
+                                            `${key}-s${wordIndex}`,
+                                          )}
+                                        </span>
+                                      ) : null}
                                     </span>
                                   )
                                 })
-                              : entry.text}
+                              : renderHighlightedText(entry.text, entrySpans, key)}
                           </div>
                           {onSaveText && (
                             <IconButton
