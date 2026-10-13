@@ -907,7 +907,9 @@ def test_generate_protocol_recomputes_summary_and_exports(
 
     seen_speakers: dict[str, list[str]] = {}
 
-    def fake_summarize(entries, speakers, *, llm, max_chunk_chars=None, system_prompt=None):
+    def fake_summarize(
+        entries, speakers, *, llm, max_chunk_chars=None, system_prompt=None, on_progress=None
+    ):
         seen_speakers["names"] = [speaker.display_name for speaker in speakers]
         return "РЕЗЮМЕ"
 
@@ -989,7 +991,9 @@ def test_generate_protocol_passes_custom_summary_prompt(
 
     seen: dict[str, object] = {}
 
-    def fake_summarize(entries, speakers, *, llm, max_chunk_chars=None, system_prompt=None):
+    def fake_summarize(
+        entries, speakers, *, llm, max_chunk_chars=None, system_prompt=None, on_progress=None
+    ):
         seen["prompt"] = system_prompt
         return "РЕЗЮМЕ"
 

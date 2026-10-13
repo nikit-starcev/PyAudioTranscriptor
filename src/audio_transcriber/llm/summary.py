@@ -22,6 +22,7 @@ from audio_transcriber.llm.chunking import (
     named_speaker_labels,
     unique_speakers,
 )
+from audio_transcriber.progress import ProgressCallback, ProgressEvent
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +167,7 @@ def summarize_meeting(
     llm: LlmClient,
     max_chunk_chars: int | None = None,
     system_prompt: str | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> str | None:
     """Строит резюме встречи через локальную LLM.
 
@@ -183,6 +185,10 @@ def summarize_meeting(
     (одного, map и reduce), полностью заменяя зашитый формат; иначе берутся
     встроенные промпты (:data:`DEFAULT_SUMMARY_TEMPLATES` /
     :data:`DEFAULT_SUMMARY_TEMPLATE_NAME`).
+
+    ``on_progress`` — необязательный колбэк хода этапа: сообщает номер
+    обрабатываемого фрагмента и долю выполнения, чтобы интерфейс не ждал
+    вслепую долгий map-reduce.
     """
     speakers = speakers or unique_speakers(entries)
     labels = named_speaker_labels(speakers)
@@ -198,14 +204,27 @@ def summarize_meeting(
     partial_system = custom or _PARTIAL_SYSTEM_PROMPT
     reduce_system = custom or _REDUCE_SYSTEM_PROMPT
 
+    total_steps = 1 if len(chunks) == 1 else len(chunks) + 1
+
+    def _report(message: str, completed: int) -> None:
+        if on_progress is not None:
+            on_progress(
+                ProgressEvent("llm", message, fraction=min(1.0, completed / total_steps))
+            )
+
     if len(chunks) == 1:
-        return _chat(llm, single_system, _single_user_prompt(chunks[0]))
+        _report("Резюме встречи", 0)
+        summary = _chat(llm, single_system, _single_user_prompt(chunks[0]))
+        _report("Резюме встречи", total_steps)
+        return summary
 
     partials: list[str] = []
-    for chunk in chunks:
+    for position, chunk in enumerate(chunks, start=1):
+        _report(f"Резюме встречи: фрагмент {position}/{len(chunks)}", position - 1)
         partial = _chat(llm, partial_system, _partial_user_prompt(chunk))
         if partial:
             partials.append(partial)
+        _report(f"Резюме встречи: фрагмент {position}/{len(chunks)}", position)
 
     if not partials:
         return None
@@ -213,6 +232,8 @@ def summarize_meeting(
         return partials[0]
 
     combined = "\n\n".join(partials)
+    _report("Сведение тезисов в резюме", len(chunks))
     reduced = _chat(llm, reduce_system, _reduce_user_prompt(combined))
+    _report("Резюме встречи", total_steps)
     # Если свести не удалось — отдаём собранные тезисы, а не теряем их.
     return reduced if reduced is not None else combined

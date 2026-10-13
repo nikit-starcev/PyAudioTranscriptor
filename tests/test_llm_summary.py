@@ -19,6 +19,7 @@ from audio_transcriber.llm.prompts import (
     max_extra_chars_for_context,
 )
 from audio_transcriber.llm.summary import summarize_meeting
+from audio_transcriber.progress import ProgressEvent
 
 
 def _speakers() -> list[Speaker]:
@@ -238,3 +239,33 @@ def test_max_extra_chars_scales_and_is_bounded() -> None:
     assert max_extra_chars_for_context(4096) == 1024
     assert max_extra_chars_for_context(128) == 500
     assert max_extra_chars_for_context(10_000_000) == 4000
+
+
+def test_summarize_meeting_reports_single_call_progress() -> None:
+    events: list[ProgressEvent] = []
+
+    summarize_meeting(
+        _short_entries(), _speakers(), llm=_EchoClient("Тема: X"), on_progress=events.append
+    )
+
+    assert [event.fraction for event in events] == [0.0, 1.0]
+    assert all(event.stage == "llm" for event in events)
+
+
+def test_summarize_meeting_reports_map_reduce_progress() -> None:
+    events: list[ProgressEvent] = []
+
+    summarize_meeting(
+        _long_entries(),
+        llm=_EchoClient("тезис"),
+        max_chunk_chars=60,
+        on_progress=events.append,
+    )
+
+    assert events
+    assert all(event.stage == "llm" for event in events)
+    fractions = [event.fraction for event in events if event.fraction is not None]
+    assert fractions == sorted(fractions)
+    assert all(0.0 <= fraction <= 1.0 for fraction in fractions)
+    assert fractions[-1] == 1.0
+    assert any("фрагмент" in event.message for event in events)
