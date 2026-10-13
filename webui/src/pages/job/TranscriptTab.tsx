@@ -11,7 +11,7 @@ import { TRANSCRIPT_MARKS } from '../../components/transcriptMarks'
 
 function TranscriptTab({ jobId, initialEntry }: { jobId: string; initialEntry?: number }) {
   const app = useApp()
-  const result = app.result
+  const result = app.result && app.resultJobId === jobId ? app.result : null
 
   // Правки редактора и семантики (#120) — для подсветки в стенограмме.
   const [editorSuggestions, setEditorSuggestions] = useState<TextSuggestion[]>([])

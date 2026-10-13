@@ -61,6 +61,7 @@ export function useAppController() {
   const [runSeq, setRunSeq] = useState(0)
   const [progress, setProgress] = useState<JobEvent | null>(null)
   const [result, setResult] = useState<TranscriptResult | null>(null)
+  const [resultJobId, setResultJobId] = useState<string | null>(null)
   const [samplesMeta, setSamplesMeta] = useState<Record<string, SampleMeta>>({})
   const [speakerUndoAvailable, setSpeakerUndoAvailable] = useState(false)
   const [protocol, setProtocol] = useState<ProtocolResponse | null>(null)
@@ -242,12 +243,14 @@ export function useAppController() {
       try {
         const loaded = await api<TranscriptResult>(`/api/jobs/${jobId}/result`)
         setResult(loaded)
+        setResultJobId(jobId)
         setSummary(loaded.summary)
         setProtocol(null)
         setProtocolError(null)
         await refreshSamples(jobId)
       } catch {
         setResult(null)
+        setResultJobId(null)
         setSummary(null)
         setSamplesMeta({})
       }
@@ -1008,6 +1011,7 @@ export function useAppController() {
     activeJob,
     progress,
     result,
+    resultJobId,
     setResult,
     samplesMeta,
     speakerUndoAvailable,

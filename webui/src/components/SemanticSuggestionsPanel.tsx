@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   api,
@@ -70,8 +70,10 @@ function SemanticSuggestionsPanel({
   const [rejected, setRejected] = useState<Set<string>>(new Set())
   // Реплики текущего результата — контекст правок в сводке (#120).
   const [contextEntries, setContextEntries] = useState<Entry[]>([])
+  const requestRef = useRef(0)
 
   const load = useCallback(async () => {
+    const requestId = ++requestRef.current
     setLoading(true)
     setError(null)
     try {
@@ -83,16 +85,18 @@ function SemanticSuggestionsPanel({
           body: JSON.stringify(LOAD_BODY),
         },
       )
+      if (requestRef.current !== requestId) return
       setSuggestions(response.suggestions)
       setContextEntries(response.result.entries)
       setRejected(new Set())
     } catch (cause) {
+      if (requestRef.current !== requestId) return
       setSuggestions([])
       setContextEntries([])
       setRejected(new Set())
       setError(errorMessage(cause))
     } finally {
-      setLoading(false)
+      if (requestRef.current === requestId) setLoading(false)
     }
   }, [jobId])
 
@@ -104,6 +108,9 @@ function SemanticSuggestionsPanel({
     setNotice(null)
     setError(null)
     void load()
+    return () => {
+      requestRef.current += 1
+    }
   }, [jobId, load])
 
   // Текущие предложения отдаём наверх: стенограмма подсвечивает их в тексте (#120).

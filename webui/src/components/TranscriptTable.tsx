@@ -394,9 +394,12 @@ function TranscriptTable({
     [advanceFrom, playback],
   )
 
-  const onWordClick = useCallback(
-    (event: ReactMouseEvent<HTMLSpanElement>, entry: Entry, index: number, word: WordTimestamp) => {
-      if (event.detail > 1) return
+  const playFromClick = useCallback(
+    (event: ReactMouseEvent<HTMLElement>, entry: Entry, index: number, start: number) => {
+      if (event.detail > 1) {
+        cancelPendingSeek()
+        return
+      }
       const selection = window.getSelection()
       if (selection && !selection.isCollapsed) return
       cancelPendingSeek()
@@ -405,24 +408,38 @@ function TranscriptTable({
         pendingSeekRef.current = null
         followRef.current = true
         setFollow(true)
-        // #119: повторный клик по тому же слову останавливает фрагмент.
+        // #119: повторный клик по тому же фрагменту останавливает воспроизведение.
         if (
           playback.playing &&
           playback.playingKey === key &&
-          lastWordStartRef.current === word.start
+          lastWordStartRef.current === start
         ) {
           lastWordStartRef.current = null
           playback.stop()
           return
         }
-        // Клик по слову — ограниченный фрагмент «слово → конец реплики»,
-        // а не воспроизведение записи до конца.
-        lastWordStartRef.current = word.start
-        const fragment: Fragment = { key, start: word.start, end: entry.end }
+        // Клик задаёт ограниченный фрагмент «start → конец реплики», а не
+        // воспроизведение записи до конца.
+        lastWordStartRef.current = start
+        const fragment: Fragment = { key, start, end: entry.end }
         playback.playRange(fragment, () => advanceFrom(fragment))
       }, 220)
     },
     [advanceFrom, cancelPendingSeek, playback],
+  )
+
+  const onWordClick = useCallback(
+    (event: ReactMouseEvent<HTMLSpanElement>, entry: Entry, index: number, word: WordTimestamp) => {
+      playFromClick(event, entry, index, word.start)
+    },
+    [playFromClick],
+  )
+
+  const onTextClick = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>, entry: Entry, index: number) => {
+      playFromClick(event, entry, index, entry.start)
+    },
+    [playFromClick],
   )
 
   useEffect(() => {
@@ -734,8 +751,8 @@ function TranscriptTable({
           </span>
         ) : (
           <span>
-            Клик по слову — прослушать фрагмент (повторный клик — стоп); двойной клик по
-            тексту — правка; ПКМ по выделению — в глоссарий
+            Клик по слову или тексту — прослушать фрагмент (повторный клик — стоп); двойной
+            клик по тексту — правка; ПКМ по выделению — в глоссарий
           </span>
         )}
         {!follow && (
@@ -1093,7 +1110,15 @@ function TranscriptTable({
                       ) : (
                         <div className="flex items-start gap-1.5">
                           <div
-                            className="break-words"
+                            className={cn('break-words', karaoke ? null : 'cursor-pointer')}
+                            title={
+                              karaoke
+                                ? undefined
+                                : 'Клик — прослушать реплику, двойной клик — правка'
+                            }
+                            onClick={
+                              karaoke ? undefined : (event) => onTextClick(event, entry, index)
+                            }
                             onDoubleClick={() => beginEdit(key, entry.text)}
                           >
                             {karaoke
