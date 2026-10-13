@@ -188,6 +188,7 @@ def build_job_config(
     output_dir: Path,
     data_dir: Path,
     overrides: Mapping[str, str] | None = None,
+    require_input: bool = True,
 ) -> AppConfig:
     """Собирает :class:`AppConfig` для одной веб-задачи из настроек окружения.
 
@@ -195,6 +196,9 @@ def build_job_config(
     накладываемый поверх ``config.env``: ключи совпадают с переменными
     ``config.env`` (``GLOSSARY_ENABLED``, ``EXPORT_FORMATS`` и т.д.). Пустые
     значения пропускаются — тогда действует значение из окружения.
+    ``require_input=False`` отключает проверку существования ``source_path``:
+    оценка времени до запуска (#107) собирает конфиг по текущим настройкам, не
+    требуя реального входного файла. Реальные задачи оставляют ``True``.
     """
     defaults = dict(env_defaults())
     if overrides:
@@ -220,6 +224,7 @@ def build_job_config(
     return AppConfig(
         input_file=source_path,
         output_dir=output_dir,
+        require_existing_input=require_input,
         model_name=defaults.get("MODEL", "").strip() or "large-v3-turbo",
         language=None,
         device=_env_device(defaults),

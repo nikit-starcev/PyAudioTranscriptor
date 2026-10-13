@@ -28,6 +28,7 @@ from audio_transcriber.config.defaults import (
 from audio_transcriber.domain.enums import AsrBackend
 from audio_transcriber.storage.glossary_builder import build_glossary
 from audio_transcriber.storage.glossary_db import GlossaryDB
+from audio_transcriber.utils.exceptions import ConfigurationError
 from audio_transcriber.web.app import create_app
 from audio_transcriber.web.config import build_job_config
 from audio_transcriber.web.paths import WebPaths
@@ -744,6 +745,40 @@ def test_build_job_config_maps_diarization_estimate(
     assert config.diarization_estimate_threshold == pytest.approx(0.6)
     assert config.diarization_estimate_model == "custom.onnx"
     assert config.diarization_route_max_speakers == 8
+
+
+def test_build_job_config_allows_missing_input_for_estimate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#107: конфиг оценки собирается без существующего входного файла."""
+    monkeypatch.setattr("audio_transcriber.web.config.env_defaults", lambda: {})
+
+    missing = tmp_path / "not-uploaded-yet.mp3"
+    config = build_job_config(
+        missing,
+        output_dir=tmp_path / "out",
+        data_dir=tmp_path / "data",
+        overrides={"DEVICE": "cuda"},
+        require_input=False,
+    )
+
+    assert config.input_file == missing
+    assert config.require_existing_input is False
+    assert config.device == "cuda"
+
+
+def test_build_job_config_requires_input_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Реальная задача (без флага) по-прежнему требует входной файл."""
+    monkeypatch.setattr("audio_transcriber.web.config.env_defaults", lambda: {})
+
+    with pytest.raises(ConfigurationError):
+        build_job_config(
+            tmp_path / "missing.mp3",
+            output_dir=tmp_path / "out",
+            data_dir=tmp_path / "data",
+        )
 
 
 # --- Гибридная диаризация (обход лимита 4 говорящих) -------------------------

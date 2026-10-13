@@ -1420,12 +1420,20 @@ def register_api(
         """Оценщик времени файла по текущей конфигурации задач (#107).
 
         Собирает план стадий и дефолтные веса один раз на запрос списка; сами
-        оценки по файлам считаются дёшево (длительность × веса). Ошибку сборки
-        конфигурации гасим — оценки тогда строятся по полному набору стадий без
+        оценки по файлам считаются дёшево (длительность × веса). Конфиг строится
+        напрямую из текущих настроек без требования существования входного файла
+        (``require_input=False``), поэтому веса учитывают устройство. Ошибку
+        сборки гасим — оценки тогда строятся по полному набору стадий без
         привязки к устройству, список файлов из-за этого падать не должен.
         """
         try:
-            config = config_builder("estimate", paths.input_dir / "estimate")
+            config = build_job_config(
+                paths.input_dir / "estimate",
+                output_dir=paths.results_dir / "estimate",
+                data_dir=paths.data_dir,
+                overrides=settings_store.load().env_overrides(),
+                require_input=False,
+            )
             stages = planned_stages(config)
             defaults = default_weights(config)
         except Exception:

@@ -326,6 +326,10 @@ class AppConfig:
     # а протокол формируется отдельно по запросу (``generate_protocol``).
     # По умолчанию ``True`` — обратная совместимость CLI; TUI ставит ``False``.
     protocol_auto: bool = True
+    #: Проверять существование ``input_file`` при валидации. Реальные прогоны
+    #: оставляют ``True``; сборка «оценочного» конфига (предпросмотр времени до
+    #: запуска, #107) может отключить проверку, чтобы не требовать входного файла.
+    require_existing_input: bool = True
 
     def __post_init__(self) -> None:
         # Нормализуем пути к глоссариям до проверки (тип поля — tuple[Path, ...],
@@ -343,11 +347,12 @@ class AppConfig:
         self._validate()
 
     def _validate(self) -> None:
-        if not self.input_file.exists():
-            raise ConfigurationError(f"Входной файл не найден: {self.input_file}")
+        if self.require_existing_input:
+            if not self.input_file.exists():
+                raise ConfigurationError(f"Входной файл не найден: {self.input_file}")
 
-        if not self.input_file.is_file():
-            raise ConfigurationError(f"Указанный путь не является файлом: {self.input_file}")
+            if not self.input_file.is_file():
+                raise ConfigurationError(f"Указанный путь не является файлом: {self.input_file}")
 
         if self.num_speakers is not None and self.num_speakers < 1:
             raise ConfigurationError("Количество говорящих должно быть положительным числом")

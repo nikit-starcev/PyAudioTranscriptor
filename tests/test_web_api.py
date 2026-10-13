@@ -37,6 +37,7 @@ from audio_transcriber.web.app import (
 from audio_transcriber.web.events import JobEventBus
 from audio_transcriber.web.paths import WebPaths
 from audio_transcriber.web.runner import ORPHAN_ERROR_MESSAGE, JobRunner
+from audio_transcriber.web.settings import SettingsStore
 from audio_transcriber.web.storage.jobs_db import (
     STATUS_CANCELLED,
     STATUS_DONE,
@@ -233,6 +234,40 @@ def test_files_estimate_is_none_without_duration(client: TestClient) -> None:
     assert estimate["seconds"] is None
     assert estimate["by_stage"] is None
     assert estimate["exact"] is False
+
+
+def test_files_estimate_is_device_aware(
+    client: TestClient, web_paths: WebPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#107: при ``DEVICE=cuda`` вес ASR ниже (GPU-фактор применяется)."""
+    monkeypatch.setattr("audio_transcriber.web.app.probe_duration", lambda _path: 100.0)
+    store = SettingsStore(web_paths.settings_json)
+    settings = store.load()
+    settings.device = "cuda"
+    store.save(settings)
+    _upload(client, "gpu.mp3", b"abc")
+
+    estimate = client.get("/api/files").json()[0]["estimate"]
+
+    # 100 c × 0.30 (DEFAULT_STAGE_RTF.asr) × 0.5 (DEFAULT_GPU_ASR_FACTOR) = 15.
+    assert estimate["by_stage"]["asr"] == pytest.approx(15.0)
+    assert estimate["exact"] is False
+
+
+def test_run_job_with_missing_input_fails(client: TestClient) -> None:
+    """Реальная задача требует существующий вход: пропавший файл — ошибка."""
+    _upload(client, "vanish.mp3", b"abc")
+    listed = client.get("/api/files").json()[0]["path"]
+    created = client.post("/api/jobs", json={"path": listed})
+    assert created.status_code == 201
+    job_id = created.json()["id"]
+    # Задача уже создана, но ещё не запущена — файл можно удалить.
+    assert client.delete("/api/files/vanish.mp3").status_code == 200
+
+    response = client.post(f"/api/jobs/{job_id}/run")
+
+    assert response.status_code == 400
+    assert "не найден" in response.json()["detail"]
 
 
 def test_upload_deduplicates_names(client: TestClient) -> None:
