@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-10-13
+
 ### Added
 
 - **Дорожка говорящего (solo)** (#108): `GET /api/jobs/{id}/speakers/{sid}/track?fmt=wav|m4a&overlap=keep|mute`
