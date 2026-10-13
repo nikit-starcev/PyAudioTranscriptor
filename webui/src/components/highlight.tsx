@@ -11,6 +11,39 @@ export type HighlightSpan = {
   accent?: boolean
   /** Правка отклонена в списке — фрагмент помечается как неприменяемый. */
   rejected?: boolean
+  /** Совпадение поиска по тексту (#129) — отдельный цвет подсветки. */
+  search?: boolean
+}
+
+/** Диапазоны совпадений поискового запроса в тексте реплики (#129). */
+export function findQuerySpans(text: string, query: string): HighlightSpan[] {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return []
+  const haystack = text.toLowerCase()
+  const spans: HighlightSpan[] = []
+  let from = 0
+  while (spans.length < 500) {
+    const index = haystack.indexOf(needle, from)
+    if (index === -1) break
+    spans.push({ id: `search-${index}`, start: index, end: index + needle.length, search: true })
+    from = index + needle.length
+  }
+  return spans
+}
+
+/**
+ * Объединяет правки и совпадения поиска (#129): совпадение поиска имеет
+ * приоритет, поэтому перекрывающиеся правки опускаются.
+ */
+export function mergeHighlightSpans(
+  suggestions: HighlightSpan[],
+  query: HighlightSpan[],
+): HighlightSpan[] {
+  if (query.length === 0) return suggestions
+  const kept = suggestions.filter(
+    (span) => !query.some((match) => span.start < match.end && match.start < span.end),
+  )
+  return [...query, ...kept]
 }
 
 export type HighlightPart = { text: string; span: HighlightSpan | null }
@@ -49,13 +82,18 @@ export function renderHighlightedText(
 ): ReactNode[] {
   return splitBySpans(text, spans).map((part, index) => {
     if (!part.span) return part.text
+    const search = part.span.search
     return (
       <mark
         key={`${keyPrefix}-${part.span.id}-${index}`}
         className={cn(
-          'rounded-sm bg-danger-soft text-danger-soft-fg underline decoration-danger decoration-2 underline-offset-2',
-          part.span.rejected && 'line-through decoration-danger-soft-fg opacity-60',
-          part.span.accent && 'bg-warn-soft text-warn-soft-fg ring-1 ring-warn',
+          search
+            ? 'rounded-sm bg-warn-soft text-warn-soft-fg'
+            : 'rounded-sm bg-danger-soft text-danger-soft-fg underline decoration-danger decoration-2 underline-offset-2',
+          !search &&
+            part.span.rejected &&
+            'line-through decoration-danger-soft-fg opacity-60',
+          !search && part.span.accent && 'bg-warn-soft text-warn-soft-fg ring-1 ring-warn',
         )}
       >
         {part.text}

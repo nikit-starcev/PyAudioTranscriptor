@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { navigateTo, type Route } from '../../app/routes'
 import { useApp } from '../../app/useApp'
 import { useHashRoute } from '../../app/useHashRoute'
-import { Alert } from '../ui'
+import { Alert, cn } from '../ui'
 import ActionProgressCard from '../ActionProgressCard'
 import ArchivePage from '../../pages/ArchivePage'
 import BinariesPage from '../../pages/BinariesPage'
@@ -70,7 +70,12 @@ function AppShell() {
       <div className="flex">
         <Sidebar route={route} open={navOpen} onClose={() => setNavOpen(false)} />
         <main className="min-w-0 flex-1">
-          <div className="mx-auto w-full max-w-6xl space-y-5 px-4 py-6 sm:px-6 lg:px-8">
+          <div
+            className={cn(
+              'mx-auto w-full max-w-6xl space-y-5 px-4 py-6 sm:px-6 lg:px-8',
+              app.actionRun && 'pb-64',
+            )}
+          >
             {app.error && (
               <Alert tone="danger" live onDismiss={() => app.setError(null)}>
                 {app.error}

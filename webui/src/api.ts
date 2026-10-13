@@ -994,6 +994,7 @@ export function formatStageTime(seconds: number): string {
  */
 export function formatEstimate(seconds: number | null): string {
   if (seconds == null || !Number.isFinite(seconds) || seconds <= 0) return '—'
+  if (seconds < 1) return '< 1 мин'
   if (seconds < 60) return `${Math.round(seconds)} с`
   const minutes = Math.round(seconds / 60)
   if (minutes < 60) return `${minutes} мин`

@@ -574,7 +574,14 @@ export function useAppController() {
   )
 
   const deleteJob = useCallback(
-    async (jobId: string) => {
+    async (jobId: string, name: string) => {
+      if (
+        !window.confirm(
+          `Удалить задачу «${name}» в корзину?\nЕё можно восстановить через «Показать удалённые».`,
+        )
+      ) {
+        return
+      }
       setError(null)
       try {
         await api<Job>(`/api/jobs/${jobId}`, { method: 'DELETE' })

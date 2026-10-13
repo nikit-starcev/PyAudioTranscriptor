@@ -116,7 +116,7 @@ function JobPage({ jobId, initialEntry }: { jobId: string; initialEntry?: number
               <IconButton
                 aria-label="Удалить задачу"
                 onClick={() => {
-                  void app.deleteJob(jobId).then(() => navigateTo('/jobs'))
+                  void app.deleteJob(jobId, job?.name ?? jobId).then(() => navigateTo('/jobs'))
                 }}
               >
                 <Trash2 aria-hidden className="h-4 w-4" />

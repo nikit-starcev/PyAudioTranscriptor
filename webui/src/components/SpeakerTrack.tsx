@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { ChevronDown, ChevronRight, Download, Headphones } from 'lucide-react'
 
 import { speakerTrackUrl } from '../api'
-import { Button, Checkbox } from './ui'
+import { Button, Checkbox, Spinner } from './ui'
 
 type Props = {
   jobId: string
@@ -26,6 +26,7 @@ const LINK_BUTTON =
 function SpeakerTrack({ jobId, speakerId, speakerName }: Props) {
   const [open, setOpen] = useState(false)
   const [muteOverlap, setMuteOverlap] = useState(false)
+  const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const overlap = muteOverlap ? 'mute' : 'keep'
   const playUrl = speakerTrackUrl(jobId, speakerId, { fmt: 'wav', overlap })
   const downloadUrl = speakerTrackUrl(jobId, speakerId, { fmt: 'm4a', overlap })
@@ -48,7 +49,24 @@ function SpeakerTrack({ jobId, speakerId, speakerName }: Props) {
             Слышно только «{speakerName}»: речь остальных говорящих заглушается по таймкодам
             реплик. Первый запуск может занять время — дорожка собирается и кэшируется.
           </p>
-          <audio controls preload="none" className="h-8 w-full" src={playUrl} />
+          {status === 'loading' && (
+            <div className="flex items-center gap-2 text-xs text-muted">
+              <Spinner size={14} /> Готовим дорожку…
+            </div>
+          )}
+          {status === 'error' && (
+            <p className="text-xs text-danger">Не удалось загрузить дорожку</p>
+          )}
+          <audio
+            controls
+            preload="metadata"
+            className="h-8 w-full"
+            src={playUrl}
+            onLoadStart={() => setStatus('loading')}
+            onLoadedMetadata={() => setStatus('ready')}
+            onCanPlay={() => setStatus('ready')}
+            onError={() => setStatus('error')}
+          />
           <div className="flex flex-wrap items-center gap-3">
             <Checkbox
               label="Глушить наложения"

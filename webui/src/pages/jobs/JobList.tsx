@@ -151,7 +151,7 @@ function JobList() {
                         <IconButton
                           aria-label={`Удалить задачу ${job.name}`}
                           size="sm"
-                          onClick={() => void app.deleteJob(job.id)}
+                          onClick={() => void app.deleteJob(job.id, job.name)}
                         >
                           <Trash2 aria-hidden className="h-4 w-4" />
                         </IconButton>

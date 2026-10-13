@@ -23,7 +23,12 @@ import {
   Tooltip,
   cn,
 } from './ui'
-import { renderHighlightedText, type HighlightSpan } from './highlight'
+import {
+  findQuerySpans,
+  mergeHighlightSpans,
+  renderHighlightedText,
+  type HighlightSpan,
+} from './highlight'
 import { TRANSCRIPT_MARKS } from './transcriptMarks'
 import GlossaryQuickModal from './GlossaryQuickModal'
 
@@ -66,6 +71,8 @@ type Props = {
   focusEntry?: Entry | null
   /** Меняется при каждом запросе перехода из сводки правок (#120). */
   focusTick?: number
+  /** Поисковый запрос — совпадения подсвечиваются в тексте реплик (#129). */
+  query?: string
 }
 
 type AssignTarget = { speakerId?: string; newName?: string }
@@ -190,6 +197,7 @@ function TranscriptTable({
   rejectedSuggestionIds,
   focusEntry,
   focusTick,
+  query,
 }: Props) {
   const playback = usePlayback()
   const [autoAdvance, setAutoAdvance] = useState(false)
@@ -952,7 +960,7 @@ function TranscriptTable({
                 const selected = selectedKeys.has(key)
                 const words = karaokeWords(entry)
                 const pieces = speakerPieces(speakers, entry)
-                const entrySpans: HighlightSpan[] = (
+                const suggestionSpans: HighlightSpan[] = (
                   suggestionsByEntry?.get(entry) ?? []
                 ).map((item) => ({
                   id: item.id,
@@ -961,11 +969,15 @@ function TranscriptTable({
                   accent: item.id === accentSuggestionId,
                   rejected: rejectedSuggestionIds?.has(item.id) ?? false,
                 }))
+                const entrySpans = mergeHighlightSpans(
+                  suggestionSpans,
+                  findQuerySpans(entry.text, query ?? ''),
+                )
                 // Позиции правок отсчитаны от текста реплики: караоке-слова
                 // берём, только если точно его воссоздают (иначе — текст целиком).
                 const karaoke =
                   words &&
-                  (entrySpans.length === 0 ||
+                  (suggestionSpans.length === 0 ||
                     words.map((word) => word.text).join(' ') === entry.text)
                     ? words
                     : null

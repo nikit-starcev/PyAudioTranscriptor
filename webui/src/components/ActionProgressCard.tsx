@@ -72,6 +72,14 @@ function ActionProgressCard({ run, onClose }: Props) {
     return () => window.clearInterval(timer)
   }, [running])
 
+  // Завершённую карточку убираем автоматически (ошибку — с задержкой), но
+  // кнопкой «Закрыть» можно скрыть сразу.
+  useEffect(() => {
+    if (!run || run.status === 'running') return
+    const timer = window.setTimeout(onClose, run.status === 'error' ? 15000 : 8000)
+    return () => window.clearTimeout(timer)
+  }, [run, onClose])
+
   if (!run) return null
 
   const steps = ACTION_STEPS[run.kind]
@@ -97,7 +105,7 @@ function ActionProgressCard({ run, onClose }: Props) {
     <Card
       role="status"
       aria-live="polite"
-      className="fixed bottom-4 right-4 z-50 w-80 max-w-[calc(100vw-2rem)] p-3 shadow-lg backdrop-blur"
+      className="fixed bottom-4 right-4 z-40 w-80 max-w-[calc(100vw-2rem)] p-3 shadow-lg backdrop-blur"
     >
       <div className="mb-2 flex items-start gap-2">
         <div className="min-w-0 flex-1">

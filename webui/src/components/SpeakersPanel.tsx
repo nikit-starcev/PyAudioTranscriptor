@@ -338,7 +338,7 @@ function SpeakersPanel({
                 {speaker.has_sample && (
                   <audio
                     controls
-                    preload="none"
+                    preload="metadata"
                     className="h-8 w-full sm:col-span-2 sm:row-start-3 sm:max-w-md"
                     src={`/api/jobs/${jobId}/samples/${encodeURIComponent(speaker.id)}`}
                   />

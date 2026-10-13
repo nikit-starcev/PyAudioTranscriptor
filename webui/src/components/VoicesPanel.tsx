@@ -547,7 +547,7 @@ function VoicesPanel() {
                             </div>
                             <audio
                               controls
-                              preload="none"
+                              preload="metadata"
                               className="h-8 w-full sm:max-w-md"
                               src={sampleAudioUrl(sample.filename)}
                             />

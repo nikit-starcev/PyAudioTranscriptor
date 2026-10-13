@@ -16,9 +16,10 @@ const HEALTH_TONES: Record<HealthStatus, BadgeTone> = {
   stalled: 'danger',
 }
 
-/** ETA человекачитаемо: секунды до минуты, дальше — минуты. */
+/** ETA человекочитаемо: менее секунды — «< 1 мин», секунды до минуты, дальше — минуты. */
 function formatEta(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '—'
+  if (seconds < 1) return '< 1 мин'
   if (seconds < 60) return `${Math.ceil(seconds)} с`
   return `${Math.max(1, Math.round(seconds / 60))} мин`
 }

@@ -116,9 +116,14 @@ function TranscriptTab({ jobId, initialEntry }: { jobId: string; initialEntry?: 
             className="pl-8"
           />
         </div>
-        <span className="text-xs tabular-nums text-muted">
-          {result.entries.length} реплик · {result.speakers.length} говорящих ·{' '}
-          {formatDuration(result.duration)} · язык {result.language ?? '—'}
+        <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs tabular-nums text-muted">
+          <span>{result.entries.length} реплик</span>
+          <span aria-hidden>·</span>
+          <span>{result.speakers.length} говорящих</span>
+          <span aria-hidden>·</span>
+          <span>{formatDuration(result.duration)}</span>
+          <span aria-hidden>·</span>
+          <span>язык {result.language ?? '—'}</span>
         </span>
       </div>
 
@@ -173,6 +178,7 @@ function TranscriptTab({ jobId, initialEntry }: { jobId: string; initialEntry?: 
         }
         onUndoAssign={() => app.undoSpeakers(jobId)}
         undoAvailable={app.speakerUndoAvailable}
+        query={app.query}
       />
 
       <EditorPanel

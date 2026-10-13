@@ -34,6 +34,25 @@ function estimateTooltip(estimate: EstimateInfo): string {
   return [head, ...parts].join(' · ')
 }
 
+/** Имя файла с точками переноса на границах слов (#128): не рвётся посреди слова. */
+function FileNameText({ name }: { name: string }) {
+  const segments = name.split(/([_\-]+)/)
+  return (
+    <>
+      {segments.map((segment, index) =>
+        index % 2 === 0 ? (
+          <span key={index}>{segment}</span>
+        ) : (
+          <span key={index}>
+            {segment}
+            <wbr />
+          </span>
+        ),
+      )}
+    </>
+  )
+}
+
 function FilesPanel() {
   const app = useApp()
   const fileInput = useRef<HTMLInputElement>(null)
@@ -86,10 +105,10 @@ function FilesPanel() {
           <ul className="space-y-2">
             {app.files.map((file, index) => (
               <li key={file.path} className="rounded-md border border-border p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="line-clamp-2 break-words text-sm" title={file.name}>
-                      {file.name}
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0 basis-full">
+                    <p className="break-words text-sm" title={file.name}>
+                      <FileNameText name={file.name} />
                     </p>
                     <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
                       <span className="tabular-nums">{formatBytes(file.size)}</span>
@@ -150,8 +169,14 @@ function FilesPanel() {
 
                 {!file.processed && (
                   <div className="mt-3 flex flex-wrap items-end gap-3">
-                    <label className="flex flex-col gap-1 text-xs text-muted">
-                      Точно
+                    <Tooltip label="Сколько говорящих в записи: точное значение, минимум и максимум. Пусто — автоопределение.">
+                      <span className="cursor-help pb-2 text-xs text-muted">Число говорящих</span>
+                    </Tooltip>
+                    <label
+                      className="flex flex-col gap-1 text-xs text-muted"
+                      title="Точное число говорящих: пусто — автоопределение"
+                    >
+                      Точное
                       <Input
                         id={`exact-${index}`}
                         type="number"
@@ -169,8 +194,11 @@ function FilesPanel() {
                         className="w-20"
                       />
                     </label>
-                    <label className="flex flex-col gap-1 text-xs text-muted">
-                      Мин
+                    <label
+                      className="flex flex-col gap-1 text-xs text-muted"
+                      title="Нижняя граница числа говорящих: пусто — без ограничения"
+                    >
+                      Минимум
                       <Input
                         id={`min-${index}`}
                         type="number"
@@ -188,8 +216,11 @@ function FilesPanel() {
                         className="w-20"
                       />
                     </label>
-                    <label className="flex flex-col gap-1 text-xs text-muted">
-                      Макс
+                    <label
+                      className="flex flex-col gap-1 text-xs text-muted"
+                      title="Верхняя граница числа говорящих: пусто — без ограничения"
+                    >
+                      Максимум
                       <Input
                         id={`max-${index}`}
                         type="number"
