@@ -240,3 +240,36 @@ def write_wav(path: Path, waveform: np.ndarray, *, sample_rate: int = SAMPLE_RAT
         wf.setsampwidth(2)
         wf.setframerate(sample_rate)
         wf.writeframes(encode_pcm16(waveform))
+
+
+def write_m4a(path: Path, waveform: np.ndarray, *, sample_rate: int = SAMPLE_RATE) -> None:
+    """Записывает моно waveform float32 как AAC в контейнере MP4 (``.m4a``).
+
+    Используется для компактной выдачи дорожки говорящего: WAV на всю запись
+    занимает сотни мегабайт, а AAC — на порядок меньше. Кодирование выполняет
+    PyAV (ffmpeg), поэтому дополнительных бинарников не требуется.
+    """
+
+    try:
+        container = av.open(str(path), "w", format="mp4")
+    except Exception as exc:
+        raise AudioFileError(f"Не удалось создать {path}: {exc}") from exc
+    try:
+        try:
+            stream = container.add_stream("aac", rate=sample_rate)
+            stream.layout = "mono"
+            frame = av.AudioFrame.from_ndarray(
+                np.ascontiguousarray(waveform, dtype=np.float32).reshape(1, -1),
+                format="fltp",
+                layout="mono",
+            )
+            frame.sample_rate = sample_rate
+            frame.pts = 0
+            for packet in stream.encode(frame):
+                container.mux(packet)
+            for packet in stream.encode(None):
+                container.mux(packet)
+        except Exception as exc:
+            raise AudioFileError(f"Не удалось закодировать AAC для {path}: {exc}") from exc
+    finally:
+        container.close()

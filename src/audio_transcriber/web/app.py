@@ -32,7 +32,7 @@ from dataclasses import replace
 from pathlib import Path
 from secrets import token_urlsafe
 from typing import Annotated
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import numpy as np
 from fastapi import (
@@ -91,9 +91,15 @@ from audio_transcriber.diarization.reference import (
     prepare_reference,
 )
 from audio_transcriber.diarization.samples import (
+    Interval,
     normalize_sample,
     select_sample_variants,
     slice_waveform,
+)
+from audio_transcriber.diarization.track import (
+    apply_track,
+    fingerprint_intervals,
+    mute_intervals,
 )
 from audio_transcriber.diarization.voices import (
     base_sample_name,
@@ -117,7 +123,7 @@ from audio_transcriber.llm.semantic import (
 from audio_transcriber.protocol import ProtocolArtifacts, generate_protocol
 from audio_transcriber.storage.glossary_builder import build_active_glossary
 from audio_transcriber.storage.prompts_db import PromptsDB
-from audio_transcriber.utils.audio import load_waveform, write_wav
+from audio_transcriber.utils.audio import load_waveform, write_m4a, write_wav
 from audio_transcriber.utils.env import binary_available
 from audio_transcriber.utils.net import DEFAULT_WEB_PORT
 from audio_transcriber.utils.playback import amplitude_envelope, read_duration
@@ -3363,6 +3369,62 @@ def register_api(
         media_type = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
         return _range_response(source, request.headers.get("range"), media_type=media_type)
 
+    @router.get("/jobs/{job_id}/speakers/{speaker_id}/track")
+    def speaker_track(
+        job_id: str,
+        speaker_id: str,
+        request: Request,
+        fmt: str = "wav",
+        overlap: str = "keep",
+    ) -> Response:
+        """Дорожка выбранного говорящего (#108): чужая речь заглушается.
+
+        Возвращает аудио исходной записи той же длительности, где интервалы
+        реплик других говорящих ослаблены до тишины (:func:`apply_track`).
+        ``fmt`` — ``wav`` (по умолчанию) или ``m4a`` (AAC, компактнее);
+        ``overlap`` — ``keep`` (реплики-наложения с участием выбранного
+        сохраняются) или ``mute`` (глушатся, остаются только чистые реплики).
+        Зоны без реплик не трогаются. Результат кэшируется по интервалам и
+        исходному файлу и отдаётся с поддержкой HTTP Range.
+
+        Разделения источников здесь нет: это mute-дорожка, а не TSE по
+        enrollment-эмбеддингу (следующий шаг).
+        """
+        job = _require_job(store, job_id)
+        payload = _require_result(paths, job)
+        if fmt not in _SPEAKER_TRACK_FORMATS:
+            raise HTTPException(status_code=400, detail="fmt должен быть wav или m4a")
+        if overlap not in _SPEAKER_TRACK_OVERLAP:
+            raise HTTPException(status_code=400, detail="overlap должен быть keep или mute")
+        source = Path(job.source_path)
+        if not source.is_file():
+            raise HTTPException(status_code=404, detail="Исходное аудио не найдено")
+        result = result_from_payload(payload, source_path=source)
+        speaker = find_speaker(result, speaker_id)
+        if speaker is None:
+            raise HTTPException(status_code=404, detail="Говорящий не найден")
+        include_overlap = overlap == "keep"
+        intervals = mute_intervals(
+            result.entries, speaker_id, include_overlap=include_overlap
+        )
+        target = _speaker_track_path(
+            paths, job, speaker_id, fmt, include_overlap, intervals, source
+        )
+        if not target.is_file():
+            try:
+                _build_speaker_track(source, target, intervals, fmt)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=500, detail=f"Не удалось собрать дорожку: {exc}"
+                ) from exc
+        filename = f"{source.stem} — {sanitize_filename(speaker.display_name)}.{fmt}"
+        return _range_response(
+            target,
+            request.headers.get("range"),
+            media_type=_SPEAKER_TRACK_MEDIA_TYPES[fmt],
+            filename=filename,
+        )
+
     @router.get("/jobs/{job_id}/events")
     async def job_events(
         job_id: str,
@@ -4452,16 +4514,81 @@ def _file_chunks(path: Path, start: int, length: int, chunk_size: int) -> Iterat
             yield data
 
 
-def _range_response(path: Path, range_header: str | None, *, media_type: str) -> Response:
+#: Форматы и MIME-типы дорожки говорящего (#108).
+_SPEAKER_TRACK_FORMATS = frozenset({"wav", "m4a"})
+_SPEAKER_TRACK_MEDIA_TYPES = {"wav": "audio/wav", "m4a": "audio/mp4"}
+_SPEAKER_TRACK_OVERLAP = frozenset({"keep", "mute"})
+
+
+def _speaker_track_path(
+    paths: WebPaths,
+    job: Job,
+    speaker_id: str,
+    fmt: str,
+    include_overlap: bool,
+    intervals: Sequence[Interval],
+    source: Path,
+) -> Path:
+    """Путь кэша дорожки говорящего, зависящий от интервалов и исходного файла.
+
+    Ключ включает хэш интервалов-заглушений и ``st_size``/``mtime_ns`` исходника,
+    поэтому повторный прогон или правка говорящих дают новый файл, а не старый
+    кэш.
+    """
+    key = fingerprint_intervals(intervals)
+    try:
+        stat = source.stat()
+    except OSError:
+        stat = None
+    if stat is not None:
+        key = f"{key}-{stat.st_size}-{stat.st_mtime_ns}"
+    mode = "keep" if include_overlap else "mute"
+    safe = sanitize_filename(speaker_id, fallback="speaker")
+    return paths.cache_dir / "speaker-tracks" / f"{job.id}-{safe}-{fmt}-{mode}-{key}.{fmt}"
+
+
+def _build_speaker_track(
+    source: Path, destination: Path, intervals: Sequence[Interval], fmt: str
+) -> None:
+    """Собирает дорожку: декодирует исходник, глушит ``intervals``, пишет атомарно."""
+    waveform = load_waveform(source)
+    processed = apply_track(waveform, intervals=intervals)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    tmp = destination.with_name(f"{destination.name}.{uuid.uuid4().hex}.part")
+    try:
+        if fmt == "m4a":
+            write_m4a(tmp, processed)
+        else:
+            write_wav(tmp, processed)
+        os.replace(tmp, destination)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _range_response(
+    path: Path,
+    range_header: str | None,
+    *,
+    media_type: str,
+    filename: str | None = None,
+) -> Response:
     """Ответ с поддержкой HTTP Range для прослушивания исходного аудио.
 
     Тело отдаётся потоково (``StreamingResponse``) чанками по
     :data:`_STREAM_CHUNK_SIZE` — без чтения диапазона (и тем более всего файла
     при ``Range: bytes=0-``) в память. Заголовки ``Content-Range``,
     ``Content-Length`` и ``Accept-Ranges`` формируются по правилам RFC 7233.
+
+    ``filename`` задаёт имя для скачивания (``Content-Disposition``, RFC 5987:
+    кириллица уходит в ``filename*=UTF-8''…``, ASCII-дубль — из расширения).
     """
     size = path.stat().st_size
     headers = {"Accept-Ranges": "bytes"}
+    if filename:
+        fallback = f"speaker-track{Path(filename).suffix}"
+        headers["Content-Disposition"] = (
+            f'inline; filename="{fallback}"; filename*=UTF-8\'\'{quote(filename, safe="")}'
+        )
     if range_header and range_header.startswith("bytes=") and size > 0:
         spec = range_header[len("bytes=") :].split(",", 1)[0].strip()
         first, _, last = spec.partition("-")

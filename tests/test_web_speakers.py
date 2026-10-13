@@ -902,3 +902,99 @@ def test_voices_upload_no_similar_warning_for_distinct(
     assert created.status_code == 201
     assert created.json()["similar"] == []
 
+
+# --- дорожка говорящего (#108): заглушение чужих реплик ---------------------
+
+
+def _decoded_seconds(content: bytes):
+    import io
+
+    import numpy as np
+
+    with wave.open(io.BytesIO(content), "rb") as handle:
+        rate = handle.getframerate()
+        data = handle.readframes(handle.getnframes())
+    return rate, np.frombuffer(data, dtype="<i2").astype("float32")
+
+
+def _interior_rms(samples, rate: int, start: float, end: float, margin: float = 0.05) -> float:
+    import numpy as np
+
+    first = round((start + margin) * rate)
+    last = round((end - margin) * rate)
+    chunk = samples[first:last]
+    return float(np.sqrt(np.mean(chunk**2))) if chunk.size else 0.0
+
+
+def _tone_job(client: TestClient) -> str:
+    uploaded = _upload(client, "tone.wav", _tone_bytes(220.0))
+    return _run_job(client, uploaded["name"])
+
+
+def test_speaker_track_mutes_other_speakers(client: TestClient) -> None:
+    job_id = _tone_job(client)
+
+    response = client.get(f"/api/jobs/{job_id}/speakers/SPEAKER_01/track")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("audio/wav")
+    rate, samples = _decoded_seconds(response.content)
+    assert _interior_rms(samples, rate, 0.0, 1.0) < 50
+    assert _interior_rms(samples, rate, 1.0, 2.0) > 1000
+    assert _interior_rms(samples, rate, 2.0, 3.0) < 50
+
+
+def test_speaker_track_keeps_overlap_by_default_and_mutes_on_request(
+    client: TestClient,
+) -> None:
+    job_id = _tone_job(client)
+
+    kept = client.get(f"/api/jobs/{job_id}/speakers/SPEAKER_00/track")
+    assert kept.status_code == 200
+    rate, samples = _decoded_seconds(kept.content)
+    assert all(_interior_rms(samples, rate, index, index + 1) > 1000 for index in range(3))
+
+    muted = client.get(f"/api/jobs/{job_id}/speakers/SPEAKER_00/track?overlap=mute")
+    assert muted.status_code == 200
+    rate, samples = _decoded_seconds(muted.content)
+    assert _interior_rms(samples, rate, 0.0, 1.0) > 1000
+    assert _interior_rms(samples, rate, 1.0, 2.0) < 50
+    assert _interior_rms(samples, rate, 2.0, 3.0) > 1000
+
+
+def test_speaker_track_m4a_and_content_disposition(client: TestClient) -> None:
+    job_id = _tone_job(client)
+
+    response = client.get(f"/api/jobs/{job_id}/speakers/SPEAKER_00/track?fmt=m4a")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("audio/mp4")
+    disposition = response.headers["content-disposition"]
+    assert disposition.startswith("inline")
+    assert "filename*=UTF-8''" in disposition
+    assert quote("Иван") in disposition
+
+
+def test_speaker_track_supports_range(client: TestClient) -> None:
+    job_id = _tone_job(client)
+
+    response = client.get(
+        f"/api/jobs/{job_id}/speakers/SPEAKER_01/track",
+        headers={"Range": "bytes=0-99"},
+    )
+
+    assert response.status_code == 206
+    assert len(response.content) == 100
+    assert response.headers["content-range"].startswith("bytes 0-99/")
+
+
+def test_speaker_track_rejects_bad_params_and_unknown_speaker(client: TestClient) -> None:
+    job_id = _tone_job(client)
+
+    assert client.get(f"/api/jobs/{job_id}/speakers/SPEAKER_00/track?fmt=ogg").status_code == 400
+    assert (
+        client.get(f"/api/jobs/{job_id}/speakers/SPEAKER_00/track?overlap=all").status_code == 400
+    )
+    assert client.get(f"/api/jobs/{job_id}/speakers/SPEAKER_99/track").status_code == 404
+
+

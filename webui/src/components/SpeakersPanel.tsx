@@ -15,6 +15,7 @@ import {
   type VoiceInfo,
 } from '../api'
 import { Alert, Badge, Button, Card, CardHeader, IconButton, Input, Select, Spinner } from './ui'
+import SpeakerTrack from './SpeakerTrack'
 import SpeakerVariants from './SpeakerVariants'
 
 type Props = {
@@ -351,6 +352,12 @@ function SpeakersPanel({
                   onToLibrary={onToLibrary}
                   onReassign={onReassign}
                   onRename={onRename}
+                />
+
+                <SpeakerTrack
+                  jobId={jobId}
+                  speakerId={speaker.id}
+                  speakerName={speaker.display_name}
                 />
               </li>
             )

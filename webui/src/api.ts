@@ -222,6 +222,23 @@ export type SpeakerVariants = { speaker_id: string; variants: SampleVariant[] }
 /** Окно исходного аудио для сохранения в библиотеку как образец. */
 export type LibraryWindow = { start: number; end: number }
 
+/** Формат серверной дорожки говорящего (#108): wav для прослушивания, m4a — компактнее. */
+export type SpeakerTrackFormat = 'wav' | 'm4a'
+
+/** URL дорожки выбранного говорящего (#108): чужая речь заглушается на сервере. */
+export function speakerTrackUrl(
+  jobId: string,
+  speakerId: string,
+  options: { fmt?: SpeakerTrackFormat; overlap?: 'keep' | 'mute' } = {},
+): string {
+  const params = new URLSearchParams()
+  if (options.fmt) params.set('fmt', options.fmt)
+  if (options.overlap) params.set('overlap', options.overlap)
+  const query = params.toString()
+  const base = `/api/jobs/${jobId}/speakers/${encodeURIComponent(speakerId)}/track`
+  return query ? `${base}?${query}` : base
+}
+
 /** Одно изменение говорящего реплики при переназначении окна (#40/#41). */
 export type SpeakerChange = {
   index: number
