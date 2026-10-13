@@ -151,6 +151,7 @@ from audio_transcriber.web.assets import (
     FetchFn,
     asset_payload,
     find_asset,
+    managed_binary_dir,
     resolve_artifact,
 )
 from audio_transcriber.web.chat_api import LlmFactory, register_chat_routes
@@ -2018,8 +2019,9 @@ def register_api(
         candidate = paths.bin_dir / asset.key
         if candidate.is_symlink():
             return 400, "Недопустимый путь ресурса", ""
-        directory = _resolve_within(paths.bin_dir, candidate)
-        if directory is not None and candidate.is_dir():
+        settings = settings_store.load()
+        directory = managed_binary_dir(asset, bin_root=paths.bin_dir, settings=settings)
+        if directory is not None:
             try:
                 shutil.rmtree(directory)
             except OSError as exc:
@@ -2028,28 +2030,11 @@ def register_api(
             binary_installer.clear(asset, directory)
             logger.info("Ресурс %s удалён из %s", asset.key, directory)
             return 200, "", str(directory)
-        settings = settings_store.load()
         installed = assets_registry.asset_binary_path(
             asset, bin_root=paths.bin_dir, settings=settings
         )
         if installed is None:
             return 404, "Ресурс не установлен", ""
-        parent = installed.parent
-        resolved_parent = _resolve_within(paths.bin_dir, parent)
-        if (
-            resolved_parent is not None
-            and resolved_parent != paths.bin_dir.resolve()
-            and parent.is_dir()
-            and not parent.is_symlink()
-        ):
-            try:
-                shutil.rmtree(resolved_parent)
-            except OSError as exc:
-                logger.warning("Не удалось удалить ресурс %s: %s", asset.key, exc)
-                return 409, "Не удалось удалить ресурс — возможно, он используется", ""
-            binary_installer.clear(asset, resolved_parent)
-            logger.info("Ресурс %s удалён из %s", asset.key, resolved_parent)
-            return 200, "", str(resolved_parent)
         return (
             400,
             "Ресурс установлен вне служебного каталога — удалите файл вручную",

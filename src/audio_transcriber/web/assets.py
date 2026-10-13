@@ -70,6 +70,7 @@ __all__ = [
     "current_os",
     "find_asset",
     "install_binary_asset",
+    "managed_binary_dir",
     "resolve_artifact",
     "sha256_file",
     "stream_download",
@@ -527,6 +528,40 @@ def asset_binary_path(
         if which:
             return Path(which)
     return None
+
+
+def managed_binary_dir(
+    asset: AssetSpec,
+    *,
+    bin_root: Path,
+    settings: object,
+) -> Path | None:
+    """Каталог ресурса внутри ``bin_root``, который можно безопасно удалить.
+
+    Единый критерий «управляемости»: возвращается ровно тот каталог, который
+    снесёт ``DELETE /api/assets/{key}`` — ``bin_root/<key>`` либо каталог
+    найденного бинарника внутри ``bin_root``. Симлинки и пути вне ``bin_root``
+    не считаются управляемыми (``None``).
+    """
+    candidate = bin_root / asset.key
+    if candidate.is_symlink():
+        return None
+    if candidate.is_dir() and _is_within(bin_root, candidate):
+        return candidate.resolve()
+    installed = asset_binary_path(asset, bin_root=bin_root, settings=settings)
+    if installed is None:
+        return None
+    parent = installed.parent
+    if parent.is_symlink() or not parent.is_dir():
+        return None
+    if not _is_within(bin_root, parent):
+        return None
+    try:
+        if parent.resolve() == bin_root.resolve():
+            return None
+    except (OSError, ValueError):
+        return None
+    return parent.resolve()
 
 
 def sha256_file(path: Path) -> str:
@@ -1090,7 +1125,7 @@ def asset_payload(
         {
             "installed": path is not None,
             "downloadable": artifact is not None,
-            "managed": path is not None and _is_within(bin_root, path),
+            "managed": managed_binary_dir(asset, bin_root=bin_root, settings=settings) is not None,
             "path": str(path) if path is not None else "",
             "platform": f"{target_os}/{target_arch}",
             "artifact": artifact_payload(artifact),

@@ -194,6 +194,45 @@ def test_setup_steps_gigaam_check_package_and_model() -> None:
     assert ready["missing_models"] == []
 
 
+def test_setup_readiness_lists_only_native_binaries() -> None:
+    settings = WebSettings()
+    required = tuple(web_setup.required_model_ids(settings))
+    plan = web_setup.build_setup_steps(
+        settings=settings,
+        report=_report([_check("dep:sherpa_onnx", "fail")]),
+        models=_models(present=set(), required_ids=required),
+        hf_token_set=False,
+    )
+
+    # Контракт шага «Бинарники и пакеты»: pip-пакет остаётся в общем списке.
+    assert "sherpa-onnx" in [item["key"] for item in plan["binaries"]]
+
+    # Сводка «Готовность»: пакет — только в разделе пакетов, не среди бинарников.
+    readiness = plan["readiness"]
+    binary_keys = [item["key"] for item in readiness["binaries"]]
+    assert "sherpa-onnx" not in binary_keys
+    assert binary_keys == ["deep-filter"]
+    assert "sherpa" in [dep["key"] for dep in readiness["dependencies"]]
+
+
+def test_setup_readiness_gigaam_package_not_in_binaries() -> None:
+    settings = WebSettings(asr_backend="gigaam")
+    required = tuple(web_setup.required_model_ids(settings))
+    plan = web_setup.build_setup_steps(
+        settings=settings,
+        report=_report([_check("dep:onnx_asr", "fail")]),
+        models=_models(present=set(), required_ids=required),
+        hf_token_set=False,
+    )
+
+    assert "onnx-asr" in [item["key"] for item in plan["binaries"]]
+
+    readiness = plan["readiness"]
+    assert "onnx-asr" not in [item["key"] for item in readiness["binaries"]]
+    assert [item["key"] for item in readiness["binaries"]] == ["deep-filter"]
+    assert "gigaam" in [dep["key"] for dep in readiness["dependencies"]]
+
+
 def test_steps_all_ok_when_ready() -> None:
     settings = WebSettings()
     required = tuple(web_setup.required_model_ids(settings))
