@@ -464,6 +464,8 @@ def _readiness_summary(
 
     binaries_summary: list[dict[str, object]] = []
     for requirement in binaries:
+        if requirement.get("kind") != assets_registry.KIND_BINARY:
+            continue
         artifact = requirement.get("artifact")
         artifact_map = artifact if isinstance(artifact, Mapping) else {}
         binaries_summary.append(

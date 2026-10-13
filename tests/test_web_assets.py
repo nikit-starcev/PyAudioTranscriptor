@@ -625,6 +625,87 @@ def test_delete_all_unknown_key_reported(web_paths: WebPaths) -> None:
     assert response.json()["failed"] == [{"key": "nope", "reason": "неизвестный ресурс"}]
 
 
+def test_managed_true_when_managed_copy_exists(web_paths: WebPaths, tmp_path: Path) -> None:
+    directory, _binary = _stage_binary(web_paths, "whisper-cli")
+    external = tmp_path / "external-whisper-cli"
+    external.write_bytes(b"bin")
+
+    app = create_app(paths=web_paths, heartbeat=0.05)
+    with TestClient(app) as client:
+        store = client.app.state.settings_store  # type: ignore[attr-defined]
+        settings = store.load()
+        settings.whisper_cpp_binary = str(external)
+        store.save(settings)
+
+        whisper = next(
+            item
+            for item in client.get("/api/assets").json()["assets"]
+            if item["key"] == "whisper-cli"
+        )
+        # Настройка смотрит наружу, но управляемая копия в bin_dir есть —
+        # критерий «управляемости» совпадает с тем, что удаляет delete.
+        assert whisper["installed"] is True
+        assert whisper["managed"] is True
+
+        single = client.delete("/api/assets/whisper-cli")
+        assert single.status_code == 200
+        assert not directory.exists()
+
+    # Внешний файл не тронут.
+    assert external.exists()
+
+
+def test_delete_all_skips_unmanaged_external(web_paths: WebPaths, tmp_path: Path) -> None:
+    external = tmp_path / "external-whisper-cli"
+    external.write_bytes(b"bin")
+
+    app = create_app(paths=web_paths, heartbeat=0.05)
+    with TestClient(app) as client:
+        store = client.app.state.settings_store  # type: ignore[attr-defined]
+        settings = store.load()
+        settings.whisper_cpp_binary = str(external)
+        store.save(settings)
+
+        whisper = next(
+            item
+            for item in client.get("/api/assets").json()["assets"]
+            if item["key"] == "whisper-cli"
+        )
+        assert whisper["installed"] is True
+        assert whisper["managed"] is False
+
+        # Нельзя удалить поштучно — не удаляется и пачкой.
+        assert client.delete("/api/assets/whisper-cli").status_code == 400
+
+        payload = client.post("/api/assets/delete-all").json()
+        assert "whisper-cli" not in payload["deleted"]
+        assert {
+            "key": "whisper-cli",
+            "reason": "Ресурс установлен вне служебного каталога — удалите файл вручную",
+        } in payload["failed"]
+
+    assert external.exists()
+
+
+def test_managed_false_for_symlinked_bin_dir(web_paths: WebPaths) -> None:
+    web_paths.bin_dir.mkdir(parents=True, exist_ok=True)
+    target = web_paths.bin_dir / "real-whisper"
+    target.mkdir()
+    (target / "whisper-cli").write_bytes(b"bin")
+    link = web_paths.bin_dir / "whisper-cli"
+    link.symlink_to(target, target_is_directory=True)
+
+    app = create_app(paths=web_paths, heartbeat=0.05)
+    with TestClient(app) as client:
+        whisper = next(
+            item
+            for item in client.get("/api/assets").json()["assets"]
+            if item["key"] == "whisper-cli"
+        )
+        assert whisper["managed"] is False
+        assert client.delete("/api/assets/whisper-cli").status_code == 400
+
+
 def test_install_all_selected_binary(web_paths: WebPaths, tmp_path: Path) -> None:
     data = _tar_gz({"whisper-bin-ubuntu-x64/whisper-cli": b"bin"})
     artifact = _artifact(data)
