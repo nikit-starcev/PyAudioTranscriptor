@@ -1,6 +1,7 @@
 export type Route =
   | { name: 'jobs' }
-  | { name: 'job'; id: string }
+  | { name: 'job'; id: string; entry?: number }
+  | { name: 'archive' }
   | { name: 'models' }
   | { name: 'binaries' }
   | { name: 'glossary' }
@@ -17,11 +18,21 @@ export function navigateTo(to: string): void {
 }
 
 export function parseHash(hash: string): Route {
-  const path = hash.replace(/^#/, '').replace(/^\/+/, '')
+  const raw = hash.replace(/^#/, '').replace(/^\/+/, '')
+  const [path, queryString] = raw.split('?')
   const [head, ...rest] = path.split('/')
+  const query = new URLSearchParams(queryString ?? '')
   switch (head) {
-    case 'jobs':
-      return rest[0] ? { name: 'job', id: decodeURIComponent(rest[0]) } : { name: 'jobs' }
+    case 'jobs': {
+      if (!rest[0]) return { name: 'jobs' }
+      const entryRaw = query.get('entry')
+      const entry = entryRaw != null && /^\d+$/.test(entryRaw) ? Number(entryRaw) : undefined
+      return entry == null
+        ? { name: 'job', id: decodeURIComponent(rest[0]) }
+        : { name: 'job', id: decodeURIComponent(rest[0]), entry }
+    }
+    case 'archive':
+      return { name: 'archive' }
     case 'models':
       return { name: 'models' }
     case 'binaries':

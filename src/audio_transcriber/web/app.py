@@ -140,6 +140,7 @@ from audio_transcriber.web.actions import (
     ActionProgress,
     sanitize_action_id,
 )
+from audio_transcriber.web.archive_api import register_archive_routes
 from audio_transcriber.web.asr_device import describe_asr_device
 from audio_transcriber.web.assets import (
     KIND_BINARY,
@@ -1475,6 +1476,27 @@ def register_api(
         resolve_transcript=_chat_transcript,
         config_for=_chat_config,
         llm_factory=llm_factory,
+    )
+
+    def _archive_result_info(job: Job) -> tuple[Path, int] | None:
+        """Путь и время изменения JSON-результата задачи (``None`` — нет файла)."""
+        path = _result_path(paths, job)
+        try:
+            return path, path.stat().st_mtime_ns
+        except OSError:
+            return None
+
+    def _archive_done_jobs() -> list[Job]:
+        """Задачи с готовым результатом — кандидаты на индексацию в архив."""
+        return [job for job in store.list() if job.status == STATUS_DONE]
+
+    register_archive_routes(
+        router,
+        db_path=lambda: paths.archive_db,
+        iter_jobs=_archive_done_jobs,
+        result_info=_archive_result_info,
+        load_result=load_result_file,
+        get_job=store.get,
     )
 
     @router.get("/health")
