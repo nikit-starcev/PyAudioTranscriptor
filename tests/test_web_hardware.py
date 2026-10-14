@@ -44,7 +44,8 @@ def _patch_hardware(
         hardware, "detect_hardware", lambda *, disk_path=None: profile  # noqa: ARG005
     )
     monkeypatch.setattr(
-        "audio_transcriber.web.app.binary_available", lambda binary: binary in binaries
+        "audio_transcriber.web.app.binary_available",
+        lambda binary: any(key in str(binary) for key in binaries),
     )
 
 
