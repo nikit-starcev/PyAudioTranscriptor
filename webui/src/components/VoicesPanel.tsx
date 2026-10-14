@@ -1,5 +1,15 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Check, ChevronDown, ChevronRight, GitMerge, Pencil, Search, Trash2 } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  GitMerge,
+  Pause,
+  Pencil,
+  Play,
+  Search,
+  Trash2,
+} from 'lucide-react'
 
 import {
   api,
@@ -24,6 +34,7 @@ import {
   FileInput,
   IconButton,
   Input,
+  ProgressBar,
   Spinner,
   Tooltip,
 } from './ui'
@@ -65,6 +76,70 @@ function VoicesPanel() {
   const [dedup, setDedup] = useState<VoiceDedupReport | null>(null)
   const [dedupBusy, setDedupBusy] = useState(false)
   const [dedupKeep, setDedupKeep] = useState<Record<string, string>>({})
+  const [dedupPlaying, setDedupPlaying] = useState<string | null>(null)
+  const [dedupSeqKey, setDedupSeqKey] = useState<string | null>(null)
+  const [dedupProgress, setDedupProgress] = useState(0)
+  const dedupAudioRef = useRef<HTMLAudioElement | null>(null)
+  const dedupQueueRef = useRef<string[]>([])
+
+  const stopDedup = useCallback(() => {
+    dedupQueueRef.current = []
+    setDedupSeqKey(null)
+    setDedupProgress(0)
+    const audio = dedupAudioRef.current
+    if (audio) audio.pause()
+    setDedupPlaying(null)
+  }, [])
+
+  const playDedupSample = useCallback(
+    (filename: string, queue: string[], seqKey: string | null) => {
+      const audio = dedupAudioRef.current
+      if (!audio) return
+      dedupQueueRef.current = queue
+      setDedupSeqKey(seqKey)
+      setDedupPlaying(filename)
+      setDedupProgress(0)
+      audio.src = sampleAudioUrl(filename)
+      void audio.play().catch(() => stopDedup())
+    },
+    [stopDedup],
+  )
+
+  const toggleDedupSample = (filename: string) => {
+    if (dedupPlaying === filename) {
+      stopDedup()
+      return
+    }
+    playDedupSample(filename, [], null)
+  }
+
+  const toggleDedupGroup = (key: string, group: VoiceDuplicateGroup) => {
+    if (dedupSeqKey === key && dedupPlaying) {
+      stopDedup()
+      return
+    }
+    const [first, ...rest] = group.members.map((member) => member.filename)
+    if (!first) return
+    playDedupSample(first, rest, key)
+  }
+
+  const onDedupTimeUpdate = () => {
+    const audio = dedupAudioRef.current
+    if (!audio) return
+    const total = audio.duration
+    if (Number.isFinite(total) && total > 0) {
+      setDedupProgress(Math.min(1, Math.max(0, audio.currentTime / total)))
+    }
+  }
+
+  const onDedupEnded = () => {
+    const next = dedupQueueRef.current.shift()
+    if (next == null) {
+      stopDedup()
+      return
+    }
+    playDedupSample(next, dedupQueueRef.current, dedupSeqKey)
+  }
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -196,6 +271,7 @@ function VoicesPanel() {
   }
 
   const runDedup = useCallback(async () => {
+    stopDedup()
     setDedupBusy(true)
     setError(null)
     try {
@@ -211,7 +287,7 @@ function VoicesPanel() {
     } finally {
       setDedupBusy(false)
     }
-  }, [])
+  }, [stopDedup])
 
   const resolveGroup = async (group: VoiceDuplicateGroup, keep: string) => {
     const victims = group.members
@@ -333,6 +409,13 @@ function VoicesPanel() {
           }
         />
         <CardContent className="space-y-3">
+          <audio
+            ref={dedupAudioRef}
+            preload="metadata"
+            className="hidden"
+            onTimeUpdate={onDedupTimeUpdate}
+            onEnded={onDedupEnded}
+          />
           {dedup?.error && (
             <Alert tone="warn" live onDismiss={() => setDedup(null)}>
               {dedup.error}
@@ -356,15 +439,60 @@ function VoicesPanel() {
                       {group.names.join(' / ')}
                     </span>
                     <span className="text-xs text-muted">· {group.members.length} обр.</span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="ml-auto"
+                      aria-label={
+                        dedupSeqKey === key && dedupPlaying
+                          ? 'Остановить прослушивание группы'
+                          : 'Прослушать все образцы группы'
+                      }
+                      title={
+                        dedupSeqKey === key && dedupPlaying
+                          ? 'Остановить'
+                          : 'Прослушать образцы группы подряд'
+                      }
+                      icon={
+                        dedupSeqKey === key && dedupPlaying ? (
+                          <Pause aria-hidden className="h-3.5 w-3.5" />
+                        ) : (
+                          <Play aria-hidden className="h-3.5 w-3.5" />
+                        )
+                      }
+                      onClick={() => toggleDedupGroup(key, group)}
+                    >
+                      {dedupSeqKey === key && dedupPlaying ? 'Стоп' : 'Прослушать все'}
+                    </Button>
                   </div>
                   <ul className="divide-y divide-border">
                     {group.members.map((member) => {
                       const isKeep = member.filename === keep
+                      const isPlaying = dedupPlaying === member.filename
                       return (
                         <li
                           key={member.filename}
-                          className="flex flex-wrap items-center gap-2 py-2"
+                          className={`flex flex-wrap items-center gap-2 py-2 ${
+                            isPlaying ? 'bg-primary-soft' : ''
+                          }`}
                         >
+                          <IconButton
+                            variant={isPlaying ? 'primary' : 'secondary'}
+                            size="sm"
+                            aria-label={
+                              isPlaying
+                                ? `Остановить образец ${member.filename}`
+                                : `Прослушать образец ${member.filename}`
+                            }
+                            title={isPlaying ? 'Остановить' : 'Прослушать образец'}
+                            onClick={() => toggleDedupSample(member.filename)}
+                          >
+                            {isPlaying ? (
+                              <Pause aria-hidden className="h-3.5 w-3.5" />
+                            ) : (
+                              <Play aria-hidden className="h-3.5 w-3.5" />
+                            )}
+                          </IconButton>
                           <button
                             type="button"
                             aria-label={`Оставить ${member.filename}`}
@@ -390,6 +518,14 @@ function VoicesPanel() {
                           <span className="tabular-nums text-xs text-muted" title="Размер файла">
                             {formatBytes(member.size)}
                           </span>
+                          {isPlaying && (
+                            <ProgressBar
+                              size="sm"
+                              className="w-full"
+                              value={dedupProgress * 100}
+                              label={`Прогресс прослушивания ${member.filename}`}
+                            />
+                          )}
                         </li>
                       )
                     })}
