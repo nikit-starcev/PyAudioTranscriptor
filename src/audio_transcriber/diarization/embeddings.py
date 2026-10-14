@@ -35,6 +35,7 @@ import numpy as np
 from audio_transcriber.config.defaults import DEFAULT_DIARIZATION_ESTIMATE_MODEL
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.utils.audio import SAMPLE_RATE
+from audio_transcriber.utils.memory import release_memory
 
 logger = logging.getLogger(__name__)
 
@@ -284,6 +285,15 @@ class SpeakerEmbedder:
     def embed_many(self, windows: Sequence[np.ndarray]) -> np.ndarray:
         """L2-нормированные эмбеддинги для последовательности окон."""
         return np.stack([self.embed(window) for window in windows])
+
+    def close(self) -> None:
+        """Освобождает ONNX-экстрактор эмбеддингов после стадии (#141).
+
+        Модель CAM++ живёт в процессе; сбрасываем ссылку и собираем мусор.
+        Повторный ``embed`` загрузит экстрактор заново (ленивая загрузка).
+        """
+        self._extractor = None
+        release_memory()
 
 
 def compute_embeddings(windows: Sequence[np.ndarray], model: Path) -> np.ndarray:

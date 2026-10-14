@@ -53,6 +53,7 @@ from audio_transcriber.domain.enums import Device
 from audio_transcriber.domain.models import SpeakerSegment
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.utils.audio import SAMPLE_RATE, load_waveform
+from audio_transcriber.utils.memory import release_memory
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +168,16 @@ class PyannoteEmbeddingEngine:
         }
         vector = inference(inputs)  # type: ignore[operator]
         return np.asarray(vector, dtype=np.float32).reshape(-1)
+
+    def close(self) -> None:
+        """Освобождает модель эмбеддингов и CUDA-контекст после enrollment (#141).
+
+        Локальная модель WeSpeaker (torch) живёт в процессе; сбрасываем ссылку,
+        собираем мусор и чистим кэш CUDA (мягко). Повторный ``embed`` загрузит
+        модель заново (ленивая загрузка).
+        """
+        self._inference = None
+        release_memory(cuda=True)
 
 
 def average_embeddings(vectors: Sequence[np.ndarray]) -> np.ndarray | None:

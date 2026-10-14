@@ -11,6 +11,7 @@ from audio_transcriber.domain.models import TranscriptionSegment, WordTimestamp
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.utils.exceptions import TranscriptionError
 from audio_transcriber.utils.hotwords import truncate_hotwords_by_tokens
+from audio_transcriber.utils.memory import release_memory
 
 logger = logging.getLogger(__name__)
 
@@ -179,3 +180,13 @@ class WhisperSpeechRecognizer:
             ) from exc
 
         return segments, info.language, info.duration
+
+    def close(self) -> None:
+        """Освобождает модель faster-whisper после стадии ASR (#141).
+
+        Модель живёт в процессе и без явного сброса держит RSS до конца прогона.
+        Конвейер вызывает метод после распознавания; повторный ``transcribe``
+        загрузит модель заново (ленивая загрузка).
+        """
+        self._model = None
+        release_memory()

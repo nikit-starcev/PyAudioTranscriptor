@@ -370,3 +370,14 @@ class HybridSpeechRecognizer:
             refined_seconds / duration if duration > 0 else 0.0
         )
         return result, detected_language, duration
+
+    def close(self) -> None:
+        """Освобождает оба движка (основной и резервный) после стадии ASR (#141).
+
+        Оба держат модели в процессе; закрываем их тем же методом, что и
+        одиночный движок (отсутствие ``close`` у конкретного движка — не ошибка).
+        """
+        for engine in (self._primary, self._fallback):
+            close = getattr(engine, "close", None)
+            if callable(close):
+                close()

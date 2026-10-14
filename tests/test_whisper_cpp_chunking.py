@@ -159,6 +159,43 @@ def test_short_audio_is_not_chunked(
     assert written == []
 
 
+def test_chunked_converted_input_is_decoded_once_without_whole_file_wav(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Не-«родной» длинный вход декодируется один раз; целый WAV не пишется (#140, O5)."""
+
+    captured: list[list[str]] = []
+    probe = AudioProbe("matroska,webm", "opus", 48000, 2, 65.0)
+    monkeypatch.setattr(whisper_module, "probe_audio", lambda _p: probe)
+
+    data = np.zeros(65 * SAMPLE_RATE, dtype=np.float32)
+    load_calls: list[Path] = []
+
+    def loader(path: Path, *, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
+        load_calls.append(path)
+        return data
+
+    monkeypatch.setattr(whisper_module, "load_waveform", loader)
+    written: list[Path] = []
+    monkeypatch.setattr(
+        whisper_module, "write_wav", lambda path, _waveform: written.append(Path(path))
+    )
+    _install_popen(monkeypatch, captured, lambda index: [_segment_payload(f"кусок{index}")])
+
+    recognizer = WhisperCppRecognizer(
+        _model(tmp_path), chunk_seconds=30.0, chunk_overlap=2.0
+    )
+    segments, _language, duration = recognizer.transcribe(Path("input.webm"))
+
+    # Один декод исходного файла, затем нарезка из этого же массива.
+    assert len(load_calls) == 1
+    # Целого audio.wav нет — пишутся только куски.
+    assert all(path.name.startswith("chunk_") for path in written)
+    assert len(captured) == 3
+    assert duration == pytest.approx(65.0)
+    assert [segment.text for segment in segments] == ["кусок0", "кусок1", "кусок2"]
+
+
 def test_overlap_duplicate_is_kept_once_from_more_central_chunk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

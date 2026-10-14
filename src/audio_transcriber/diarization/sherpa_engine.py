@@ -58,6 +58,7 @@ from audio_transcriber.domain.models import SpeakerOverlap, SpeakerSegment
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.utils.audio import SAMPLE_RATE, load_waveform
 from audio_transcriber.utils.exceptions import DiarizationError
+from audio_transcriber.utils.memory import release_memory
 
 logger = logging.getLogger(__name__)
 
@@ -337,3 +338,13 @@ class SherpaSpeakerDiarizer:
     def overlap_regions(self) -> list[SpeakerOverlap]:
         """VAD даёт эксклюзивную разметку — перекрытия не детектируются."""
         return list(self._overlaps)
+
+    def close(self) -> None:
+        """Освобождает CAM++-эмбеддер после стадии диаризации/enrollment (#141).
+
+        ONNX-модель эмбеддингов живёт в процессе; сбрасываем ссылку и собираем
+        мусор. Конвейер вызывает метод после enrollment; повторное обращение
+        загрузит эмбеддер заново (ленивая загрузка).
+        """
+        self._embedder = None
+        release_memory()

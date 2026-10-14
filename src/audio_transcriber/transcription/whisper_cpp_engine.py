@@ -56,8 +56,9 @@ logger = logging.getLogger(__name__)
 #: при тех же параметрах (отказ от лишнего перекодирования входа, чанкинг
 #: длинных файлов, пословные таймстемпы, учёт фактического денойза #83,
 #: посимвольная/пословная сшивка стыков кусков #94, нормализация длительности
-#: слов с ``start == end`` #113), старый кэш должен инвалидироваться.
-ASR_IMPL_VERSION = 7
+#: слов с ``start == end`` #113, единый декод входа для чанкинга #140), старый
+#: кэш должен инвалидироваться.
+ASR_IMPL_VERSION = 8
 
 #: Таймаут одного вызова whisper-cli (секунды). Битая входная дорожка или
 #: дедлок GPU/Vulkan может повесить распознавание навсегда; по истечении
@@ -984,8 +985,10 @@ class WhisperCppRecognizer:
             str(VAD_SPEECH_PAD_MS),
         ]
 
-    def _prepare_input(self, audio_path: Path, tmpdir_path: Path) -> tuple[Path, float]:
-        """Готовит вход для whisper-cli и возвращает (путь, длительность, с).
+    def _prepare_input(
+        self, audio_path: Path, tmpdir_path: Path
+    ) -> tuple[Path | None, float, np.ndarray | None]:
+        """Готовит вход для whisper-cli: ``(путь, длительность, waveform)``.
 
         «Родной» для whisper-cli вход (16-кГц моно PCM WAV, например результат
         шумоподавления) отдаётся в ``-f`` как есть: лишний round-trip
@@ -994,8 +997,12 @@ class WhisperCppRecognizer:
         miniaudio не декодирует (mp4/webm/mp3/…), а также WAV другой частоты или
         числа каналов по-прежнему перекодируются во временный 16-кГц WAV.
 
-        Длительность берём из заголовка при passthrough — декодировать сэмплы
-        для этого не нужно; иначе она равна длине декодированного waveform.
+        Декодирование выполняется **один раз**: возвращённый ``waveform``
+        переиспользуется стадией чанкинга, чтобы не декодировать тот же файл
+        повторно (#140, O5). Если аудио длинное и будет нарезано на куски,
+        целый временный WAV не пишется вовсе — куски нарезаются прямо из
+        массива, и ``путь`` равен ``None``. Длительность берём из заголовка при
+        passthrough, иначе — из длины массива.
         """
 
         probe: AudioProbe | None
@@ -1007,15 +1014,22 @@ class WhisperCppRecognizer:
         if probe is not None and _is_native_wav(probe):
             logger.debug("whisper.cpp: вход отдаётся напрямую (%s)", audio_path)
             duration = probe.duration_seconds or 0.0
-            return audio_path, duration
+            return audio_path, duration, None
 
-        wav_path = tmpdir_path / "audio.wav"
         waveform = load_waveform(audio_path)
-        write_wav(wav_path, waveform)
         # Реальная длительность аудио (включая хвостовую тишину), а не конец
         # последнего сегмента — VAD отсекает тишину, из-за чего ``end``
         # последней реплики систематически занижает длительность.
-        return wav_path, len(waveform) / SAMPLE_RATE
+        duration = len(waveform) / SAMPLE_RATE
+        if self._chunk_seconds > 0 and duration > self._chunk_seconds:
+            # Длинное аудио будет нарезано на куски: целый WAV не нужен, куски
+            # пишутся из уже декодированного массива. Убирает и повторный
+            # декод, и транзиентный пик записи целого файла (#140, O5).
+            return None, duration, waveform
+
+        wav_path = tmpdir_path / "audio.wav"
+        write_wav(wav_path, waveform)
+        return wav_path, duration, waveform
 
     def _run_whisper(
         self,
@@ -1126,10 +1140,22 @@ class WhisperCppRecognizer:
         )
 
     def _transcribe_chunked(
-        self, input_path: Path, tmpdir_path: Path, language: str | None
+        self,
+        input_path: Path | None,
+        tmpdir_path: Path,
+        language: str | None,
+        waveform: np.ndarray | None = None,
     ) -> tuple[list[TranscriptionSegment], str | None, float]:
-        """Режет аудио на куски, распознаёт каждый отдельно и склеивает."""
-        waveform = load_waveform(input_path)
+        """Режет аудио на куски, распознаёт каждый отдельно и склеивает.
+
+        ``waveform`` можно передать уже декодированным (единый декод, #140):
+        тогда ``input_path`` не используется. Если не передан — аудио
+        декодируется из ``input_path`` (passthrough «родного» WAV).
+        """
+        if waveform is None:
+            if input_path is None:  # pragma: no cover — защита от вырожденного случая
+                raise TranscriptionError("whisper.cpp: нет входа для чанкинга")
+            waveform = load_waveform(input_path)
         decoded_duration = len(waveform) / SAMPLE_RATE
         bounds = _choose_chunk_bounds(
             waveform,
@@ -1222,7 +1248,9 @@ class WhisperCppRecognizer:
 
         with tempfile.TemporaryDirectory(prefix="whisper-cpp-") as tmpdir:
             tmpdir_path = Path(tmpdir)
-            input_path, audio_duration = self._prepare_input(audio_path, tmpdir_path)
+            input_path, audio_duration, prepared_waveform = self._prepare_input(
+                audio_path, tmpdir_path
+            )
 
             # Чанкинг только для длинного аудио. Если длительность неизвестна
             # (probe не дал заголовка), решает уже декодированный waveform —
@@ -1232,11 +1260,15 @@ class WhisperCppRecognizer:
             )
             if use_chunking:
                 segments, detected, decoded_duration = self._transcribe_chunked(
-                    input_path, tmpdir_path, language
+                    input_path, tmpdir_path, language, waveform=prepared_waveform
                 )
                 if decoded_duration > 0:
                     audio_duration = max(audio_duration, decoded_duration)
             else:
+                assert input_path is not None  # при выключенном чанкинге вход всегда есть
+                # Декодированный массив на не-чанковом пути не нужен: освобождаем
+                # его до длительного прогона whisper-cli.
+                del prepared_waveform
                 output_base = tmpdir_path / "result"
                 on_fraction = (
                     (lambda fraction: self._emit(fraction=fraction))

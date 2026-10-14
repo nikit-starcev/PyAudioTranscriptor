@@ -115,10 +115,24 @@ class _SharedWaveform:
     а последующие обращения возвращают тот же массив. Ошибка декодирования
     мягко деградирует до ``None``: потребитель сам решит, что делать (как и
     раньше, когда декодировал файл сам).
+
+    :meth:`release` освобождает удерживаемый массив после последнего
+    потребителя (диаризация/enrollment): 230 МБ/час не должны жить сквозь
+    merge→LLM→export (#140). Следующее :meth:`get` (например, для образцов
+    голоса) декодирует аудио заново.
     """
 
-    def __init__(self, path: Path, waveform: np.ndarray | None = None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        waveform: np.ndarray | None = None,
+        *,
+        fallback_path: Path | None = None,
+    ) -> None:
         self._path = path
+        #: Куда откатиться, если ``path`` уже удалён (денойзенный временный WAV
+        #: удаляется на ``close()``, а образцы голоса извлекаются позже).
+        self._fallback_path = fallback_path
         self._waveform = waveform
         self._attempted = waveform is not None
 
@@ -126,14 +140,28 @@ class _SharedWaveform:
         """Возвращает waveform, декодируя его при первом обращении (не более раз)."""
         if not self._attempted:
             self._attempted = True
+            self._waveform = self._decode()
+        return self._waveform
+
+    def _decode(self) -> np.ndarray | None:
+        """Декодирует файл, откатываясь на ``fallback_path`` при неудаче."""
+        seen: set[Path] = set()
+        for candidate in (self._path, self._fallback_path):
+            if candidate is None or candidate in seen:
+                continue
+            seen.add(candidate)
             try:
-                self._waveform = load_waveform(self._path)
+                return load_waveform(candidate)
             except Exception as exc:  # noqa: BLE001 — потребитель деградирует сам
                 logger.debug(
-                    "Общий waveform: не удалось декодировать %s: %s", self._path, exc
+                    "Общий waveform: не удалось декодировать %s: %s", candidate, exc
                 )
-                self._waveform = None
-        return self._waveform
+        return None
+
+    def release(self) -> None:
+        """Освобождает декодированный массив; следующее ``get`` декодирует заново."""
+        self._waveform = None
+        self._attempted = False
 
 
 def _whisper_cpp_vad_model() -> Path | None:
@@ -507,6 +535,24 @@ def _ensure_not_cancelled(
     raise ProcessingCancelled(f"Обработка отменена: {context}")
 
 
+def _close_engine(engine: object) -> None:
+    """Мягко освобождает ресурсы движка после его стадии (#141).
+
+    Модели pyannote/faster-whisper/GigaAM/sherpa живут **в процессе** и без
+    явного освобождения держат RSS до конца прогона. Конвейер закрывает только
+    движки, которые создал сам; внедрёнными снаружи владеет вызывающий код.
+    Отсутствие метода ``close`` — не ошибка: движки-сабпроцессы (whisper.cpp,
+    nemo-speech) в процессе ничего не держат.
+    """
+    close = getattr(engine, "close", None)
+    if not callable(close):
+        return
+    try:
+        close()
+    except Exception as exc:  # noqa: BLE001 — освобождение не должно ронять прогон
+        logger.debug("Не удалось освободить движок %s: %s", type(engine).__name__, exc)
+
+
 def run_pipeline(
     config: AppConfig,
     *,
@@ -541,7 +587,15 @@ def run_pipeline(
     emit = on_progress or (lambda _event: None)
     config.ensure_output_dir()
     device = device or resolve_device(config.device)
-    recognizer = recognizer or _build_recognizer(config, device, on_progress=emit)
+    #: Движки диаризации/enrollment, созданные самим конвейером. Их модели
+    #: освобождаются после стадии (#141): на слабом железе это заметная доля
+    #: RSS, и держать их до конца прогона незачем. Внедрённые снаружи движки не
+    #: закрываем — ими владеет вызывающий код. ASR-движок закрывается отдельно,
+    #: сразу после распознавания (чтобы не делить RAM с диаризацией).
+    owned_engines: list[object] = []
+    recognizer_owned = recognizer is None
+    if recognizer_owned:
+        recognizer = _build_recognizer(config, device, on_progress=emit)
 
     # ``mark_overlap`` управляет и пометкой зон наложения, и сбором
     # ``extra_speakers`` в объединителе: при выключенном режиме реплики остаются
@@ -615,6 +669,10 @@ def run_pipeline(
             shared_waveform = _SharedWaveform(
                 audio_path,
                 getattr(denoiser, "last_waveform", None) if denoiser is not None else None,
+                # Денойзенный временный файл удаляется на ``denoiser.close()``, а
+                # образцы голоса извлекаются позже — откат на исходный файл, если
+                # waveform придётся декодировать заново (#140).
+                fallback_path=config.input_file,
             )
         # Подпись фактически применённого денойза: и ASR, и диаризация должны
         # использовать один и тот же её вид, иначе кэш разъедется (#83).
@@ -658,6 +716,11 @@ def run_pipeline(
                 "asr", asr_key, asr_payload(transcription_segments, language, duration)
             )
         _ensure_not_cancelled(cancel_event, "после распознавания речи")
+        # ASR-модель больше не нужна: освобождаем её до диаризации, чтобы она не
+        # делила RAM с моделью диаризации (#141). Для движков-сабпроцессов
+        # (whisper.cpp) это no-op.
+        if recognizer_owned:
+            _close_engine(recognizer)
 
         # whisper.cpp сам использует GPU через Vulkan; pyannote.audio в этом
         # гибриде не имеет GPU-бэкенда (ROCm не поддерживает старые AMD-карты),
@@ -700,12 +763,16 @@ def run_pipeline(
                 emit(ProgressEvent("diarization", "Определение говорящих", fraction=None))
                 # ``audio_path`` нужен режиму ``auto``: дешёвый оценщик числа
                 # говорящих выбирает nemo-speech (<= лимита) или pyannote (#64).
-                active_diarizer = diarizer or create_diarizer(
-                    config,
-                    diarization_device,
-                    audio_path=audio_path,
-                    on_progress=emit,
-                )
+                if diarizer is None:
+                    active_diarizer = create_diarizer(
+                        config,
+                        diarization_device,
+                        audio_path=audio_path,
+                        on_progress=emit,
+                    )
+                    owned_engines.append(active_diarizer)
+                else:
+                    active_diarizer = diarizer
                 try:
                     speaker_segments = active_diarizer.diarize(
                         audio_path,
@@ -765,6 +832,7 @@ def run_pipeline(
                     on_progress=emit,
                 )
                 active_diarizer = diarizer_for_enrollment
+                owned_engines.append(diarizer_for_enrollment)
             if active_enrollment_engine is None and isinstance(
                 diarizer_for_enrollment, (HybridSpeakerDiarizer, SherpaSpeakerDiarizer)
             ):
@@ -798,6 +866,15 @@ def run_pipeline(
         close = getattr(denoiser, "close", None)
         if callable(close):
             close()
+        # Диаризация/enrollment уже взяли waveform; перед «хвостом»
+        # merge→LLM→export декодированный массив (230 МБ/час) не нужен (#140).
+        # Если он понадобится для образцов голоса, ``get`` декодирует заново.
+        if shared_waveform is not None:
+            shared_waveform.release()
+        # Модели диаризации/enrollment больше не нужны — освобождаем их
+        # (вместе с возможным CUDA-контекстом) до тяжёлого хвоста (#141).
+        for engine in owned_engines:
+            _close_engine(engine)
 
     _ensure_not_cancelled(cancel_event, "перед объединением сегментов")
     emit(ProgressEvent("merge", "Объединение сегментов", fraction=None))

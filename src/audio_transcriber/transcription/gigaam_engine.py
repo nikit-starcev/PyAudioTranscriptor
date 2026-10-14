@@ -31,6 +31,7 @@ from audio_transcriber.domain.models import TranscriptionSegment
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.utils.audio import SAMPLE_RATE, load_waveform
 from audio_transcriber.utils.exceptions import TranscriptionError
+from audio_transcriber.utils.memory import release_memory
 
 logger = logging.getLogger(__name__)
 
@@ -313,3 +314,14 @@ class GigaAmRecognizer:
         # GigaAM v3 — русскоязычная модель; возвращаем 'ru' независимо от
         # переданного language (он остаётся для совместимости протокола).
         return segments, "ru", duration
+
+    def close(self) -> None:
+        """Освобождает модель/VAD GigaAM после стадии ASR (#141).
+
+        ONNX-модель живёт в процессе; сбрасываем её и флаг активного VAD, чтобы
+        RSS не держался до конца прогона. Повторный ``transcribe`` загрузит
+        модель заново (ленивая загрузка).
+        """
+        self._adapter = None
+        self._vad_active = False
+        release_memory()

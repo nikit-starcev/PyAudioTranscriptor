@@ -18,6 +18,7 @@ from audio_transcriber.domain.models import SpeakerOverlap, SpeakerSegment
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.utils.audio import SAMPLE_RATE, load_waveform
 from audio_transcriber.utils.exceptions import DiarizationError
+from audio_transcriber.utils.memory import release_memory
 
 logger = logging.getLogger(__name__)
 
@@ -327,3 +328,14 @@ class PyannoteSpeakerDiarizer:
     def overlap_regions(self) -> list[SpeakerOverlap]:
         """Интервалы наложения речи из последнего вызова :meth:`diarize`."""
         return list(self._overlaps)
+
+    def close(self) -> None:
+        """Освобождает pipeline диаризации и CUDA-контекст после стадии (#141).
+
+        pyannote с torch держит в процессе и модель, и рантайм-арены; сбрасываем
+        ссылку, собираем мусор и чистим кэш CUDA (мягко). Повторная диаризация
+        загрузит pipeline заново (ленивая загрузка).
+        """
+        self._pipeline = None
+        self._overlaps = []
+        release_memory(cuda=True)

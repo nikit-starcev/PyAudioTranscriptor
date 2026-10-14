@@ -80,6 +80,7 @@ from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.utils.audio import SAMPLE_RATE, load_waveform
 from audio_transcriber.utils.env import binary_available
 from audio_transcriber.utils.exceptions import DiarizationError
+from audio_transcriber.utils.memory import release_memory
 
 logger = logging.getLogger(__name__)
 
@@ -826,3 +827,12 @@ class HybridSpeakerDiarizer:
     def overlap_regions(self) -> list[SpeakerOverlap]:
         """Интервалы наложения речи из последнего вызова :meth:`diarize`."""
         return list(self._overlaps)
+
+    def close(self) -> None:
+        """Освобождает CAM++-эмбеддер гибрида после стадии диаризации (#141).
+
+        Эмбеддер живёт в процессе; сбрасываем ссылку и собираем мусор.
+        Внешний ``nemo-speech`` — сабпроцесс, в процессе памяти не держит.
+        """
+        self._embedder = None
+        release_memory()

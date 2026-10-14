@@ -423,7 +423,9 @@ def test_run_pipeline_reuses_denoised_waveform_for_diarization(
 def test_run_pipeline_decodes_audio_once_for_all_consumers(
     audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Денойз выключен: один декод обслуживает диаризацию, enrollment и образцы."""
+    """Один общий декод обслуживает диаризацию и enrollment, а образцы —
+    декодируют аудио заново, потому что waveform освобождается после
+    enrollment (#140), чтобы не жить сквозь merge/LLM/export."""
     import numpy as np
 
     from audio_transcriber import pipeline as pipeline_module
@@ -477,8 +479,9 @@ def test_run_pipeline_decodes_audio_once_for_all_consumers(
         merger=OverlapSegmentMerger(),
     )
 
-    # Ровно один декод на весь конвейер — все потребители получили один массив.
-    assert decoded == [audio_file]
+    # Диаризация и enrollment получили один и тот же массив (один декод); после
+    # enrollment waveform освобождён, и образцы декодируют аудио заново.
+    assert decoded == [audio_file, audio_file]
     assert diarizer.seen_waveform is waveform
     assert seen["enrollment"] is waveform
     assert seen["samples"] is waveform
@@ -1218,3 +1221,194 @@ def test_run_pipeline_default_sentence_merge_max_gap_merges(
 
     # Дефолтный порог 5 с > паузы 3 с — прежнее поведение сохраняется.
     assert [entry.text for entry in result.entries] == ["привет мир"]
+
+
+# --- #140: освобождение общего waveform -------------------------------------
+
+
+def test_shared_waveform_release_frees_array_and_redecodes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``release`` освобождает массив; следующее ``get`` декодирует заново."""
+    import gc
+    import weakref
+
+    import numpy as np
+
+    from audio_transcriber import pipeline as pipeline_module
+    from audio_transcriber.pipeline import _SharedWaveform
+
+    calls: list[Path] = []
+
+    def loader(path: Path, *, sample_rate: int = 16000) -> object:
+        calls.append(path)
+        return np.zeros(8, dtype=np.float32)
+
+    monkeypatch.setattr(pipeline_module, "load_waveform", loader)
+
+    path = tmp_path / "a.wav"
+    path.write_bytes(b"")
+    shared = _SharedWaveform(path)
+
+    first = shared.get()
+    assert calls == [path]
+    reference = weakref.ref(first)
+    shared.release()
+    del first
+    gc.collect()
+
+    # Массив действительно освобождён, а не просто «забыт».
+    assert reference() is None
+    assert calls == [path]
+
+    second = shared.get()
+    assert second is not None
+    assert calls == [path, path]
+
+
+def test_shared_waveform_falls_back_when_primary_path_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Если денойзенный файл удалён, waveform декодируется из исходного."""
+    import numpy as np
+
+    from audio_transcriber import pipeline as pipeline_module
+    from audio_transcriber.pipeline import _SharedWaveform
+
+    missing = tmp_path / "denoised-missing.wav"
+    source = tmp_path / "source.wav"
+    source.write_bytes(b"")
+    calls: list[Path] = []
+
+    def loader(path: Path, *, sample_rate: int = 16000) -> object:
+        calls.append(path)
+        if path == missing:
+            raise OSError("нет файла")
+        return np.ones(4, dtype=np.float32)
+
+    monkeypatch.setattr(pipeline_module, "load_waveform", loader)
+
+    shared = _SharedWaveform(missing, fallback_path=source)
+    result = shared.get()
+
+    assert result is not None
+    assert calls == [missing, source]
+
+
+class _ClosingRecognizer:
+    def __init__(self) -> None:
+        self.closed = 0
+
+    def transcribe(self, audio_path: Path, *, language: str | None = None):
+        return ([TranscriptionSegment(0.0, 1.0, text="привет")], "ru", 1.0)
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+class _ClosingDiarizer:
+    def __init__(self) -> None:
+        self.closed = 0
+
+    def diarize(
+        self,
+        audio_path: Path,
+        *,
+        num_speakers: int | None = None,
+        min_speakers: int | None = None,
+        max_speakers: int | None = None,
+        waveform: object = None,
+    ):
+        return [SpeakerSegment(start=0.0, end=1.0, speaker_id="SPEAKER_00")]
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+def test_run_pipeline_closes_owned_engines_after_their_stages(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Созданные конвейером движки освобождаются после своих стадий (#141)."""
+    from audio_transcriber import pipeline as pipeline_module
+
+    recognizer = _ClosingRecognizer()
+    diarizer = _ClosingDiarizer()
+    monkeypatch.setattr(pipeline_module, "_build_recognizer", lambda *_a, **_k: recognizer)
+    monkeypatch.setattr(pipeline_module, "create_diarizer", lambda *_a, **_k: diarizer)
+
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+        denoise=False,
+        use_cache=False,
+        export_speaker_samples=False,
+    )
+
+    run_pipeline(config, device=Device.CPU, merger=FakeMerger())
+
+    assert recognizer.closed == 1
+    assert diarizer.closed == 1
+
+
+def test_run_pipeline_does_not_close_injected_engines(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    """Внедрённые снаружи движки не закрываются — ими владеет вызывающий."""
+    recognizer = _ClosingRecognizer()
+    diarizer = _ClosingDiarizer()
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+        denoise=False,
+        use_cache=False,
+        export_speaker_samples=False,
+    )
+
+    run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=recognizer,
+        diarizer=diarizer,
+        merger=FakeMerger(),
+    )
+
+    assert recognizer.closed == 0
+    assert diarizer.closed == 0
+
+
+def test_run_pipeline_does_not_redecode_for_samples_when_disabled(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Образцы выключены — после release повторного декода нет."""
+    import numpy as np
+
+    from audio_transcriber import pipeline as pipeline_module
+
+    decoded: list[Path] = []
+
+    def loader(path: Path, *, sample_rate: int = 16000) -> object:
+        decoded.append(path)
+        return np.full(16000, 0.5, dtype=np.float32)
+
+    monkeypatch.setattr(pipeline_module, "load_waveform", loader)
+
+    config = AppConfig(
+        input_file=audio_file,
+        output_dir=tmp_path / "out",
+        export_formats=(ExportFormat.TXT,),
+        denoise=False,
+        use_cache=False,
+        export_speaker_samples=False,
+    )
+
+    run_pipeline(
+        config,
+        device=Device.CPU,
+        recognizer=FakeRecognizer(),
+        diarizer=RecordingDiarizer(),
+        merger=OverlapSegmentMerger(),
+    )
+
+    assert decoded == [audio_file]
