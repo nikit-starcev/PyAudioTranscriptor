@@ -6,6 +6,10 @@
 
 ## Сделано (недавнее)
 
+- ✅ **Калибровка кластеризации sherpa-движка** (#133): свои `DIARIZATION_SHERPA_THRESHOLD`/`LINKAGE`
+  (дефолт **1.00**, было унаследовано 0.50), версия движка в кэше; харнесс
+  `scripts/calibrate_sherpa_diarization.py`; на реальных записях дробление убрано (2 голоса → 2 кластера).
+
 - ✅ **Диаризация через sherpa-onnx (ONNX/CPU)** (#63): альтернативный движок без PyTorch
   (silero-VAD + CAM++ + агломеративная кластеризация), `DIARIZATION_ENGINE=sherpa`
   (настройки/UI/doctor/мастер), enrollment сохранён.
