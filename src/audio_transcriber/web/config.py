@@ -29,6 +29,8 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
+    DEFAULT_DIARIZATION_SHERPA_LINKAGE,
+    DEFAULT_DIARIZATION_SHERPA_THRESHOLD,
     DEFAULT_ENROLLMENT_MAX_SAMPLE_SECONDS,
     DEFAULT_ENROLLMENT_MIN_SAMPLE_SECONDS,
     DEFAULT_GIGAAM_MODEL,
@@ -266,6 +268,12 @@ def build_job_config(
             defaults.get("DIARIZATION_ROUTE_MAX_SPEAKERS"),
             DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
         ),
+        diarization_sherpa_threshold=_as_float(
+            defaults.get("DIARIZATION_SHERPA_THRESHOLD"),
+            DEFAULT_DIARIZATION_SHERPA_THRESHOLD,
+        ),
+        diarization_sherpa_linkage=defaults.get("DIARIZATION_SHERPA_LINKAGE", "").strip().casefold()
+        or DEFAULT_DIARIZATION_SHERPA_LINKAGE,
         diarization_hybrid_enabled=_as_bool(
             defaults.get("DIARIZATION_HYBRID_ENABLED"),
             default=DEFAULT_DIARIZATION_HYBRID_ENABLED,

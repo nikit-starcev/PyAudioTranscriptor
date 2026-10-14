@@ -480,9 +480,12 @@ def _diarization_cache_params(
         params["hybrid_max_split_depth"] = config.diarization_hybrid_max_split_depth
     if engine == SHERPA_ENGINE:
         # Версия алгоритма движка ``sherpa``: смена окон/склейки/кластеризации
-        # меняет результат при тех же входах. Модель эмбеддингов и порог уже
-        # входят в ключ (``diarization_estimate_model``/``..._threshold``).
+        # меняет результат при тех же входах. Отдельные параметры кластеризации
+        # движка (#133) входят в ключ наравне с моделью эмбеддингов: порог
+        # собственный, не порог оценщика числа говорящих.
         params["sherpa_impl_version"] = SHERPA_DIARIZATION_IMPL_VERSION
+        params["sherpa_threshold"] = config.diarization_sherpa_threshold
+        params["sherpa_linkage"] = config.diarization_sherpa_linkage
     return params
 
 

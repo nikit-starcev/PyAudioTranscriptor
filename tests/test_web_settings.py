@@ -21,6 +21,8 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_HYBRID_OVERLAP_SECONDS,
     DEFAULT_DIARIZATION_HYBRID_THRESHOLD,
     DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
+    DEFAULT_DIARIZATION_SHERPA_LINKAGE,
+    DEFAULT_DIARIZATION_SHERPA_THRESHOLD,
     DEFAULT_GIGAAM_MODEL,
     DEFAULT_NEMO_SPEECH_MODEL,
     DEFAULT_SENTENCE_MERGE_MAX_GAP,
@@ -648,12 +650,17 @@ def test_build_job_config_maps_sherpa_engine(
             "DIARIZATION_ENGINE": "sherpa",
             "DIARIZATION_ESTIMATE_MODEL": "/models/campplus.onnx",
             "DIARIZATION_ESTIMATE_THRESHOLD": "0.62",
+            "DIARIZATION_SHERPA_THRESHOLD": "0.95",
+            "DIARIZATION_SHERPA_LINKAGE": "WARD",
         },
     )
 
     assert config.diarization_engine == "sherpa"
     assert config.diarization_estimate_model == "/models/campplus.onnx"
     assert config.diarization_estimate_threshold == pytest.approx(0.62)
+    # Собственный порог/линкаж sherpa — не порог оценщика.
+    assert config.diarization_sherpa_threshold == pytest.approx(0.95)
+    assert config.diarization_sherpa_linkage == "ward"
 
 
 # --- Оценщик числа говорящих / маршрутизация auto (#64) ---------------------
@@ -729,6 +736,57 @@ def test_validate_settings_rejects_bad_route_max_speakers() -> None:
 
     settings = default_settings({})
     settings.diarization_route_max_speakers = 0
+
+    with pytest.raises(SettingsError):
+        validate_settings(settings)
+
+
+# --- Собственные параметры кластеризации sherpa (#133) ----------------------
+
+
+def test_diarization_sherpa_settings_roundtrip() -> None:
+    base = default_settings({})
+    assert base.diarization_sherpa_threshold == pytest.approx(
+        DEFAULT_DIARIZATION_SHERPA_THRESHOLD
+    )
+    assert base.diarization_sherpa_linkage == DEFAULT_DIARIZATION_SHERPA_LINKAGE
+
+    merged = settings_from_mapping(
+        {"diarization_sherpa_threshold": "0.85", "diarization_sherpa_linkage": "WARD"},
+        base=base,
+    )
+
+    assert merged.diarization_sherpa_threshold == pytest.approx(0.85)
+    assert merged.diarization_sherpa_linkage == "ward"
+
+    env = merged.env_overrides()
+    assert env["DIARIZATION_SHERPA_THRESHOLD"] == "0.85"
+    assert env["DIARIZATION_SHERPA_LINKAGE"] == "ward"
+
+
+def test_diarization_sherpa_settings_from_env() -> None:
+    settings = default_settings(
+        {
+            "DIARIZATION_SHERPA_THRESHOLD": "1.1",
+            "DIARIZATION_SHERPA_LINKAGE": "average",
+        }
+    )
+
+    assert settings.diarization_sherpa_threshold == pytest.approx(1.1)
+    assert settings.diarization_sherpa_linkage == "average"
+
+
+def test_validate_settings_rejects_bad_sherpa_linkage() -> None:
+    settings = default_settings({})
+    settings.diarization_sherpa_linkage = "banana"
+
+    with pytest.raises(SettingsError):
+        validate_settings(settings)
+
+
+def test_validate_settings_rejects_bad_sherpa_threshold() -> None:
+    settings = default_settings({})
+    settings.diarization_sherpa_threshold = 2.5
 
     with pytest.raises(SettingsError):
         validate_settings(settings)
@@ -1046,6 +1104,28 @@ def test_put_settings_persists_hybrid_linkage_and_threshold(
     saved = client.get("/api/settings").json()
     assert saved["diarization_hybrid_linkage"] == "complete"
     assert saved["diarization_hybrid_threshold"] == pytest.approx(1.1)
+
+
+def test_put_settings_persists_sherpa_linkage_and_threshold(
+    client: TestClient,
+) -> None:
+    """#133: порог/linkage sherpa сохраняются через PUT (не теряются молча)."""
+    response = client.put(
+        "/api/settings",
+        json={
+            "diarization_sherpa_linkage": "ward",
+            "diarization_sherpa_threshold": 0.9,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["diarization_sherpa_linkage"] == "ward"
+    assert body["diarization_sherpa_threshold"] == pytest.approx(0.9)
+
+    saved = client.get("/api/settings").json()
+    assert saved["diarization_sherpa_linkage"] == "ward"
+    assert saved["diarization_sherpa_threshold"] == pytest.approx(0.9)
 
 
 # --- #87: SSRF в проверке внешней LLM --------------------------------------

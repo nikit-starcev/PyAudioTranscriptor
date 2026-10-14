@@ -635,6 +635,8 @@ class SettingsUpdate(BaseModel):
     diarization_estimate_threshold: float | None = None
     diarization_estimate_model: str | None = None
     diarization_route_max_speakers: int | None = None
+    diarization_sherpa_threshold: float | None = None
+    diarization_sherpa_linkage: str | None = None
     diarization_hybrid_enabled: bool | None = None
     diarization_hybrid_window_seconds: float | None = None
     diarization_hybrid_overlap_seconds: float | None = None

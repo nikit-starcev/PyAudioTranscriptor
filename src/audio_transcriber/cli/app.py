@@ -34,6 +34,8 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
+    DEFAULT_DIARIZATION_SHERPA_LINKAGE,
+    DEFAULT_DIARIZATION_SHERPA_THRESHOLD,
     DEFAULT_ENROLLMENT_MIN_SIMILARITY,
     DEFAULT_GIGAAM_MODEL,
     DEFAULT_GLOSSARY_DB,
@@ -466,6 +468,28 @@ def transcribe(
         help=(
             "Cap маршрутизации auto: до этого числа говорящих выбирается быстрый "
             f"nemo-speech. По умолчанию {DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS}."
+        ),
+    ),
+    diarization_sherpa_threshold: float = typer.Option(
+        DEFAULT_DIARIZATION_SHERPA_THRESHOLD,
+        "--diarization-sherpa-threshold",
+        envvar="DIARIZATION_SHERPA_THRESHOLD",
+        min=0.01,
+        max=1.99,
+        help=(
+            "Порог косинусного расстояния кластеризации движка sherpa (0; 2), "
+            "отдельный от порога оценщика; откалиброван под непрерывные окна. "
+            f"По умолчанию {DEFAULT_DIARIZATION_SHERPA_THRESHOLD}."
+        ),
+    ),
+    diarization_sherpa_linkage: str = typer.Option(
+        DEFAULT_DIARIZATION_SHERPA_LINKAGE,
+        "--diarization-sherpa-linkage",
+        envvar="DIARIZATION_SHERPA_LINKAGE",
+        help=(
+            "Linkage пороговой ветки кластеризации движка sherpa: complete "
+            "(cosine, по умолчанию), average или ward (euclidean). "
+            f"По умолчанию {DEFAULT_DIARIZATION_SHERPA_LINKAGE}."
         ),
     ),
     diarization_hybrid: bool = typer.Option(

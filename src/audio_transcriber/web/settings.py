@@ -32,6 +32,8 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_HYBRID_THRESHOLD,
     DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
     DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
+    DEFAULT_DIARIZATION_SHERPA_LINKAGE,
+    DEFAULT_DIARIZATION_SHERPA_THRESHOLD,
     DEFAULT_LLM_SEMANTIC_MIN_CONFIDENCE,
     DEFAULT_NEMO_SPEECH_BINARY,
     DEFAULT_NEMO_SPEECH_DEVICE,
@@ -143,6 +145,10 @@ class WebSettings:
     diarization_estimate_threshold: float = DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD
     diarization_estimate_model: str = DEFAULT_DIARIZATION_ESTIMATE_MODEL
     diarization_route_max_speakers: int = DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS
+    #: Собственные параметры кластеризации движка ``sherpa`` (#133): порог
+    #: (cosine, complete-linkage) и linkage. Отдельно от порога оценщика.
+    diarization_sherpa_threshold: float = DEFAULT_DIARIZATION_SHERPA_THRESHOLD
+    diarization_sherpa_linkage: str = DEFAULT_DIARIZATION_SHERPA_LINKAGE
     #: Гибридная диаризация (#64, часть 2): оконный nemo-speech + глобальная
     #: склейка говорящих по эмбеддингам (обход лимита 4). Окно/перекрытие/порог.
     diarization_hybrid_enabled: bool = DEFAULT_DIARIZATION_HYBRID_ENABLED
@@ -209,6 +215,8 @@ class WebSettings:
             "DIARIZATION_ESTIMATE_THRESHOLD": str(self.diarization_estimate_threshold),
             "DIARIZATION_ESTIMATE_MODEL": self.diarization_estimate_model,
             "DIARIZATION_ROUTE_MAX_SPEAKERS": str(self.diarization_route_max_speakers),
+            "DIARIZATION_SHERPA_THRESHOLD": str(self.diarization_sherpa_threshold),
+            "DIARIZATION_SHERPA_LINKAGE": self.diarization_sherpa_linkage,
             "DIARIZATION_HYBRID_ENABLED": _format_bool(self.diarization_hybrid_enabled),
             "DIARIZATION_HYBRID_WINDOW_SECONDS": str(
                 self.diarization_hybrid_window_seconds
@@ -308,6 +316,12 @@ def default_settings(defaults: Mapping[str, str] | None = None) -> WebSettings:
             source.get("DIARIZATION_ROUTE_MAX_SPEAKERS"),
             DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
         ),
+        diarization_sherpa_threshold=_as_float(
+            source.get("DIARIZATION_SHERPA_THRESHOLD"),
+            DEFAULT_DIARIZATION_SHERPA_THRESHOLD,
+        ),
+        diarization_sherpa_linkage=source.get("DIARIZATION_SHERPA_LINKAGE", "").strip().casefold()
+        or DEFAULT_DIARIZATION_SHERPA_LINKAGE,
         diarization_hybrid_enabled=_as_bool(
             source.get("DIARIZATION_HYBRID_ENABLED"),
             default=DEFAULT_DIARIZATION_HYBRID_ENABLED,
@@ -444,6 +458,12 @@ def settings_from_mapping(
         diarization_route_max_speakers=pick_int(
             "diarization_route_max_speakers", current.diarization_route_max_speakers
         ),
+        diarization_sherpa_threshold=pick_float(
+            "diarization_sherpa_threshold", current.diarization_sherpa_threshold
+        ),
+        diarization_sherpa_linkage=pick_nonempty(
+            "diarization_sherpa_linkage", current.diarization_sherpa_linkage
+        ).casefold(),
         diarization_hybrid_enabled=pick_bool(
             "diarization_hybrid_enabled", current.diarization_hybrid_enabled
         ),
@@ -549,6 +569,17 @@ def validate_settings(settings: WebSettings) -> None:
     )
     if settings.diarization_route_max_speakers < 1:
         raise SettingsError("DIARIZATION_ROUTE_MAX_SPEAKERS должно быть целым числом >= 1")
+
+    if not (0.0 < settings.diarization_sherpa_threshold < 2.0):
+        raise SettingsError(
+            "DIARIZATION_SHERPA_THRESHOLD должно быть числом в диапазоне (0; 2)"
+        )
+    settings.diarization_sherpa_linkage = settings.diarization_sherpa_linkage.strip().casefold()
+    if settings.diarization_sherpa_linkage not in VALID_DIARIZATION_LINKAGES:
+        raise SettingsError(
+            "DIARIZATION_SHERPA_LINKAGE должно быть одним из "
+            f"{', '.join(VALID_DIARIZATION_LINKAGES)}"
+        )
 
     if not isinstance(settings.diarization_hybrid_enabled, bool):
         raise SettingsError("DIARIZATION_HYBRID_ENABLED должно быть true или false")

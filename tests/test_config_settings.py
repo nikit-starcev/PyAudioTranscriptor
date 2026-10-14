@@ -10,6 +10,8 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
     DEFAULT_DIARIZATION_HYBRID_LINKAGE,
     DEFAULT_DIARIZATION_HYBRID_THRESHOLD,
+    DEFAULT_DIARIZATION_SHERPA_LINKAGE,
+    DEFAULT_DIARIZATION_SHERPA_THRESHOLD,
     DEFAULT_SENTENCE_MERGE_MAX_GAP,
 )
 from audio_transcriber.config.settings import AppConfig
@@ -1055,6 +1057,36 @@ def test_diarization_hybrid_overload_split_must_be_bool(audio_file: Path) -> Non
             input_file=audio_file,
             diarization_hybrid_overload_split="yes",  # type: ignore[arg-type]
         )
+
+
+# --- Собственные параметры кластеризации движка sherpa (#133) ---------------
+
+
+def test_diarization_sherpa_defaults(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file)
+
+    # Порог sherpa отдельный от порога оценщика числа говорящих (0.50) и
+    # откалиброван под непрерывные окна (2-голосые → 2 кластера).
+    assert config.diarization_sherpa_threshold == DEFAULT_DIARIZATION_SHERPA_THRESHOLD
+    assert DEFAULT_DIARIZATION_SHERPA_THRESHOLD == 1.0
+    assert config.diarization_sherpa_linkage == DEFAULT_DIARIZATION_SHERPA_LINKAGE
+    assert DEFAULT_DIARIZATION_SHERPA_LINKAGE == "complete"
+    assert config.diarization_sherpa_threshold != config.diarization_estimate_threshold
+
+
+def test_diarization_sherpa_linkage_must_be_known(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, diarization_sherpa_linkage="banana")
+    # Регистр нормализуется.
+    config = AppConfig(input_file=audio_file, diarization_sherpa_linkage="COMPLETE")
+    assert config.diarization_sherpa_linkage == "complete"
+
+
+def test_diarization_sherpa_threshold_range(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, diarization_sherpa_threshold=2.5)
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, diarization_sherpa_threshold=0.0)
 
 
 def test_collect_env_kwargs_picks_secrets_from_config_env(tmp_path: Path) -> None:

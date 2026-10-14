@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from audio_transcriber.config.defaults import DEFAULT_DIARIZATION_SHERPA_THRESHOLD
 from audio_transcriber.diarization import sherpa_engine
 from audio_transcriber.diarization.sherpa_engine import (
     SherpaDiarizationError,
@@ -135,6 +136,53 @@ def test_diarize_raises_without_sherpa(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(SherpaDiarizationError):
         diarizer.diarize(Path("audio.wav"), waveform=np.zeros(SAMPLE_RATE, dtype=np.float32))
+
+
+# --- собственные параметры кластеризации (#133) -----------------------------
+
+
+def test_diarizer_default_clustering_params() -> None:
+    diarizer = SherpaSpeakerDiarizer(embedder=_FakeEmbedder([[1, 0]]))
+
+    # Собственный откалиброванный порог движка, а не порог оценщика (0.50).
+    assert diarizer._threshold == DEFAULT_DIARIZATION_SHERPA_THRESHOLD
+    assert diarizer._linkage == "complete"
+
+
+def test_diarize_passes_threshold_and_linkage(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_runtime(monkeypatch, spans=[(0, int(6.0 * SAMPLE_RATE))])
+    captured: dict[str, object] = {}
+    real = sherpa_engine._assign_global_clusters
+
+    def spy(observations, **kwargs):  # type: ignore[no-untyped-def]
+        captured.update(threshold=kwargs["threshold"], linkage=kwargs["linkage"])
+        return real(observations, **kwargs)
+
+    monkeypatch.setattr(sherpa_engine, "_assign_global_clusters", spy)
+    diarizer = SherpaSpeakerDiarizer(
+        threshold=1.25, linkage="average", embedder=_FakeEmbedder([[1, 0, 0, 0]] * 4)
+    )
+
+    diarizer.diarize(Path("audio.wav"), waveform=np.zeros(int(6.0 * SAMPLE_RATE), dtype=np.float32))
+
+    assert captured == {"threshold": 1.25, "linkage": "average"}
+
+
+def test_diarize_threshold_controls_cluster_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_runtime(monkeypatch, spans=[(0, int(6.0 * SAMPLE_RATE))])
+    # Два ортогональных голоса (косинусное расстояние 1.0): A,A,B,B.
+    vectors = [[1, 0, 0, 0], [1, 0, 0, 0], [0, 1, 0, 0], [0, 1, 0, 0]]
+    waveform = np.zeros(int(6.0 * SAMPLE_RATE), dtype=np.float32)
+
+    merged = SherpaSpeakerDiarizer(threshold=1.5, embedder=_FakeEmbedder(vectors)).diarize(
+        Path("audio.wav"), waveform=waveform
+    )
+    split = SherpaSpeakerDiarizer(threshold=0.4, embedder=_FakeEmbedder(vectors)).diarize(
+        Path("audio.wav"), waveform=waveform
+    )
+
+    assert len({segment.speaker_id for segment in merged}) == 1
+    assert len({segment.speaker_id for segment in split}) == 2
 
 
 # --- enrollment -------------------------------------------------------------

@@ -42,7 +42,8 @@ import numpy as np
 
 from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ESTIMATE_MODEL,
-    DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
+    DEFAULT_DIARIZATION_SHERPA_LINKAGE,
+    DEFAULT_DIARIZATION_SHERPA_THRESHOLD,
 )
 from audio_transcriber.diarization import embeddings as embedding_utils
 from audio_transcriber.diarization.hybrid_engine import (
@@ -62,7 +63,9 @@ logger = logging.getLogger(__name__)
 
 #: Версия алгоритма движка ``sherpa``. Смена окон/склейки/кластеризации меняет
 #: результат при тех же входах — участвует в ключе кэша диаризации.
-SHERPA_DIARIZATION_IMPL_VERSION = 1
+#: 2 — собственные параметры кластеризации движка (порог/линкаж) вместо
+#:     унаследованного порога оценщика числа говорящих (#133).
+SHERPA_DIARIZATION_IMPL_VERSION = 2
 
 #: Длина окна анализа (секунды). Короткие окна точнее по границам реплик, но
 #: дороже (больше инференсов CAM++); 1.5 с — компромисс, согласованный с
@@ -74,10 +77,13 @@ SHERPA_WINDOW_SECONDS = 1.5
 #: на эмбеддинг отдельно (вектор был бы шумным).
 SHERPA_MIN_TAIL_SECONDS = 0.5
 
-#: Linkage пороговой ветки кластеризации: ``complete``/cosine — как у оценщика
-#: числа говорящих (переиспользуемая кластеризация). ``ward``/euclidean
+#: Linkage пороговой ветки кластеризации по умолчанию (``complete``/cosine).
+#: Собственный параметр движка (``DIARIZATION_SHERPA_LINKAGE``), а не
+#: переиспользование параметров оценщика числа говорящих или гибрида:
+#: ``ward``/euclidean на непрерывных окнах sherpa даёт лавинное переразбиение
+#: (см. :data:`DEFAULT_DIARIZATION_SHERPA_LINKAGE`). ``ward``/euclidean
 #: применяется автоматически при явном ``num_speakers`` (форсированный k).
-SHERPA_LINKAGE = "complete"
+SHERPA_LINKAGE = DEFAULT_DIARIZATION_SHERPA_LINKAGE
 
 
 class SherpaDiarizationError(DiarizationError):
@@ -129,8 +135,12 @@ class SherpaSpeakerDiarizer:
 
     :param embedding_model: имя/путь ONNX-модели эмбеддингов (CAM++, по
         умолчанию та же, что у оценщика и гибрида).
-    :param threshold: косинусный порог кластеризации (``complete``-linkage),
-        используется при отсутствии явного ``num_speakers``.
+    :param threshold: косинусный порог кластеризации (``complete``-linkage по
+        умолчанию), используется при отсутствии явного ``num_speakers``.
+        Собственный откалиброванный порог движка
+        (``DIARIZATION_SHERPA_THRESHOLD``), а не порог оценщика числа говорящих.
+    :param linkage: linkage пороговой ветки кластеризации
+        (``DIARIZATION_SHERPA_LINKAGE``; ``complete``/cosine по умолчанию).
     :param embedding_model_dir: каталог кэша моделей (``None`` — по умолчанию).
     :param window_seconds: длина окна анализа (секунды).
     :param on_progress: необязательный колбэк этапов.
@@ -141,7 +151,8 @@ class SherpaSpeakerDiarizer:
         self,
         *,
         embedding_model: str = DEFAULT_DIARIZATION_ESTIMATE_MODEL,
-        threshold: float = DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD,
+        threshold: float = DEFAULT_DIARIZATION_SHERPA_THRESHOLD,
+        linkage: str = SHERPA_LINKAGE,
         embedding_model_dir: Path | None = None,
         window_seconds: float = SHERPA_WINDOW_SECONDS,
         on_progress: ProgressCallback | None = None,
@@ -149,6 +160,7 @@ class SherpaSpeakerDiarizer:
     ) -> None:
         self._embedding_model = embedding_model
         self._threshold = threshold
+        self._linkage = linkage
         self._embedding_model_dir = embedding_model_dir
         self._window_seconds = window_seconds
         self._on_progress = on_progress
@@ -294,7 +306,7 @@ class SherpaSpeakerDiarizer:
             expected_speakers=None,
             min_speakers=min_speakers,
             max_speakers=max_speakers,
-            linkage=SHERPA_LINKAGE,
+            linkage=self._linkage,
         )
 
         cluster_to_global: dict[int, int] = {}

@@ -304,13 +304,15 @@ def create_diarizer(
         )
     if decision.engine == SHERPA_ENGINE:
         logger.info(
-            "sherpa: модель эмбеддингов %s, порог %.2f",
+            "sherpa: модель эмбеддингов %s, порог %.2f, linkage %s",
             config.diarization_estimate_model,
-            config.diarization_estimate_threshold,
+            config.diarization_sherpa_threshold,
+            config.diarization_sherpa_linkage,
         )
         return SherpaSpeakerDiarizer(
             embedding_model=config.diarization_estimate_model,
-            threshold=config.diarization_estimate_threshold,
+            threshold=config.diarization_sherpa_threshold,
+            linkage=config.diarization_sherpa_linkage,
             on_progress=on_progress,
         )
     return PyannoteSpeakerDiarizer(

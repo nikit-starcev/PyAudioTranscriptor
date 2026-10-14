@@ -132,6 +132,7 @@ type NumericKey =
   | 'diarization_estimate_seconds'
   | 'diarization_estimate_threshold'
   | 'diarization_route_max_speakers'
+  | 'diarization_sherpa_threshold'
   | 'diarization_hybrid_window_seconds'
   | 'diarization_hybrid_overlap_seconds'
   | 'diarization_hybrid_min_speaker_seconds'
@@ -142,6 +143,7 @@ const NUMERIC_KEYS: NumericKey[] = [
   'diarization_estimate_seconds',
   'diarization_estimate_threshold',
   'diarization_route_max_speakers',
+  'diarization_sherpa_threshold',
   'diarization_hybrid_window_seconds',
   'diarization_hybrid_overlap_seconds',
   'diarization_hybrid_min_speaker_seconds',
@@ -362,6 +364,11 @@ function SettingsPanel({ onSaved }: Props) {
         diarization_route_max_speakers: Math.trunc(
           parseNumber(nums.diarization_route_max_speakers, settings.diarization_route_max_speakers),
         ),
+        diarization_sherpa_threshold: parseNumber(
+          nums.diarization_sherpa_threshold,
+          settings.diarization_sherpa_threshold,
+        ),
+        diarization_sherpa_linkage: settings.diarization_sherpa_linkage,
         diarization_hybrid_enabled: settings.diarization_hybrid_enabled,
         diarization_hybrid_window_seconds: parseNumber(
           nums.diarization_hybrid_window_seconds,
@@ -963,6 +970,43 @@ function SettingsPanel({ onSaved }: Props) {
                 placeholder="3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"
               />
             </Field>
+          </div>
+
+          <div className="space-y-4 rounded-md border border-border p-3">
+            <p className="text-xs font-medium text-muted">sherpa (ONNX/CPU)</p>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Linkage (DIARIZATION_SHERPA_LINKAGE)" htmlFor="settings-sherpa-linkage">
+                <Select
+                  id="settings-sherpa-linkage"
+                  value={settings.diarization_sherpa_linkage}
+                  onChange={(event) => update({ diarization_sherpa_linkage: event.target.value })}
+                >
+                  {HYBRID_LINKAGES.map((linkage) => (
+                    <option key={linkage} value={linkage}>
+                      {linkage}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field
+                label="Порог кластеризации (DIARIZATION_SHERPA_THRESHOLD)"
+                htmlFor="settings-sherpa-threshold"
+              >
+                <Input
+                  id="settings-sherpa-threshold"
+                  inputMode="decimal"
+                  value={numbers?.diarization_sherpa_threshold ?? ''}
+                  onChange={(event) =>
+                    updateNumber('diarization_sherpa_threshold', event.target.value)
+                  }
+                  placeholder="1.0"
+                />
+              </Field>
+            </div>
+            <p className="max-w-prose text-pretty text-xs text-muted">
+              Собственный порог движка sherpa, отдельный от порога оценщика. По умолчанию 1.0
+              откалиброван на реальных записях; выше ~1.05 начинает сливать разных говорящих.
+            </p>
           </div>
 
           <div className="space-y-4 rounded-md border border-border p-3">

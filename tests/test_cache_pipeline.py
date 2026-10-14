@@ -17,6 +17,7 @@ from audio_transcriber.cache.denoiser import CachingDenoiser
 from audio_transcriber.cache.store import StageCache, compute_cache_key
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.diarization.overlap import DIARIZATION_IMPL_VERSION
+from audio_transcriber.diarization.sherpa_engine import SHERPA_DIARIZATION_IMPL_VERSION
 from audio_transcriber.domain.enums import AsrBackend, Device, ExportFormat
 from audio_transcriber.domain.models import (
     SpeakerSegment,
@@ -538,6 +539,44 @@ def test_diarization_cache_params_include_hyperparameters(
     assert params["clustering_fb"] == pytest.approx(1.5)
     assert params["min_speakers"] == 2
     assert params["max_speakers"] == 5
+
+
+def test_diarization_cache_params_include_sherpa_clustering(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    config = _config(
+        audio_file,
+        tmp_path,
+        diarization_engine="sherpa",
+        diarization_sherpa_threshold=1.05,
+        diarization_sherpa_linkage="ward",
+    )
+
+    params = _diarization_cache_params(config, Device.CPU)
+
+    assert params["sherpa_impl_version"] == SHERPA_DIARIZATION_IMPL_VERSION
+    assert params["sherpa_threshold"] == pytest.approx(1.05)
+    assert params["sherpa_linkage"] == "ward"
+
+
+def test_diarization_cache_key_changes_with_sherpa_threshold(
+    audio_file: Path, tmp_path: Path
+) -> None:
+    base = _config(audio_file, tmp_path, diarization_engine="sherpa")
+    before = compute_cache_key(
+        "diarization", audio_file, _diarization_cache_params(base, Device.CPU)
+    )
+    tuned = _config(
+        audio_file,
+        tmp_path,
+        diarization_engine="sherpa",
+        diarization_sherpa_threshold=1.2,
+    )
+    after = compute_cache_key(
+        "diarization", audio_file, _diarization_cache_params(tuned, Device.CPU)
+    )
+
+    assert before != after
 
 
 def test_diarization_cache_key_changes_with_min_duration_off(

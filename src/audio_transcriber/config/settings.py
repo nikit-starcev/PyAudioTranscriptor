@@ -38,6 +38,8 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
+    DEFAULT_DIARIZATION_SHERPA_LINKAGE,
+    DEFAULT_DIARIZATION_SHERPA_THRESHOLD,
     DEFAULT_ENROLLMENT_MAX_SAMPLE_SECONDS,
     DEFAULT_ENROLLMENT_MIN_SAMPLE_SECONDS,
     DEFAULT_ENROLLMENT_MIN_SIMILARITY,
@@ -148,6 +150,14 @@ class AppConfig:
     diarization_estimate_model: str = DEFAULT_DIARIZATION_ESTIMATE_MODEL
     # Cap маршрутизации: до него (включительно) ``auto`` берёт nemo-speech.
     diarization_route_max_speakers: int = DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS
+    # --- Свои параметры кластеризации движка sherpa (#133) ---
+    # Порог и linkage агломеративной кластеризации CAM++-эмбеддингов движка
+    # ``sherpa``. Отдельные от порога оценщика числа говорящих: у sherpa на
+    # непрерывных 1.5-секундных окнах наследованный порог 0.50 дробил говорящих
+    # (2 голоса → 16-27 кластеров). Дефолт 1.00 откалиброван на реальных
+    # записях (см. :data:`DEFAULT_DIARIZATION_SHERPA_THRESHOLD`).
+    diarization_sherpa_threshold: float = DEFAULT_DIARIZATION_SHERPA_THRESHOLD
+    diarization_sherpa_linkage: str = DEFAULT_DIARIZATION_SHERPA_LINKAGE
     # --- Гибридная диаризация (#64, часть 2) ---
     # Оконный nemo-speech + глобальная склейка говорящих по эмбеддингам.
     # Позволяет обойти лимит Sortformer в 4 спикера; при ``auto`` и N выше cap
@@ -360,6 +370,7 @@ class AppConfig:
         self._validate_speaker_range()
         self._validate_diarization_hyperparameters()
         self._validate_diarization_engine()
+        self._validate_diarization_sherpa()
         self._validate_diarization_routing()
 
         if not isinstance(self.diarization_enabled, bool):
@@ -656,6 +667,32 @@ class AppConfig:
                 NEMO_SPEECH_MAX_SPEAKERS,
                 max(requested),
             )
+
+    def _validate_diarization_sherpa(self) -> None:
+        """Проверяет параметры кластеризации движка ``sherpa`` (#133).
+
+        Порог — косинусное расстояние ``complete``-ветки в диапазоне ``(0; 2)``;
+        linkage — один из :data:`VALID_DIARIZATION_LINKAGES`. Порог отдельный от
+        порога оценщика числа говорящих, чтобы они калибровались независимо.
+        """
+        threshold = self.diarization_sherpa_threshold
+        if (
+            isinstance(threshold, bool)
+            or not isinstance(threshold, (int, float))
+            or not (0.0 < threshold < 2.0)
+        ):
+            raise ConfigurationError(
+                "DIARIZATION_SHERPA_THRESHOLD должно быть числом в диапазоне (0; 2)"
+            )
+
+        linkage = (self.diarization_sherpa_linkage or "").strip().casefold()
+        if linkage not in VALID_DIARIZATION_LINKAGES:
+            raise ConfigurationError(
+                f"DIARIZATION_SHERPA_LINKAGE должно быть одним из "
+                f"{', '.join(sorted(VALID_DIARIZATION_LINKAGES))} (получено "
+                f"{self.diarization_sherpa_linkage!r})"
+            )
+        self.diarization_sherpa_linkage = linkage
 
     def _validate_diarization_routing(self) -> None:
         """Проверяет параметры оценщика числа говорящих и маршрутизации (#64)."""

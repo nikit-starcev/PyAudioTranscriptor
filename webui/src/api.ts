@@ -423,6 +423,9 @@ export type WebSettings = {
   diarization_estimate_threshold: number
   diarization_estimate_model: string
   diarization_route_max_speakers: number
+  /** Собственные параметры кластеризации движка sherpa (#133). */
+  diarization_sherpa_threshold: number
+  diarization_sherpa_linkage: string
   /** Гибридная диаризация (оконный EEND + глобальная склейка) (#64). */
   diarization_hybrid_enabled: boolean
   diarization_hybrid_window_seconds: number

@@ -363,11 +363,13 @@ def test_create_diarizer_sherpa_carries_settings(
         audio_file,
         diarization_engine="sherpa",
         diarization_estimate_model="campplus.onnx",
-        diarization_estimate_threshold=0.6,
+        diarization_sherpa_threshold=1.1,
+        diarization_sherpa_linkage="ward",
     )
 
     diarizer = factory.create_diarizer(config, Device.CPU)
 
     assert isinstance(diarizer, SherpaSpeakerDiarizer)
     assert diarizer._embedding_model == "campplus.onnx"
-    assert diarizer._threshold == 0.6
+    assert diarizer._threshold == 1.1
+    assert diarizer._linkage == "ward"

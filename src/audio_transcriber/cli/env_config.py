@@ -33,6 +33,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_HYBRID_WINDOW_SECONDS,
     DEFAULT_DIARIZATION_MIN_DURATION_OFF,
     DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
+    DEFAULT_DIARIZATION_SHERPA_THRESHOLD,
     DEFAULT_ENROLLMENT_MAX_SAMPLE_SECONDS,
     DEFAULT_ENROLLMENT_MIN_SAMPLE_SECONDS,
     DEFAULT_ENROLLMENT_MIN_SIMILARITY,
@@ -281,6 +282,14 @@ def collect_env_kwargs(
         put("diarization_route_max_speakers", as_int(
             val("DIARIZATION_ROUTE_MAX_SPEAKERS"), DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS
         ))
+
+    # --- Собственные параметры кластеризации движка sherpa (#133) -----------
+    if has("DIARIZATION_SHERPA_THRESHOLD"):
+        put("diarization_sherpa_threshold", as_float(
+            val("DIARIZATION_SHERPA_THRESHOLD"), DEFAULT_DIARIZATION_SHERPA_THRESHOLD
+        ))
+    if has("DIARIZATION_SHERPA_LINKAGE"):
+        put("diarization_sherpa_linkage", val("DIARIZATION_SHERPA_LINKAGE").casefold())
 
     # --- Гибридная диаризация (#64, часть 2) --------------------------------
     if has("DIARIZATION_HYBRID_ENABLED"):
