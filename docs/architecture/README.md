@@ -121,6 +121,7 @@ flowchart TB
 | [`packaging.md`](packaging.md) | Точки входа, Docker, portable one-dir, инсталляторы, CI/релизы |
 | [`corporate-mode.md`](corporate-mode.md) | **Проект** многопользовательского режима (швы auth/скоупинг/RBAC/SSO) |
 | [`decisions.md`](decisions.md) | ADR: ключевые архитектурные решения и их причины |
+| [`memory.md`](memory.md) | Память и слабое железо: анализ, профиль по стадиям, ориентиры RAM ([analysis](memory-analysis.md)/[profile](memory-profile.md)) |
 
 ## 5. Инварианты архитектуры
 
