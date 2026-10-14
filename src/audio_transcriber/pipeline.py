@@ -610,7 +610,7 @@ def run_pipeline(
     #: сразу после распознавания (чтобы не делить RAM с диаризацией).
     owned_engines: list[object] = []
     recognizer_owned = recognizer is None
-    if recognizer_owned:
+    if recognizer is None:
         recognizer = _build_recognizer(config, device, on_progress=emit)
 
     # ``mark_overlap`` управляет и пометкой зон наложения, и сбором
