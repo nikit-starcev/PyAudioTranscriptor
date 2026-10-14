@@ -234,6 +234,12 @@ class AppConfig:
     use_cache: bool = True
     # Каталог кэша; None — <output_dir>/.cache.
     cache_dir: Path | None = None
+    # Ограничение суммарного размера стадийного кэша (байты). 0 — без лимита.
+    # При превышении удаляются самые старые записи (см. StageCache).
+    cache_max_bytes: int = 0
+    # Время жизни записей кэша (секунды). 0 — без истечения. По истечении
+    # запись удаляется при следующей записи в кэш.
+    cache_ttl_seconds: float = 0.0
     # Десктоп-уведомление (notify-send) по завершении обработки. Если утилиты
     # нет — тихий no-op (см. audio_transcriber.utils.notifications).
     notifications: bool = True
@@ -429,6 +435,11 @@ class AppConfig:
 
         if not isinstance(self.use_cache, bool):
             raise ConfigurationError("USE_CACHE должно быть true или false")
+
+        if self.cache_max_bytes < 0:
+            raise ConfigurationError("CACHE_MAX_BYTES не может быть отрицательным")
+        if self.cache_ttl_seconds < 0:
+            raise ConfigurationError("CACHE_TTL_SECONDS не может быть отрицательным")
 
         if not isinstance(self.notifications, bool):
             raise ConfigurationError("NOTIFICATIONS должно быть true или false")

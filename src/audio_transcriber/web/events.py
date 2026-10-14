@@ -26,6 +26,12 @@ JobEvent = dict[str, object]
 #: Интервал keep-alive по умолчанию (секунды).
 DEFAULT_HEARTBEAT = 15.0
 
+#: Сколько последних событий задачи хранится для реплея подписчику.
+#: История ограничена, чтобы память не росла с числом событий долгого прогона;
+#: ``None`` — без ограничения (совместимость). ``seq`` при этом монотонен, а
+#: ``Last-Event-ID`` фильтрует уже доставленные события (см. :meth:`history`).
+DEFAULT_HISTORY_LIMIT = 1000
+
 
 @dataclass(slots=True)
 class _Subscriber:
@@ -81,8 +87,15 @@ class _JobStream:
 class JobEventBus:
     """Потокобезопасная шина событий по ``job_id``."""
 
-    def __init__(self, *, heartbeat: float = DEFAULT_HEARTBEAT) -> None:
+    def __init__(
+        self,
+        *,
+        heartbeat: float = DEFAULT_HEARTBEAT,
+        history_limit: int | None = DEFAULT_HISTORY_LIMIT,
+    ) -> None:
         self._heartbeat = heartbeat
+        #: Размер кольцевого буфера истории на задачу (``None`` — без лимита).
+        self._history_limit = history_limit if history_limit is None else max(1, int(history_limit))
         self._lock = threading.Lock()
         self._subscribers: dict[str, list[_Subscriber]] = {}
         self._history: dict[str, list[JobEvent]] = {}
@@ -102,7 +115,14 @@ class JobEventBus:
             seq = self._seq.get(job_id, 0) + 1
             self._seq[job_id] = seq
             payload["seq"] = seq
-            self._history.setdefault(job_id, []).append(payload)
+            history = self._history.setdefault(job_id, [])
+            history.append(payload)
+            limit = self._history_limit
+            if limit is not None and len(history) > limit:
+                # Кольцевой буфер: старые события вытесняются, ``seq`` остаётся
+                # монотонным, поэтому фильтр по ``Last-Event-ID`` продолжает
+                # работать для сохранившихся событий.
+                del history[: len(history) - limit]
             subscribers = list(self._subscribers.get(job_id, ()))
         terminal = payload.get("status") in TERMINAL_STATUSES
         for subscriber in subscribers:

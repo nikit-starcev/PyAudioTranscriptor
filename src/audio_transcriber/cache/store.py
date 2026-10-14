@@ -16,7 +16,9 @@ import json
 import logging
 import os
 import shutil
+import stat
 import threading
+import time
 import uuid
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -27,6 +29,11 @@ logger = logging.getLogger(__name__)
 #: Версия формата кэша. Меняется при несовместимом изменении структуры файлов;
 #: старые файлы после этого игнорируются и пересчитываются.
 CACHE_FORMAT_VERSION = 1
+
+#: Лимит размера кэша по умолчанию (байты). ``0`` — без ограничения.
+DEFAULT_CACHE_MAX_BYTES = 0
+#: Время жизни записей кэша по умолчанию (секунды). ``0`` — без истечения.
+DEFAULT_CACHE_TTL_SECONDS = 0
 
 
 def _source_identity(source: Path) -> dict[str, Any]:
@@ -56,11 +63,29 @@ def compute_cache_key(stage: str, source: Path, params: Mapping[str, Any]) -> st
 
 
 class StageCache:
-    """Постадийный кэш на диске: JSON-файл на ключ плюс аудиофайлы денойза."""
+    """Постадийный кэш на диске: JSON-файл на ключ плюс аудиофайлы денойза.
 
-    def __init__(self, directory: Path, *, enabled: bool = True) -> None:
+    Каталог растёт неограниченно, поэтому после каждой записи выполняется
+    эвикция: сначала удаляются записи старше ``ttl_seconds``, затем — самые
+    старые по времени изменения, пока суммарный размер не опустится до
+    ``max_bytes``. Свежезаписанный файл не удаляется никогда, поэтому попадания
+    по только что посчитанной стадии сохраняются.
+    """
+
+    def __init__(
+        self,
+        directory: Path,
+        *,
+        enabled: bool = True,
+        max_bytes: int = DEFAULT_CACHE_MAX_BYTES,
+        ttl_seconds: float = DEFAULT_CACHE_TTL_SECONDS,
+    ) -> None:
         self.directory = Path(directory)
         self.enabled = enabled
+        #: Ограничение суммарного размера стадийных файлов в байтах (0 — нет).
+        self.max_bytes = max(0, int(max_bytes))
+        #: Время жизни записи с момента изменения в секундах (0 — нет).
+        self.ttl_seconds = max(0.0, float(ttl_seconds))
         #: Сериализация записей в рамках процесса. От межпроцессных гонок
         #: защищает не лок, а уникальное имя временного файла + атомарный
         #: ``os.replace`` (см. :meth:`_write_atomic`).
@@ -121,6 +146,7 @@ class StageCache:
                     path,
                     lambda tmp: tmp.write_text(text, encoding="utf-8"),
                 )
+                self._evict(keep=path)
         except OSError as exc:
             logger.warning("Не удалось сохранить кэш %s: %s", stage, exc)
 
@@ -147,6 +173,7 @@ class StageCache:
                     path,
                     lambda tmp: shutil.copyfile(source, tmp),
                 )
+                self._evict(keep=path)
         except OSError as exc:
             logger.warning("Не удалось сохранить аудио в кэш %s: %s", stage, exc)
             return None
@@ -178,6 +205,63 @@ class StageCache:
             except OSError:
                 logger.debug("Не удалось удалить временный файл кэша %s", tmp_path)
             raise
+
+    def _iter_entries(self) -> list[tuple[float, int, Path]]:
+        """Стадийные файлы каталога: ``(mtime, размер, путь)``.
+
+        Учитываются только обычные файлы верхнего уровня (``*.json``/``*.wav``);
+        подкаталоги (например, ``speaker-tracks``) и временные ``.tmp`` не
+        трогаются.
+        """
+        entries: list[tuple[float, int, Path]] = []
+        for pattern in ("*.json", "*.wav"):
+            for entry in self.directory.glob(pattern):
+                try:
+                    info = entry.stat()
+                except OSError:
+                    continue
+                if stat.S_ISREG(info.st_mode):
+                    entries.append((info.st_mtime, info.st_size, entry))
+        return entries
+
+    def _evict(self, *, keep: Path | None = None) -> None:
+        """Удаляет устаревшие и самые старые записи, укладывая каталог в лимит.
+
+        Вызывается под ``self._write_lock`` сразу после записи. ``keep`` —
+        только что записанный файл: он не удаляется, даже если один превышает
+        лимит (иначе кэш был бы бесполезен). Ошибки удаления не критичны.
+        """
+        if self.max_bytes <= 0 and self.ttl_seconds <= 0:
+            return
+        entries = self._iter_entries()
+        if self.ttl_seconds > 0:
+            cutoff = time.time() - self.ttl_seconds
+            fresh: list[tuple[float, int, Path]] = []
+            for mtime, size, path in entries:
+                if path == keep or mtime >= cutoff:
+                    fresh.append((mtime, size, path))
+                else:
+                    self._remove(path)
+            entries = fresh
+        if self.max_bytes > 0:
+            entries.sort(key=lambda entry: entry[0])
+            total = sum(size for _, size, _ in entries)
+            for _mtime, size, path in entries:
+                if total <= self.max_bytes:
+                    break
+                if path == keep:
+                    continue
+                if self._remove(path):
+                    total -= size
+
+    def _remove(self, path: Path) -> bool:
+        """Удаляет файл кэша; ``False`` при ошибке (не роняет конвейер)."""
+        try:
+            path.unlink()
+        except OSError as exc:
+            logger.warning("Не удалось удалить файл кэша %s: %s", path, exc)
+            return False
+        return True
 
     def clear(self) -> int:
         """Удаляет все файлы кэша и возвращает их количество."""

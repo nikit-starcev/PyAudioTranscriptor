@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import errno
 import hmac
-import json
 import logging
 import mimetypes
 import os
@@ -178,7 +177,7 @@ from audio_transcriber.web.estimates import (
     planned_stages,
     probe_duration,
 )
-from audio_transcriber.web.events import JobEventBus
+from audio_transcriber.web.events import DEFAULT_HISTORY_LIMIT, JobEventBus
 from audio_transcriber.web.glossary_api import register_glossary_routes
 from audio_transcriber.web.models import (
     MODEL_CATALOG,
@@ -201,8 +200,8 @@ from audio_transcriber.web.prompts_api import register_prompts_routes
 from audio_transcriber.web.results import (
     apply_transcript_edits,
     load_result_file,
-    numpy_json_default,
     result_summary,
+    write_result_json,
 )
 from audio_transcriber.web.runner import ConfigBuilder, JobRunner, PipelineFn
 from audio_transcriber.web.secrets import (
@@ -215,8 +214,10 @@ from audio_transcriber.web.secrets import (
     mask_secret,
 )
 from audio_transcriber.web.settings import (
+    HARDWARE_PRESETS,
     SettingsError,
     SettingsStore,
+    apply_hardware_preset,
     settings_from_mapping,
     validate_llm_base_url,
     validate_settings,
@@ -587,6 +588,10 @@ class SettingsUpdate(BaseModel):
     Пустая строка удаляет секрет.
     """
 
+    #: Идентификатор готового профиля настроек (issue #144), например ``weak``
+    #: («Слабое железо»). Накладывается на текущие настройки перед остальными
+    #: полями; ``None`` — профиль не применяется.
+    preset: str | None = None
     glossary_enabled: bool | None = None
     glossary_db: str | None = None
     voices_dir: str | None = None
@@ -729,6 +734,7 @@ def create_app(
     nemo_pull_runner: PullRunner | None = None,
     nemo_poll_interval: float | None = 0.5,
     heartbeat: float = 15.0,
+    event_history_limit: int | None = DEFAULT_HISTORY_LIMIT,
     openai_api_key: str | None = None,
     openai_timeout: float | None = None,
     openai_poll_interval: float | None = None,
@@ -753,7 +759,7 @@ def create_app(
     secrets_store = SecretsStore(resolved_paths.secrets_json)
     store = JobsDB(resolved_paths.jobs_db)
     store.initialize()
-    bus = JobEventBus(heartbeat=heartbeat)
+    bus = JobEventBus(heartbeat=heartbeat, history_limit=event_history_limit)
     download_bus = DownloadBus(heartbeat=heartbeat)
     # Отдельная шина прогресса длительных действий (#58): apply-names,
     # apply-glossary, correct-text, protocol. Живёт независимо от SSE задачи,
@@ -1535,6 +1541,7 @@ def register_api(
         payload["output_dir"] = str(paths.results_dir)
         payload["glossary_db_path"] = str(settings.resolved_glossary_db())
         payload["voices_dir_resolved"] = str(resolve_voices())
+        payload["hardware_presets"] = _hardware_presets_payload()
         token = _effective_token()
         payload["hf_token_set"] = token is not None
         payload["hf_token_masked"] = mask_hf_token(token)
@@ -1547,12 +1554,20 @@ def register_api(
     def put_settings(payload: SettingsUpdate) -> dict[str, object]:
         current = settings_store.load()
         updates = payload.model_dump(exclude_none=True)
+        preset = updates.pop("preset", None)
         token_requested = "hf_token" in updates
         raw_token = updates.pop("hf_token", None)
         api_key_requested = "llm_api_key" in updates
         raw_api_key = updates.pop("llm_api_key", None)
         try:
-            merged = settings_from_mapping(updates, base=current)
+            base = (
+                apply_hardware_preset(
+                    current, preset, whisper_model=_preset_whisper_model(models_root)
+                )
+                if preset is not None
+                else current
+            )
+            merged = settings_from_mapping(updates, base=base)
             validate_settings(merged)
             saved = settings_store.save(merged)
             if token_requested:
@@ -1568,6 +1583,7 @@ def register_api(
         result["output_dir"] = str(paths.results_dir)
         result["glossary_db_path"] = str(saved.resolved_glossary_db())
         result["voices_dir_resolved"] = str(resolve_voices())
+        result["hardware_presets"] = _hardware_presets_payload()
         token = _effective_token()
         result["hf_token_set"] = token is not None
         result["hf_token_masked"] = mask_hf_token(token)
@@ -3795,15 +3811,29 @@ def _write_result(paths: WebPaths, job: Job, payload: Mapping[str, object]) -> N
     """Перезаписывает JSON результата задачи (как в воркере — с отступами)."""
     path = _result_path(paths, job)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2, default=numpy_json_default),
-            encoding="utf-8",
-        )
+        write_result_json(path, payload)
     except OSError as exc:
         raise HTTPException(
             status_code=500, detail=f"Не удалось сохранить результат: {exc}"
         ) from exc
+
+
+def _hardware_presets_payload() -> list[dict[str, str]]:
+    """Список готовых профилей настроек для UI (issue #144)."""
+    return [
+        {"id": key, "label": info.get("label", key), "hint": info.get("hint", "")}
+        for key, info in HARDWARE_PRESETS.items()
+    ]
+
+
+def _preset_whisper_model(models_root: Path) -> str | None:
+    """Путь к самой лёгкой скачанной ggml-модели для профиля «Слабое железо»."""
+    directory = models_root / "whisper-models"
+    for name in ("ggml-small.bin", "ggml-base.bin"):
+        candidate = directory / name
+        if candidate.is_file():
+            return str(candidate)
+    return None
 
 
 def _store_protocol(

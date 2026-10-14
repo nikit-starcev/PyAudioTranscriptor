@@ -118,6 +118,44 @@ def test_put_settings_partial_update(client: TestClient) -> None:
     assert after["glossary_db"] == before["glossary_db"]
 
 
+def test_put_settings_applies_weak_hardware_preset(client: TestClient) -> None:
+    """#144: профиль «Слабое железо» одним запросом даёт лёгкую конфигурацию."""
+    response = client.put("/api/settings", json={"preset": "weak"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["asr_backend"] == "whisper-cpp"
+    assert body["device"] == "cpu"
+    assert body["diarization_engine"] == "sherpa"
+    assert body["diarization_hybrid_enabled"] is False
+    assert body["denoise"] is False
+    assert body["llm_enabled"] is False
+    assert body["llm_summary"] is False
+    assert body["protocol_auto"] is False
+    assert body["enable_correction"] is False
+
+    saved = client.get("/api/settings").json()
+    assert saved["asr_backend"] == "whisper-cpp"
+    assert saved["denoise"] is False
+    presets = {item["id"]: item for item in saved["hardware_presets"]}
+    assert "weak" in presets
+    assert presets["weak"]["label"]
+
+
+def test_put_settings_preset_overridden_by_explicit_fields(client: TestClient) -> None:
+    """Профиль — база: явно переданные поля запроса его перекрывают."""
+    response = client.put("/api/settings", json={"preset": "weak", "llm_enabled": True})
+
+    assert response.status_code == 200
+    assert response.json()["llm_enabled"] is True
+
+
+def test_put_settings_rejects_unknown_preset(client: TestClient) -> None:
+    response = client.put("/api/settings", json={"preset": "no-such-preset"})
+
+    assert response.status_code == 400
+
+
 def test_settings_notifications_toggle_persists(client: TestClient) -> None:
     """#35: отдельный тумблер уведомлений читается и сохраняется."""
     assert client.get("/api/settings").json()["notifications"] is True

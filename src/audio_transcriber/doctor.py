@@ -903,6 +903,165 @@ def _check_hf_token(env: Mapping[str, str]) -> DoctorCheck:
     )
 
 
+#: Ориентиры «слабое железо» из docs/architecture/memory.md: 4/8/16 ГБ RAM.
+_MEMORY_TIERS_GB = (4.0, 8.0, 16.0)
+
+
+def _total_ram_gb() -> float | None:
+    """Физическая RAM машины в ГБ (Linux ``/proc/meminfo``) или ``None``."""
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("MemTotal:"):
+                    return float(line.split()[1]) / (1024 * 1024)
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        pages = os.sysconf("SC_PHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+    except (ValueError, OSError, AttributeError):
+        return None
+    if pages <= 0 or page_size <= 0:
+        return None
+    return pages * page_size / (1024**3)
+
+
+def _available_ram_gb() -> float | None:
+    """Доступная RAM в ГБ (Linux ``/proc/meminfo: MemAvailable``) или ``None``."""
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("MemAvailable:"):
+                    return float(line.split()[1]) / (1024 * 1024)
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def _gguf_model_gb(name: str, default: float) -> float:
+    """Грубая оценка RAM под GGUF-модель по её имени/пути (ГБ)."""
+    lowered = name.casefold()
+    for token, value in (
+        ("0.5b", 0.7),
+        ("1.5b", 1.2),
+        ("1.5", 1.2),
+        ("13b", 8.5),
+        ("7b", 4.7),
+        ("3b", 2.1),
+    ):
+        if token in lowered:
+            return value
+    return default
+
+
+def _whisper_cpp_model_gb(name: str) -> float:
+    """Оценка RAM whisper.cpp на CPU по имени ggml-модели (ГБ)."""
+    lowered = name.casefold()
+    if "large" in lowered or "turbo" in lowered:
+        return 1.9
+    if "medium" in lowered:
+        return 1.5
+    if "small" in lowered:
+        return 0.5
+    if "base" in lowered:
+        return 0.25
+    if "tiny" in lowered:
+        return 0.15
+    return 1.0
+
+
+def _estimate_config_memory_gb(env: Mapping[str, str]) -> float:
+    """Оценка пиковой RAM выбранной конфигурации (ГБ).
+
+    Ориентиры — из эмпирического профиля (docs/architecture/memory-profile.md):
+    whisper.cpp на GPU держит модель в VRAM (~0.3 ГБ RAM), на CPU — всю модель
+    в памяти; faster-whisper/pyannote живут в процессе вместе с torch; LLM —
+    отдельный процесс под размер модели.
+    """
+    backend = env.get("ASR_BACKEND", DEFAULT_ASR_BACKEND.value).strip().casefold()
+    device = env.get("DEVICE", "auto").strip().casefold()
+    diarization = _truthy(env.get("DIARIZATION_ENABLED"), default=True)
+    engine = (env.get("DIARIZATION_ENGINE", "") or DEFAULT_DIARIZATION_ENGINE).strip().casefold()
+    denoise = _truthy(env.get("DENOISE"), default=True)
+    llm_enabled = _truthy(env.get("LLM_ENABLED"), default=False)
+    llm_provider = env.get("LLM_PROVIDER", "llama").strip().casefold() or "llama"
+
+    needs_torch = (
+        backend == AsrBackend.FASTER_WHISPER.value
+        or (diarization and engine in {"auto", "pyannote"})
+    )
+    total = 0.6 if needs_torch else 0.15
+
+    if backend == AsrBackend.FASTER_WHISPER.value:
+        total += 1.6
+    elif backend == AsrBackend.WHISPER_CPP.value:
+        model = env.get("WHISPER_CPP_MODEL", "")
+        total += _whisper_cpp_model_gb(model) if device == "cpu" else 0.3
+    elif backend == AsrBackend.GIGAAM.value:
+        total += 0.4 if env.get("GIGAAM_QUANTIZATION", "").strip() else 0.9
+
+    if diarization:
+        if engine == "sherpa":
+            total += 0.3
+        elif engine == "nemo-speech":
+            total += 0.2
+        elif engine == "hybrid":
+            total += 0.4
+        else:  # auto / pyannote
+            total += 0.9
+
+    if denoise:
+        total += 0.5
+    if llm_enabled and llm_provider == "llama":
+        total += _gguf_model_gb(env.get("LLM_MODEL", ""), 4.7)
+    return total
+
+
+def _check_memory_fit(env: Mapping[str, str]) -> DoctorCheck:
+    """Предупреждает, если конфигурация не влезает в доступную RAM (#144).
+
+    Проверка некритичная: даже тяжёлая конфигурация запускается (с риском
+    свопа/OOM), поэтому это предупреждение с подсказкой, какие стадии отключить.
+    """
+    total = _total_ram_gb()
+    if total is None:
+        return DoctorCheck(
+            key="memory_fit",
+            label="Память: конфигурация и доступная RAM",
+            ok=True,
+            critical=False,
+            detail="объём RAM не удалось определить",
+        )
+    available = _available_ram_gb()
+    headroom = available if available is not None else total
+    need = _estimate_config_memory_gb(env)
+    ok = need <= headroom
+    tier = next(
+        (value for value in _MEMORY_TIERS_GB if value >= need), _MEMORY_TIERS_GB[-1]
+    )
+    detail = (
+        f"оценка конфигурации ~{need:.1f} ГБ (ориентир ~{tier:.0f} ГБ); "
+        f"доступно {headroom:.1f} ГБ из {total:.1f} ГБ"
+    )
+    hint = (
+        ""
+        if ok
+        else (
+            "Конфигурация тяжелее доступной памяти — возможны своп и OOM. "
+            "Отключите денойз и LLM, выберите движок диаризации sherpa (или "
+            "выключите её), модель whisper.cpp base/small или профиль «Слабое железо»."
+        )
+    )
+    return DoctorCheck(
+        key="memory_fit",
+        label="Память: конфигурация и доступная RAM",
+        ok=ok,
+        critical=False,
+        detail=detail,
+        hint=hint,
+    )
+
+
 def _check_writable(env: Mapping[str, str]) -> list[DoctorCheck]:
     output_raw = env.get("OUTPUT_DIR", DEFAULT_OUTPUT_DIR).strip() or DEFAULT_OUTPUT_DIR
     output_dir = Path(output_raw)
@@ -943,6 +1102,7 @@ def run_doctor(
     checks.append(_check_config_env(config_env_path))
     checks.append(_check_hf_token(env))
     checks.extend(_check_writable(env))
+    checks.append(_check_memory_fit(env))
     return checks
 
 

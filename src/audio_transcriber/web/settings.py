@@ -66,6 +66,22 @@ VALID_ASR_BACKENDS: tuple[str, ...] = tuple(backend.value for backend in AsrBack
 #: Допустимые устройства вычислений.
 VALID_DEVICES: tuple[str, ...] = tuple(device.value for device in Device)
 
+#: Идентификатор готового профиля «Слабое железо» (issue #144).
+HARDWARE_PRESET_WEAK = "weak"
+
+#: Готовые профили настроек под железо: идентификатор → метка и подсказка.
+#: Профиль — не отдельный режим хранения, а разовое действие: он накладывает
+#: набор значений на текущие настройки (см. :func:`apply_hardware_preset`).
+HARDWARE_PRESETS: dict[str, dict[str, str]] = {
+    HARDWARE_PRESET_WEAK: {
+        "label": "Слабое железо",
+        "hint": (
+            "whisper.cpp base/small, диаризация sherpa (ONNX/CPU), без денойза, "
+            "LLM и автопротокола. Ориентир — влезает в ~4 ГБ RAM."
+        ),
+    },
+}
+
 
 class SettingsError(ValueError):
     """Некорректные настройки веб-интерфейса (для ответа 400)."""
@@ -487,6 +503,41 @@ def settings_from_mapping(
         gigaam_model_path=pick_str("gigaam_model_path", current.gigaam_model_path),
         gigaam_quantization=pick_str("gigaam_quantization", current.gigaam_quantization),
         gigaam_vad=pick_bool("gigaam_vad", current.gigaam_vad),
+    )
+
+
+def apply_hardware_preset(
+    base: WebSettings,
+    name: str,
+    *,
+    whisper_model: str | None = None,
+) -> WebSettings:
+    """Накладывает готовый профиль настроек на ``base`` (issue #144).
+
+    Профиль задаёт полный набор значений под слабое железо. Путь к модели
+    whisper.cpp берётся из ``whisper_model`` (если найден облегчённый ggml) или
+    сохраняется текущий: подставлять заведомо несуществующий путь нельзя —
+    валидация настроек его отклонит.
+
+    :raises SettingsError: если ``name`` — неизвестный профиль.
+    """
+    key = (name or "").strip().casefold()
+    if key != HARDWARE_PRESET_WEAK:
+        raise SettingsError(f"Неизвестный профиль настроек: {name!r}")
+    return replace(
+        base,
+        asr_backend="whisper-cpp",
+        device="cpu",
+        whisper_cpp_model=whisper_model or base.whisper_cpp_model,
+        diarization_engine="sherpa",
+        diarization_hybrid_enabled=False,
+        diarization_estimate_enabled=False,
+        denoise=False,
+        llm_enabled=False,
+        llm_summary=False,
+        llm_correct_semantic=False,
+        protocol_auto=False,
+        enable_correction=False,
     )
 
 

@@ -458,6 +458,10 @@ def collect_env_kwargs(
         put("use_cache", as_bool(val("USE_CACHE"), default=True))
     if has("CACHE_DIR"):
         put("cache_dir", Path(val("CACHE_DIR")))
+    if has("CACHE_MAX_BYTES"):
+        put("cache_max_bytes", as_int(val("CACHE_MAX_BYTES"), 0))
+    if has("CACHE_TTL_SECONDS"):
+        put("cache_ttl_seconds", as_float(val("CACHE_TTL_SECONDS"), 0.0))
     if has("NOTIFICATIONS"):
         put("notifications", as_bool(val("NOTIFICATIONS"), default=True))
     if has("TIMELINE"):

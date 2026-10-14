@@ -373,6 +373,9 @@ export type JobEvent = {
   health?: JobHealth | null
 }
 
+/** Готовый профиль настроек под железо (#144). */
+export type HardwarePreset = { id: string; label: string; hint: string }
+
 export type WebSettings = {
   glossary_enabled: boolean
   glossary_db: string
@@ -440,6 +443,8 @@ export type WebSettings = {
   gigaam_quantization: string
   /** Резать длинное аудио встроенным VAD onnx-asr. */
   gigaam_vad: boolean
+  /** Готовые профили настроек под железо (#144): id, метка и подсказка. */
+  hardware_presets: HardwarePreset[]
   input_dir: string
   output_dir: string
   glossary_db_path: string
