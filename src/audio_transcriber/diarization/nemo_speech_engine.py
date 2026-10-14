@@ -211,6 +211,7 @@ def diarize_audio(
                 _diarize_command(wav_path, binary=binary, device=device, model=model),
                 capture_output=True,
                 text=True,
+                errors="replace",
                 env=env,
                 timeout=timeout,
                 check=False,

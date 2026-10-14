@@ -398,6 +398,7 @@ def _run(binary: str, args: list[str], env: Mapping[str, str], timeout: float) -
             [binary, *args],
             capture_output=True,
             text=True,
+            errors="replace",
             env=dict(env),
             timeout=timeout,
             check=False,
