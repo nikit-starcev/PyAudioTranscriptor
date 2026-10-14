@@ -122,6 +122,7 @@ flowchart TB
 | [`corporate-mode.md`](corporate-mode.md) | **Проект** многопользовательского режима (швы auth/скоупинг/RBAC/SSO) |
 | [`decisions.md`](decisions.md) | ADR: ключевые архитектурные решения и их причины |
 | [`memory.md`](memory.md) | Память и слабое железо: анализ, профиль по стадиям, ориентиры RAM ([analysis](memory-analysis.md)/[profile](memory-profile.md)) |
+| [`video.md`](video.md) | Анализ видеоряда (#121): OCR слайдов/схем + активный говорящий ([research](video-research.md)/[integration](video-integration.md)) |
 
 ## 5. Инварианты архитектуры
 
