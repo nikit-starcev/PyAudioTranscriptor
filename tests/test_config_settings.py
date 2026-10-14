@@ -1204,3 +1204,44 @@ def test_collect_env_kwargs_invalid_sentence_merge_max_gap_uses_default(
     )
 
     assert kwargs["sentence_merge_max_gap"] == DEFAULT_SENTENCE_MERGE_MAX_GAP
+
+
+def test_engine_isolation_defaults_to_off(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file)
+
+    assert config.engine_isolation == "off"
+
+
+def test_engine_isolation_normalizes_case(audio_file: Path) -> None:
+    config = AppConfig(input_file=audio_file, engine_isolation=" SUBPROCESS ")
+
+    assert config.engine_isolation == "subprocess"
+
+
+def test_engine_isolation_rejects_unknown_mode(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError, match="изоляции"):
+        AppConfig(input_file=audio_file, engine_isolation="docker")
+
+
+def test_collect_env_kwargs_reads_engine_isolation(tmp_path: Path) -> None:
+    from audio_transcriber.cli.env_config import collect_env_kwargs
+
+    kwargs = collect_env_kwargs(
+        {"ENGINE_ISOLATION": "subprocess"},
+        input_file=tmp_path / "audio.mp3",
+        output_dir=tmp_path / "out",
+    )
+
+    assert kwargs["engine_isolation"] == "subprocess"
+
+
+def test_collect_env_kwargs_ignores_invalid_engine_isolation(tmp_path: Path) -> None:
+    from audio_transcriber.cli.env_config import collect_env_kwargs
+
+    kwargs = collect_env_kwargs(
+        {"ENGINE_ISOLATION": "nonsense"},
+        input_file=tmp_path / "audio.mp3",
+        output_dir=tmp_path / "out",
+    )
+
+    assert "engine_isolation" not in kwargs

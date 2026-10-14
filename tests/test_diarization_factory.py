@@ -19,6 +19,7 @@ from audio_transcriber.diarization.nemo_speech_engine import NemoSpeechSpeakerDi
 from audio_transcriber.diarization.pyannote_engine import PyannoteSpeakerDiarizer
 from audio_transcriber.diarization.sherpa_engine import SherpaSpeakerDiarizer
 from audio_transcriber.domain.enums import Device
+from audio_transcriber.isolation import SubprocessPyannoteDiarizer
 
 
 def _config(audio_file: Path, **overrides: object) -> AppConfig:
@@ -281,6 +282,36 @@ def test_create_diarizer_pyannote_path_intact(
     diarizer = factory.create_diarizer(config, Device.CPU)
 
     assert isinstance(diarizer, PyannoteSpeakerDiarizer)
+
+
+def test_create_diarizer_isolates_pyannote_in_subprocess(
+    audio_file: Path, engines: dict[str, object]
+) -> None:
+    config = _config(
+        audio_file,
+        diarization_engine="pyannote",
+        engine_isolation="subprocess",
+        diarization_min_duration_off=0.7,
+        diarization_clustering_threshold=0.65,
+    )
+
+    diarizer = factory.create_diarizer(config, Device.CPU)
+
+    assert isinstance(diarizer, SubprocessPyannoteDiarizer)
+    assert diarizer._device is Device.CPU
+    assert diarizer._min_duration_off == 0.7
+    assert diarizer._clustering_threshold == 0.65
+
+
+def test_create_diarizer_isolation_off_keeps_in_process(
+    audio_file: Path, engines: dict[str, object]
+) -> None:
+    config = _config(audio_file, diarization_engine="pyannote", engine_isolation="off")
+
+    diarizer = factory.create_diarizer(config, Device.CPU)
+
+    assert isinstance(diarizer, PyannoteSpeakerDiarizer)
+    assert not isinstance(diarizer, SubprocessPyannoteDiarizer)
 
 
 def test_create_diarizer_hybrid_carries_settings(

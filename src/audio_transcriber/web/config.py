@@ -31,6 +31,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
     DEFAULT_DIARIZATION_SHERPA_LINKAGE,
     DEFAULT_DIARIZATION_SHERPA_THRESHOLD,
+    DEFAULT_ENGINE_ISOLATION,
     DEFAULT_ENROLLMENT_MAX_SAMPLE_SECONDS,
     DEFAULT_ENROLLMENT_MIN_SAMPLE_SECONDS,
     DEFAULT_GIGAAM_MODEL,
@@ -243,6 +244,8 @@ def build_job_config(
         pyannote_local_model=Path(pyannote_raw) if pyannote_raw else None,
         diarization_engine=defaults.get("DIARIZATION_ENGINE", "").strip().casefold()
         or DEFAULT_DIARIZATION_ENGINE,
+        engine_isolation=defaults.get("ENGINE_ISOLATION", "").strip().casefold()
+        or DEFAULT_ENGINE_ISOLATION,
         nemo_speech_binary=defaults.get("NEMO_SPEECH_BINARY", "").strip()
         or DEFAULT_NEMO_SPEECH_BINARY,
         nemo_speech_lib_path=defaults.get("NEMO_SPEECH_LIB_PATH") or None,

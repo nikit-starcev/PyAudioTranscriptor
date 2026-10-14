@@ -42,6 +42,7 @@ from audio_transcriber.diarization.pyannote_engine import PyannoteSpeakerDiarize
 from audio_transcriber.diarization.sherpa_engine import SherpaSpeakerDiarizer
 from audio_transcriber.diarization.speaker_count import estimate_speaker_count
 from audio_transcriber.domain.enums import Device
+from audio_transcriber.isolation import SubprocessPyannoteDiarizer
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
 from audio_transcriber.utils.env import binary_available
 
@@ -314,6 +315,20 @@ def create_diarizer(
             threshold=config.diarization_sherpa_threshold,
             linkage=config.diarization_sherpa_linkage,
             on_progress=on_progress,
+        )
+    if config.engine_isolation == "subprocess":
+        logger.info(
+            "pyannote: изоляция в отдельный процесс (#143), устройство %s",
+            device.value,
+        )
+        return SubprocessPyannoteDiarizer(
+            device,
+            hf_token=config.hf_token,
+            local_model_path=config.pyannote_local_model,
+            on_progress=on_progress,
+            min_duration_off=config.diarization_min_duration_off,
+            clustering_threshold=config.diarization_clustering_threshold,
+            clustering_fb=config.diarization_clustering_fb,
         )
     return PyannoteSpeakerDiarizer(
         device,

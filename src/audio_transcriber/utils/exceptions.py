@@ -32,6 +32,10 @@ class DiarizationError(AudioTranscriberError):
     """Ошибка на этапе определения говорящих."""
 
 
+class EngineIsolationError(AudioTranscriberError):
+    """Сбой изоляции тяжёлого движка в отдельном процессе-воркере (#143)."""
+
+
 class MergeError(AudioTranscriberError):
     """Ошибка при объединении результатов распознавания и диаризации."""
 

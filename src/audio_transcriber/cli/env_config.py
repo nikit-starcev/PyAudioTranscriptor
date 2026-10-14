@@ -48,6 +48,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_REFERENCE_PREPARE,
     DEFAULT_REFERENCE_TARGET_DBFS,
     DEFAULT_SENTENCE_MERGE_MAX_GAP,
+    VALID_ENGINE_ISOLATION,
 )
 from audio_transcriber.config.settings import AppConfig
 from audio_transcriber.correction.defaults import (
@@ -209,6 +210,12 @@ def collect_env_kwargs(
         put("hybrid_context_seconds", as_float(
             val("HYBRID_CONTEXT_SECONDS"), DEFAULT_HYBRID_CONTEXT_SECONDS
         ))
+
+    # --- Изоляция тяжёлых Python-движков в отдельный процесс (#143) ----------
+    if has("ENGINE_ISOLATION"):
+        raw = val("ENGINE_ISOLATION").casefold()
+        if raw in VALID_ENGINE_ISOLATION:
+            put("engine_isolation", raw)
 
     # --- Язык/устройство/форматы -------------------------------------------
     if has("LANGUAGE"):

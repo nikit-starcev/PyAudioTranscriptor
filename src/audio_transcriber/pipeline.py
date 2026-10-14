@@ -71,6 +71,7 @@ from audio_transcriber.export.timeline import (
     render_timeline_text,
     write_timeline,
 )
+from audio_transcriber.isolation import SubprocessWhisperRecognizer
 from audio_transcriber.llm.base import LlmClient
 from audio_transcriber.merging.aligner import OverlapSegmentMerger
 from audio_transcriber.merging.base import SegmentMerger
@@ -279,6 +280,15 @@ def _build_single_recognizer(
             use_vad=config.gigaam_vad,
             on_progress=on_progress,
         )
+    if config.engine_isolation == "subprocess":
+        return SubprocessWhisperRecognizer(
+            config.model_name,
+            device,
+            initial_prompt=config.initial_prompt,
+            hotwords=config.hotwords,
+            on_progress=on_progress,
+            word_timestamps=config.word_timestamps,
+        )
     return WhisperSpeechRecognizer(
         config.model_name,
         device,
@@ -363,6 +373,9 @@ def _asr_cache_params(
         # Пословные таймстемпы меняют сохранённый результат ASR — их
         # переключение должно сбрасывать кэш ASR (#45).
         "word_timestamps": config.word_timestamps,
+        # Режим изоляции движка (#143) участвует в ключе явно: смена
+        # in-process/subprocess меняет реализацию стадии и запись кэша.
+        "engine_isolation": config.engine_isolation,
     }
     if denoise_signature is not None:
         # Факт и параметры денойза, а не настройка ``config.denoise`` (#83).
@@ -477,6 +490,9 @@ def _diarization_cache_params(
         ),
         # Пометка наложения влияет на то, собираются ли зоны перекрытий.
         "mark_overlap": config.mark_overlap,
+        # Режим изоляции движка (#143): in-process/subprocess меняет реализацию
+        # стадии, поэтому обязан участвовать в ключе кэша диаризации.
+        "engine_isolation": config.engine_isolation,
         # Маршрутизация ``auto`` и оценщик числа говорящих (#83): его параметры
         # и версия меняют выбранный движок (nemo-speech/hybrid/pyannote) и/или
         # переданный гибриду ориентир ``expected_speakers``.

@@ -40,6 +40,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
     DEFAULT_DIARIZATION_SHERPA_LINKAGE,
     DEFAULT_DIARIZATION_SHERPA_THRESHOLD,
+    DEFAULT_ENGINE_ISOLATION,
     DEFAULT_ENROLLMENT_MAX_SAMPLE_SECONDS,
     DEFAULT_ENROLLMENT_MIN_SAMPLE_SECONDS,
     DEFAULT_ENROLLMENT_MIN_SIMILARITY,
@@ -63,6 +64,7 @@ from audio_transcriber.config.defaults import (
     NEMO_SPEECH_MAX_SPEAKERS,
     VALID_DIARIZATION_ENGINES,
     VALID_DIARIZATION_LINKAGES,
+    VALID_ENGINE_ISOLATION,
     VALID_LLM_PROVIDERS,
     VALID_NEMO_SPEECH_DEVICES,
 )
@@ -285,6 +287,11 @@ class AppConfig:
     hybrid_silence_rms_threshold: float = DEFAULT_HYBRID_SILENCE_RMS_THRESHOLD
     hybrid_min_segment_seconds: float = DEFAULT_HYBRID_MIN_SEGMENT_SECONDS
     hybrid_context_seconds: float = DEFAULT_HYBRID_CONTEXT_SECONDS
+    # --- Изоляция тяжёлых Python-движков в отдельный процесс (#143) ----------
+    # ``off`` — модель грузится в основной процесс (текущее поведение);
+    # ``subprocess`` — faster-whisper/pyannote выполняются воркером-процессом,
+    # чей RSS возвращается ОС после стадии (важно на Windows/macOS без #141).
+    engine_isolation: str = DEFAULT_ENGINE_ISOLATION
     llm_enabled: bool = False
     # Провайдер LLM-постобработки: ``llama`` — локальный llama-server
     # (по умолчанию), ``openai`` — внешний OpenAI-совместимый API.
@@ -378,6 +385,7 @@ class AppConfig:
         self._validate_diarization_engine()
         self._validate_diarization_sherpa()
         self._validate_diarization_routing()
+        self._validate_engine_isolation()
 
         if not isinstance(self.diarization_enabled, bool):
             raise ConfigurationError("DIARIZATION_ENABLED должно быть true или false")
@@ -625,6 +633,16 @@ class AppConfig:
                 raise ConfigurationError("DIARIZATION_CLUSTERING_FB должно быть числом")
             if fb <= 0.0:
                 raise ConfigurationError("DIARIZATION_CLUSTERING_FB должно быть положительным числом")
+
+    def _validate_engine_isolation(self) -> None:
+        """Проверяет режим изоляции тяжёлых движков (#143)."""
+        mode = (self.engine_isolation or "").strip().casefold()
+        if mode not in VALID_ENGINE_ISOLATION:
+            raise ConfigurationError(
+                f"Неизвестный режим изоляции движков: {self.engine_isolation!r} "
+                f"(допустимо: {', '.join(VALID_ENGINE_ISOLATION)})"
+            )
+        self.engine_isolation = mode
 
     def _validate_diarization_engine(self) -> None:
         """Проверяет движок диаризации и параметры NeMo-Speech.cpp (#62).
