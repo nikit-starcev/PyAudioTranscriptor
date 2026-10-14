@@ -34,6 +34,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_DIARIZATION_ROUTE_MAX_SPEAKERS,
     DEFAULT_DIARIZATION_SHERPA_LINKAGE,
     DEFAULT_DIARIZATION_SHERPA_THRESHOLD,
+    DEFAULT_ENGINE_ISOLATION,
     DEFAULT_LLM_SEMANTIC_MIN_CONFIDENCE,
     DEFAULT_NEMO_SPEECH_BINARY,
     DEFAULT_NEMO_SPEECH_DEVICE,
@@ -42,6 +43,7 @@ from audio_transcriber.config.defaults import (
     DEFAULT_VOICES_DIR,
     VALID_DIARIZATION_ENGINES,
     VALID_DIARIZATION_LINKAGES,
+    VALID_ENGINE_ISOLATION,
     VALID_LLM_PROVIDERS,
     VALID_NEMO_SPEECH_DEVICES,
 )
@@ -69,6 +71,12 @@ VALID_DEVICES: tuple[str, ...] = tuple(device.value for device in Device)
 #: Идентификатор готового профиля «Слабое железо» (issue #144).
 HARDWARE_PRESET_WEAK = "weak"
 
+#: Идентификатор сбалансированного профиля (issue #146).
+HARDWARE_PRESET_BALANCED = "balanced"
+
+#: Идентификатор производительного профиля (issue #146).
+HARDWARE_PRESET_PERFORMANCE = "performance"
+
 #: Готовые профили настроек под железо: идентификатор → метка и подсказка.
 #: Профиль — не отдельный режим хранения, а разовое действие: он накладывает
 #: набор значений на текущие настройки (см. :func:`apply_hardware_preset`).
@@ -78,6 +86,20 @@ HARDWARE_PRESETS: dict[str, dict[str, str]] = {
         "hint": (
             "whisper.cpp base/small, диаризация sherpa (ONNX/CPU), без денойза, "
             "LLM и автопротокола. Ориентир — влезает в ~4 ГБ RAM."
+        ),
+    },
+    HARDWARE_PRESET_BALANCED: {
+        "label": "Сбалансированный",
+        "hint": (
+            "whisper.cpp small, диаризация auto, денойз включён, LLM выключена. "
+            "Ориентир — ~8 ГБ RAM."
+        ),
+    },
+    HARDWARE_PRESET_PERFORMANCE: {
+        "label": "Производительный",
+        "hint": (
+            "whisper.cpp large-v3-turbo, диаризация auto (гибрид), денойз и LLM "
+            "включены, тяжёлые движки изолированы в subprocess. Ориентир — 16 ГБ RAM."
         ),
     },
 }
@@ -182,6 +204,10 @@ class WebSettings:
     gigaam_model_path: str = ""
     gigaam_quantization: str = ""
     gigaam_vad: bool = True
+    #: Режим изоляции тяжёлых Python-движков (#143): ``off`` (в процессе) или
+    #: ``subprocess`` (модель в отдельном процессе, RSS возвращается ОС после
+    #: стадии). Рекомендуется под малое количество RAM (issue #146).
+    engine_isolation: str = DEFAULT_ENGINE_ISOLATION
 
     def as_dict(self) -> dict[str, object]:
         """Плоское представление для JSON-ответа API (без секретов)."""
@@ -249,6 +275,7 @@ class WebSettings:
             "GIGAAM_MODEL_PATH": self.gigaam_model_path,
             "GIGAAM_QUANTIZATION": self.gigaam_quantization,
             "GIGAAM_VAD": _format_bool(self.gigaam_vad),
+            "ENGINE_ISOLATION": self.engine_isolation,
         }
 
     def resolved_glossary_db(self) -> Path:
@@ -365,6 +392,8 @@ def default_settings(defaults: Mapping[str, str] | None = None) -> WebSettings:
         gigaam_model_path=source.get("GIGAAM_MODEL_PATH", "").strip(),
         gigaam_quantization=source.get("GIGAAM_QUANTIZATION", "").strip(),
         gigaam_vad=_as_bool(source.get("GIGAAM_VAD"), default=True),
+        engine_isolation=source.get("ENGINE_ISOLATION", "").strip().casefold()
+        or DEFAULT_ENGINE_ISOLATION,
     )
 
 
@@ -503,6 +532,9 @@ def settings_from_mapping(
         gigaam_model_path=pick_str("gigaam_model_path", current.gigaam_model_path),
         gigaam_quantization=pick_str("gigaam_quantization", current.gigaam_quantization),
         gigaam_vad=pick_bool("gigaam_vad", current.gigaam_vad),
+        engine_isolation=pick_nonempty(
+            "engine_isolation", current.engine_isolation
+        ).casefold(),
     )
 
 
@@ -512,32 +544,68 @@ def apply_hardware_preset(
     *,
     whisper_model: str | None = None,
 ) -> WebSettings:
-    """Накладывает готовый профиль настроек на ``base`` (issue #144).
+    """Накладывает готовый профиль настроек на ``base`` (issue #144/#146).
 
-    Профиль задаёт полный набор значений под слабое железо. Путь к модели
-    whisper.cpp берётся из ``whisper_model`` (если найден облегчённый ggml) или
-    сохраняется текущий: подставлять заведомо несуществующий путь нельзя —
-    валидация настроек его отклонит.
+    Профиль задаёт полный набор значений под железо. Путь к модели whisper.cpp
+    берётся из ``whisper_model`` (если найден подходящий ggml) или сохраняется
+    текущий: подставлять заведомо несуществующий путь нельзя — валидация
+    настроек его отклонит.
 
     :raises SettingsError: если ``name`` — неизвестный профиль.
     """
     key = (name or "").strip().casefold()
-    if key != HARDWARE_PRESET_WEAK:
+    if key not in HARDWARE_PRESETS:
         raise SettingsError(f"Неизвестный профиль настроек: {name!r}")
+    model = whisper_model or base.whisper_cpp_model
+    if key == HARDWARE_PRESET_WEAK:
+        return replace(
+            base,
+            asr_backend="whisper-cpp",
+            device="cpu",
+            whisper_cpp_model=model,
+            diarization_engine="sherpa",
+            diarization_hybrid_enabled=False,
+            diarization_estimate_enabled=False,
+            denoise=False,
+            llm_enabled=False,
+            llm_summary=False,
+            llm_correct_semantic=False,
+            protocol_auto=False,
+            enable_correction=False,
+            engine_isolation="off",
+        )
+    if key == HARDWARE_PRESET_BALANCED:
+        return replace(
+            base,
+            asr_backend="whisper-cpp",
+            device="auto",
+            whisper_cpp_model=model,
+            diarization_engine="auto",
+            diarization_hybrid_enabled=False,
+            diarization_estimate_enabled=True,
+            denoise=True,
+            llm_enabled=False,
+            llm_summary=True,
+            llm_correct_semantic=False,
+            protocol_auto=False,
+            enable_correction=False,
+            engine_isolation="off",
+        )
     return replace(
         base,
         asr_backend="whisper-cpp",
-        device="cpu",
-        whisper_cpp_model=whisper_model or base.whisper_cpp_model,
-        diarization_engine="sherpa",
-        diarization_hybrid_enabled=False,
-        diarization_estimate_enabled=False,
-        denoise=False,
-        llm_enabled=False,
-        llm_summary=False,
+        device="auto",
+        whisper_cpp_model=model,
+        diarization_engine="auto",
+        diarization_hybrid_enabled=True,
+        diarization_estimate_enabled=True,
+        denoise=True,
+        llm_enabled=True,
+        llm_summary=True,
         llm_correct_semantic=False,
         protocol_auto=False,
         enable_correction=False,
+        engine_isolation="subprocess",
     )
 
 
@@ -563,6 +631,15 @@ def validate_settings(settings: WebSettings) -> None:
     if settings.device not in VALID_DEVICES:
         raise SettingsError(
             f"Неизвестное устройство: {settings.device!r} (допустимо: {', '.join(VALID_DEVICES)})"
+        )
+
+    settings.engine_isolation = (
+        settings.engine_isolation.strip().casefold() or DEFAULT_ENGINE_ISOLATION
+    )
+    if settings.engine_isolation not in VALID_ENGINE_ISOLATION:
+        raise SettingsError(
+            f"Неизвестный режим изоляции движков: {settings.engine_isolation!r} "
+            f"(допустимо: {', '.join(VALID_ENGINE_ISOLATION)})"
         )
 
     settings.llm_provider = settings.llm_provider.strip().casefold()

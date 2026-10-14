@@ -28,6 +28,7 @@ import {
   cn,
 } from './ui'
 import BinaryRequirements from './BinaryRequirements'
+import HardwareRecommendationCard from './HardwareRecommendationCard'
 import ModelsPanel from './ModelsPanel'
 
 type Props = {
@@ -352,6 +353,16 @@ function SetupWizard({ report, onRecheck, onDone, onChanged }: Props) {
                     </label>
                   ))}
                 </div>
+                <p className="text-xs text-muted">
+                  Не уверены в выборе? Ниже — рекомендация, определённая по железу этой машины.
+                </p>
+                <HardwareRecommendationCard
+                  title="Рекомендация по вашему железу"
+                  onApplied={() => {
+                    void refresh()
+                    onChanged?.()
+                  }}
+                />
               </div>
             )}
 

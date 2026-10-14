@@ -63,6 +63,7 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 from audio_transcriber import __version__
+from audio_transcriber import hardware as hardware_module
 from audio_transcriber.cache.store import StageCache
 from audio_transcriber.config.defaults import DEFAULT_ENROLLMENT_MIN_SIMILARITY
 from audio_transcriber.config.settings import AppConfig
@@ -180,6 +181,7 @@ from audio_transcriber.web.estimates import (
 from audio_transcriber.web.events import DEFAULT_HISTORY_LIMIT, JobEventBus
 from audio_transcriber.web.glossary_api import register_glossary_routes
 from audio_transcriber.web.models import (
+    KIND_WHISPER,
     MODEL_CATALOG,
     DownloadBus,
     Downloader,
@@ -652,6 +654,8 @@ class SettingsUpdate(BaseModel):
     gigaam_model_path: str | None = None
     gigaam_quantization: str | None = None
     gigaam_vad: bool | None = None
+    #: Режим изоляции тяжёлых движков (#143): ``off``/``subprocess``.
+    engine_isolation: str | None = None
 
 
 class CacheClearRequest(BaseModel):
@@ -1533,6 +1537,46 @@ def register_api(
         env.update({key: value for key, value in overrides.items() if value})
         return describe_asr_device(env).as_dict()
 
+    @router.get("/hardware")
+    def get_hardware() -> dict[str, object]:
+        """Определённое железо и рекомендованные настройки (#146).
+
+        Возвращает конфигурацию (CPU/RAM/GPU/диск) и рекомендацию с обоснованием
+        «нашли / предлагаем / потому что». Ничего не применяет: предложенный набор
+        полей (``recommendation.apply``) пользователь подтверждает в UI, и он
+        попадает в ``PUT /api/settings`` вместе с ``preset``.
+        """
+        settings = settings_store.load()
+        profile = hardware_module.detect_hardware(disk_path=paths.models_dir)
+        available_models = frozenset(
+            entry.id
+            for entry in MODEL_CATALOG
+            if entry.kind == KIND_WHISPER
+            and local_status(
+                entry, resolve_target(entry, models_root=models_root, settings=settings)
+            ).present
+        )
+        available_binaries = frozenset(
+            key
+            for key, binary in (
+                ("whisper-cli", settings.whisper_cpp_binary),
+                ("llama-server", settings.llm_binary),
+                ("deep-filter", settings.deep_filter_binary),
+                ("nemo-speech", settings.nemo_speech_binary),
+            )
+            if binary_available(binary)
+        )
+        recommendation = hardware_module.recommend_hardware(
+            profile,
+            available_models=available_models,
+            available_binaries=available_binaries,
+        )
+        return {
+            "hardware": profile.as_dict(),
+            "recommendation": recommendation.as_dict(),
+            "available_models": sorted(available_models),
+        }
+
     @router.get("/settings")
     def get_settings() -> dict[str, object]:
         settings = settings_store.load()
@@ -1562,7 +1606,7 @@ def register_api(
         try:
             base = (
                 apply_hardware_preset(
-                    current, preset, whisper_model=_preset_whisper_model(models_root)
+                    current, preset, whisper_model=_preset_whisper_model(models_root, preset)
                 )
                 if preset is not None
                 else current
@@ -3826,10 +3870,24 @@ def _hardware_presets_payload() -> list[dict[str, str]]:
     ]
 
 
-def _preset_whisper_model(models_root: Path) -> str | None:
-    """Путь к самой лёгкой скачанной ggml-модели для профиля «Слабое железо»."""
+def _preset_whisper_model(models_root: Path, preset: str) -> str | None:
+    """Путь к подходящей скачанной ggml-модели для профиля железа (#144/#146).
+
+    Для каждого профиля — свой набор предпочтений (от лёгких к тяжёлым);
+    возвращается первая найденная на диске модель.
+    """
+    preferences = {
+        "weak": ("ggml-small.bin", "ggml-base.bin"),
+        "balanced": ("ggml-small.bin", "ggml-base.bin", "ggml-medium.bin"),
+        "performance": (
+            "ggml-large-v3-turbo.bin",
+            "ggml-medium.bin",
+            "ggml-small.bin",
+            "ggml-base.bin",
+        ),
+    }
     directory = models_root / "whisper-models"
-    for name in ("ggml-small.bin", "ggml-base.bin"):
+    for name in preferences.get((preset or "").strip().casefold(), ()):
         candidate = directory / name
         if candidate.is_file():
             return str(candidate)

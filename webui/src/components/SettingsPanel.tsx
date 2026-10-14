@@ -5,6 +5,7 @@ import {
   ASR_BACKENDS,
   DEVICES,
   DIARIZATION_ENGINES,
+  ENGINE_ISOLATION_MODES,
   errorMessage,
   EXPORT_FORMATS,
   formatBytes,
@@ -33,6 +34,7 @@ import {
   Select,
   Spinner,
 } from './ui'
+import HardwareRecommendationCard from './HardwareRecommendationCard'
 
 type Props = {
   onSaved?: (settings: WebSettings) => void
@@ -391,6 +393,7 @@ function SettingsPanel({ onSaved }: Props) {
         gigaam_model_path: settings.gigaam_model_path,
         gigaam_quantization: settings.gigaam_quantization,
         gigaam_vad: settings.gigaam_vad,
+        engine_isolation: settings.engine_isolation,
         ...(hfTokenTouched ? { hf_token: hfToken } : {}),
         ...(llmApiKeyTouched ? { llm_api_key: llmApiKey } : {}),
       }
@@ -453,6 +456,21 @@ function SettingsPanel({ onSaved }: Props) {
     } finally {
       setBusy(false)
     }
+  }
+
+  // Применение вернуло новые настройки (например, из рекомендации по железу
+  // #146) — синхронизируем локальную форму и уведомляем родителя.
+  const acceptSaved = (saved: WebSettings) => {
+    setSettings(saved)
+    setNumericDraft(numericDrafts(saved))
+    setHfToken('')
+    setHfTokenTouched(false)
+    setHfCheck(null)
+    setLlmApiKey('')
+    setLlmApiKeyTouched(false)
+    setLlmCheck(null)
+    onSaved?.(saved)
+    void refreshNemoModel()
   }
 
   const checkLlm = async () => {
@@ -556,6 +574,7 @@ function SettingsPanel({ onSaved }: Props) {
           description="Одним действием выставить конфигурацию под слабое железо (мало RAM, CPU без GPU). Индивидуальные поля можно изменить и сохранить после."
         />
         <CardContent className="space-y-3">
+          <HardwareRecommendationCard onApplied={acceptSaved} />
           {settings.hardware_presets.length === 0 && (
             <p className="text-xs text-muted">Готовые профили недоступны.</p>
           )}
@@ -731,6 +750,23 @@ function SettingsPanel({ onSaved }: Props) {
               onChange={(event) => update({ whisper_cpp_binary: event.target.value })}
               placeholder="whisper-cli"
             />
+          </Field>
+          <Field
+            label="Изоляция движков (ENGINE_ISOLATION)"
+            htmlFor="settings-engine-isolation"
+            hint="subprocess — тяжёлые движки (faster-whisper, pyannote) считаются в отдельном процессе и возвращают память после стадии. Полезно при малом объёме RAM."
+          >
+            <Select
+              id="settings-engine-isolation"
+              value={settings.engine_isolation}
+              onChange={(event) => update({ engine_isolation: event.target.value })}
+            >
+              {ENGINE_ISOLATION_MODES.map((mode) => (
+                <option key={mode} value={mode}>
+                  {mode}
+                </option>
+              ))}
+            </Select>
           </Field>
           {settings.asr_backend === 'gigaam' && (
             <div className="space-y-4 rounded-md border border-info/40 bg-info-soft p-3">
