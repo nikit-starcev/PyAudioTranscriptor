@@ -376,6 +376,75 @@ export type JobEvent = {
 /** Готовый профиль настроек под железо (#144). */
 export type HardwarePreset = { id: string; label: string; hint: string }
 
+/** Параметры CPU, определённые автоопределением железа (#146). */
+export type HardwareCpu = {
+  name: string | null
+  logical_cores: number | null
+  physical_cores: number | null
+  max_freq_mhz: number | null
+}
+
+/** Параметры GPU (наличие, вендор, VRAM, ускорители). */
+export type HardwareGpu = {
+  present: boolean
+  vendor: string | null
+  name: string | null
+  vram_gb: number | null
+  accelerators: string[]
+}
+
+/** Определённая конфигурация железа (#146). */
+export type HardwareInfo = {
+  os: string
+  cpu: HardwareCpu
+  total_ram_gb: number | null
+  available_ram_gb: number | null
+  gpu: HardwareGpu
+  free_disk_gb: number | null
+  notes: string[]
+}
+
+/** Предложенные рекомендацией поля настроек (для ``PUT /api/settings``). */
+export type HardwareRecommendationApply = {
+  asr_backend: string
+  device: string
+  diarization_engine: string
+  denoise: boolean
+  llm_enabled: boolean
+  llm_summary: boolean
+  engine_isolation: string
+  diarization_hybrid_enabled: boolean
+  diarization_estimate_enabled: boolean
+}
+
+/** Рекомендация настроек под железо с обоснованием (#146). */
+export type HardwareRecommendation = {
+  profile: string
+  label: string
+  asr_backend: string
+  device: string
+  whisper_model_id: string | null
+  whisper_model_available: boolean
+  diarization_engine: string
+  denoise: boolean
+  llm_enabled: boolean
+  engine_isolation: string
+  found: string
+  proposed: string
+  why: string
+  rationale: string[]
+  apply: HardwareRecommendationApply
+}
+
+/** Ответ ``GET /api/hardware``: конфигурация и рекомендация (#146). */
+export type HardwareReport = {
+  hardware: HardwareInfo
+  recommendation: HardwareRecommendation
+  available_models: string[]
+}
+
+export const ENGINE_ISOLATION_MODES = ['off', 'subprocess'] as const
+
 export type WebSettings = {
   glossary_enabled: boolean
   glossary_db: string
@@ -443,6 +512,8 @@ export type WebSettings = {
   gigaam_quantization: string
   /** Резать длинное аудио встроенным VAD onnx-asr. */
   gigaam_vad: boolean
+  /** Режим изоляции тяжёлых движков (#143): off | subprocess. */
+  engine_isolation: string
   /** Готовые профили настроек под железо (#144): id, метка и подсказка. */
   hardware_presets: HardwarePreset[]
   input_dir: string
