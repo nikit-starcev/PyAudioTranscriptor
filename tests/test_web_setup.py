@@ -125,6 +125,18 @@ def test_binary_requirements_include_nemo_for_explicit_engines() -> None:
     assert [item["key"] for item in pyannote] == ["deep-filter"]
 
 
+def test_binary_requirements_mark_sherpa_needed_for_sherpa_engine() -> None:
+    by_key = {
+        item["key"]: item
+        for item in web_setup.binary_requirements(
+            WebSettings(diarization_engine="sherpa", diarization_estimate_enabled=False)
+        )
+    }
+    assert by_key["sherpa-onnx"]["needed"] is True
+    assert by_key["sherpa-onnx"]["check_id"] == "dep:sherpa_onnx"
+    assert "nemo-speech" not in by_key
+
+
 def test_required_models_include_gigaam_only_for_gigaam_backend() -> None:
     for backend in ("faster-whisper", "whisper-cpp"):
         ids = web_setup.required_model_ids(WebSettings(asr_backend=backend))

@@ -117,6 +117,10 @@ const ENGINE_HINTS: Record<string, string> = {
     'Оконный EEND (nemo-speech, ≤ 4 в окне) + глобальная склейка говорящих по ' +
     'эмбеддингам (sherpa-onnx, 3D-Speaker CAM++). Обходит лимит 4; нужны sherpa-onnx, ' +
     'модель эмбеддингов и бинарник nemo-speech.',
+  sherpa:
+    'ONNX/CPU без PyTorch: silero VAD + эмбеддинги CAM++ + агломеративная кластеризация. ' +
+    'Нужен только пакет sherpa-onnx. Перекрытия речи не детектируются; не выбирается ' +
+    'режимом auto — включается явно.',
 }
 
 /** Допустимые linkage гибридной кластеризации (DIARIZATION_HYBRID_LINKAGE). */

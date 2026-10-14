@@ -43,7 +43,11 @@ from audio_transcriber.diarization.enrollment import (
     SpeakerEmbeddingEngine,
     assign_speaker_names,
 )
-from audio_transcriber.diarization.factory import HYBRID_ENGINE, create_diarizer
+from audio_transcriber.diarization.factory import (
+    HYBRID_ENGINE,
+    SHERPA_ENGINE,
+    create_diarizer,
+)
 from audio_transcriber.diarization.hybrid_engine import (
     DIARIZATION_HYBRID_IMPL_VERSION,
     HybridSpeakerDiarizer,
@@ -54,6 +58,10 @@ from audio_transcriber.diarization.pyannote_engine import (
 )
 from audio_transcriber.diarization.reference import ReferencePrepareOptions
 from audio_transcriber.diarization.samples import extract_speaker_samples
+from audio_transcriber.diarization.sherpa_engine import (
+    SHERPA_DIARIZATION_IMPL_VERSION,
+    SherpaSpeakerDiarizer,
+)
 from audio_transcriber.diarization.speaker_count import SPEAKER_COUNT_ESTIMATOR_VERSION
 from audio_transcriber.domain.enums import AsrBackend, Device
 from audio_transcriber.domain.models import SpeakerOverlap, TranscriptionResult
@@ -383,15 +391,15 @@ def _asr_cache_params(
     return params
 
 
-def _may_resolve_to_hybrid(config: AppConfig) -> bool:
-    """Может ли маршрутизация диаризации выбрать гибридный движок.
+def _may_use_campplus_enrollment(config: AppConfig) -> bool:
+    """Может ли маршрутизация диаризации выбрать движок с CAM++-эмбеддером.
 
     Нужно, чтобы лениво резолвить движок на попадании в кэш только тогда,
     когда его CAM++-эмбеддер действительно может понадобиться для enrollment
-    (явный ``hybrid`` либо ``auto`` с включённым гибридом).
+    (явный ``hybrid``/``sherpa`` либо ``auto`` с включённым гибридом).
     """
     engine = (config.diarization_engine or "").strip().casefold()
-    return engine == HYBRID_ENGINE or (
+    return engine in (HYBRID_ENGINE, SHERPA_ENGINE) or (
         engine == "auto" and config.diarization_hybrid_enabled
     )
 
@@ -470,6 +478,11 @@ def _diarization_cache_params(
         params["hybrid_overload_split"] = config.diarization_hybrid_overload_split
         params["hybrid_subwindow_seconds"] = config.diarization_hybrid_subwindow_seconds
         params["hybrid_max_split_depth"] = config.diarization_hybrid_max_split_depth
+    if engine == SHERPA_ENGINE:
+        # Версия алгоритма движка ``sherpa``: смена окон/склейки/кластеризации
+        # меняет результат при тех же входах. Модель эмбеддингов и порог уже
+        # входят в ключ (``diarization_estimate_model``/``..._threshold``).
+        params["sherpa_impl_version"] = SHERPA_DIARIZATION_IMPL_VERSION
     return params
 
 
@@ -737,11 +750,11 @@ def run_pipeline(
             if (
                 active_enrollment_engine is None
                 and diarizer_for_enrollment is None
-                and _may_resolve_to_hybrid(config)
+                and _may_use_campplus_enrollment(config)
             ):
                 # Попадание в кэш: движок не создавался, чтобы не гонять
-                # оценщик. Гибриду для enrollment нужен его CAM++-эмбеддер —
-                # ради этого (и только здесь) резолвим движок лениво.
+                # оценщик. Гибриду/``sherpa`` для enrollment нужен их
+                # CAM++-эмбеддер — ради этого (и только здесь) резолвим движок.
                 diarizer_for_enrollment = create_diarizer(
                     config,
                     diarization_device,
@@ -750,7 +763,7 @@ def run_pipeline(
                 )
                 active_diarizer = diarizer_for_enrollment
             if active_enrollment_engine is None and isinstance(
-                diarizer_for_enrollment, HybridSpeakerDiarizer
+                diarizer_for_enrollment, (HybridSpeakerDiarizer, SherpaSpeakerDiarizer)
             ):
                 resolved_engine = diarizer_for_enrollment.enrollment_engine()
                 if resolved_engine is not None:

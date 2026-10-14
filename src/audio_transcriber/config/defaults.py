@@ -77,7 +77,7 @@ DEFAULT_DIARIZATION_MIN_DURATION_OFF = 0.5
 DEFAULT_DIARIZATION_ENGINE = "auto"
 
 #: Допустимые движки диаризации.
-VALID_DIARIZATION_ENGINES = ("auto", "pyannote", "nemo-speech", "hybrid")
+VALID_DIARIZATION_ENGINES = ("auto", "pyannote", "nemo-speech", "hybrid", "sherpa")
 
 #: Допустимые linkage глобальной кластеризации гибрида. ``ward`` требует
 #: евклидовой метрики, ``complete``/``average``/``single`` — косинусной.
@@ -120,6 +120,8 @@ DEFAULT_DIARIZATION_ESTIMATE_SECONDS = 30.0
 #: строит «цепочки» и склеивает говорящих. 0.50 настроен под complete+cosine
 #: на реальной записи (Отказоустойчивость_28_09.mp4, ~12 участников):
 #: 0.50 даёт k≈14 / доля топ-кластера ≈31% против 68–78% у average.
+#: Тот же порог переиспользует и движок ``sherpa`` (#63, та же
+#: complete/cosine-кластеризация CAM++).
 DEFAULT_DIARIZATION_ESTIMATE_THRESHOLD = 0.50
 
 #: Модель эмбеддингов говорящего для оценщика: имя файла в каталоге моделей

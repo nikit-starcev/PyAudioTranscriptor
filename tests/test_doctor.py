@@ -653,3 +653,42 @@ def test_hybrid_requires_sherpa_even_without_estimate(tmp_path: Path) -> None:
 
     modules = {module for module, _label, _critical in doctor._dependencies(env)}
     assert "sherpa_onnx" in modules
+
+
+# --- альтернативный движок sherpa (#63) -------------------------------------
+
+
+def test_sherpa_engine_requires_sherpa_and_skips_pyannote(tmp_path: Path) -> None:
+    env = _base_env(tmp_path, DIARIZATION_ENABLED="true", DIARIZATION_ENGINE="sherpa")
+
+    deps = {module: critical for module, _label, critical in doctor._dependencies(env)}
+    # Явный движок sherpa без fallback: пакет обязателен, pyannote/torch — нет.
+    assert deps["sherpa_onnx"] is True
+    assert deps["pyannote.audio"] is False
+    assert deps["torch"] is False
+    # Токен HF для sherpa не нужен; бинарник nemo-speech не проверяется.
+    assert doctor._check_hf_token(env).ok
+    assert all(check.key != "bin:nemo-speech" for check in doctor._check_nemo_speech(env))
+
+
+def test_sherpa_engine_dependency_reported_when_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(doctor, "_module_available", lambda name: name != "sherpa_onnx")
+    monkeypatch.setattr(
+        doctor,
+        "_check_sherpa_models",
+        lambda _env: doctor.DoctorCheck(
+            key="model:sherpa", label="Модели диаризации sherpa", ok=False, critical=False
+        ),
+    )
+    _patch_writable(monkeypatch)
+
+    env = _base_env(tmp_path, DIARIZATION_ENABLED="true", DIARIZATION_ENGINE="sherpa")
+    checks = doctor.run_doctor(None, env)
+
+    sherpa = _find(checks, "dep:sherpa_onnx")
+    assert not sherpa.ok
+    assert sherpa.critical
+    assert all(check.key != "bin:nemo-speech" for check in checks)
+    assert _find(checks, "model:sherpa").critical is False

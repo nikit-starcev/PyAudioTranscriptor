@@ -28,6 +28,7 @@ from pathlib import Path
 from audio_transcriber.config.defaults import (
     DEFAULT_DEEP_FILTER_BINARY,
     DEFAULT_DIARIZATION_ENGINE,
+    DEFAULT_DIARIZATION_ESTIMATE_MODEL,
     DEFAULT_NEMO_SPEECH_BINARY,
     DEFAULT_NEMO_SPEECH_DEVICE,
     DEFAULT_NEMO_SPEECH_MODEL,
@@ -294,9 +295,9 @@ def _dependencies(env: Mapping[str, str]) -> list[tuple[str, str, bool]]:
     # Гибридная диаризация тоже использует sherpa-onnx (эмбеддинги CAM++).
     hybrid_enabled = _truthy(env.get("DIARIZATION_HYBRID_ENABLED"), default=True)
     engine = _diarization_engine(env)
-    # При явном nemo-speech/hybrid pyannote/torch не нужны (нет fallback);
-    # в режиме auto pyannote остаётся резервом, поэтому критичен.
-    pyannote_needed = diarization and engine not in {"nemo-speech", "hybrid"}
+    # При явном nemo-speech/hybrid/sherpa pyannote/torch не нужны (нет
+    # fallback); в режиме auto pyannote остаётся резервом, поэтому критичен.
+    pyannote_needed = diarization and engine not in {"nemo-speech", "hybrid", "sherpa"}
     checks = [
         ("av", "av (декодирование аудио)", True),
         ("faster_whisper", "faster-whisper", backend == AsrBackend.FASTER_WHISPER.value),
@@ -306,9 +307,19 @@ def _dependencies(env: Mapping[str, str]) -> list[tuple[str, str, bool]]:
         ("textual", "textual (TUI)", False),
         ("pymorphy3", "pymorphy3 (автоисправление)", correction),
     ]
-    if diarization and (estimate_enabled or (hybrid_enabled and engine == "hybrid")):
+    # sherpa-onnx нужен оценщику N и гибриду (некритично — есть fallback), а
+    # при явном движке ``sherpa`` он обязателен (fallback-движка нет).
+    sherpa_explicit = diarization and engine == "sherpa"
+    sherpa_optional = diarization and (
+        estimate_enabled or (hybrid_enabled and engine == "hybrid")
+    )
+    if sherpa_explicit or sherpa_optional:
         checks.append(
-            ("sherpa_onnx", "sherpa-onnx (оценка говорящих / гибрид)", False)
+            (
+                "sherpa_onnx",
+                "sherpa-onnx (оценка говорящих / гибрид / движок sherpa)",
+                sherpa_explicit,
+            )
         )
     return checks
 
@@ -457,7 +468,7 @@ def _check_nemo_speech(env: Mapping[str, str]) -> list[DoctorCheck]:
     if not _truthy(env.get("DIARIZATION_ENABLED"), default=True):
         return []
     engine = _diarization_engine(env)
-    if engine == "pyannote":
+    if engine in {"pyannote", "sherpa"}:
         return []
 
     explicit = engine in {"nemo-speech", "hybrid"}
@@ -666,7 +677,7 @@ def _check_models(env: Mapping[str, str]) -> list[DoctorCheck]:
             )
         )
 
-    if diarization and _diarization_engine(env) not in {"nemo-speech", "hybrid"}:
+    if diarization and _diarization_engine(env) not in {"nemo-speech", "hybrid", "sherpa"}:
         raw = env.get("PYANNOTE_LOCAL_MODEL", "").strip()
         if raw:
             path = Path(raw)
@@ -692,7 +703,42 @@ def _check_models(env: Mapping[str, str]) -> list[DoctorCheck]:
                     detail="не задана (модель будет загружена с Hugging Face)",
                 )
             )
+
+    if diarization and _diarization_engine(env) == "sherpa":
+        checks.append(_check_sherpa_models(env))
     return checks
+
+
+def _check_sherpa_models(env: Mapping[str, str]) -> DoctorCheck:
+    """Проверяет наличие CAM++ и silero VAD для движка ``sherpa`` (не скачивая).
+
+    Модели грузятся по требованию при первом запуске — отсутствие в кэше не
+    критично, но показываем состояние и путь кэша.
+    """
+    from audio_transcriber.diarization import embeddings, speaker_count
+
+    model = (
+        env.get("DIARIZATION_ESTIMATE_MODEL", DEFAULT_DIARIZATION_ESTIMATE_MODEL).strip()
+        or DEFAULT_DIARIZATION_ESTIMATE_MODEL
+    )
+    try:
+        embedding_model = embeddings.resolve_embedding_model(model, download=False)
+        vad_model = speaker_count.resolve_vad_model(download=False)
+    except Exception:  # noqa: BLE001 — проверка не должна ронять доктора
+        embedding_model, vad_model = None, None
+    ready = embedding_model is not None and vad_model is not None
+    cache_dir = embeddings.default_model_cache_dir()
+    return DoctorCheck(
+        key="model:sherpa",
+        label="Модели диаризации sherpa (CAM++ + silero VAD)",
+        ok=ready,
+        critical=False,
+        detail=(
+            f"готовы ({cache_dir})"
+            if ready
+            else f"не в кэше ({cache_dir}) — будут загружены при первом запуске"
+        ),
+    )
 
 
 def _check_vulkan(env: Mapping[str, str]) -> DoctorCheck:
@@ -837,7 +883,7 @@ def _check_hf_token(env: Mapping[str, str]) -> DoctorCheck:
     diarization = _truthy(env.get("DIARIZATION_ENABLED"), default=True)
     local_model = env.get("PYANNOTE_LOCAL_MODEL", "").strip()
     engine = _diarization_engine(env)
-    needed = diarization and not local_model and engine not in {"nemo-speech", "hybrid"}
+    needed = diarization and not local_model and engine not in {"nemo-speech", "hybrid", "sherpa"}
     if not needed:
         return DoctorCheck(
             key="hf_token",

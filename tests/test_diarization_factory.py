@@ -17,6 +17,7 @@ from audio_transcriber.diarization import factory
 from audio_transcriber.diarization.hybrid_engine import HybridSpeakerDiarizer
 from audio_transcriber.diarization.nemo_speech_engine import NemoSpeechSpeakerDiarizer
 from audio_transcriber.diarization.pyannote_engine import PyannoteSpeakerDiarizer
+from audio_transcriber.diarization.sherpa_engine import SherpaSpeakerDiarizer
 from audio_transcriber.domain.enums import Device
 
 
@@ -76,6 +77,15 @@ def test_resolve_explicit_hybrid(
     config = _config(audio_file, diarization_engine="hybrid")
 
     assert factory.resolve_diarization_engine(config) == "hybrid"
+    assert engines["estimate_calls"] == 0
+
+
+def test_resolve_explicit_sherpa(
+    audio_file: Path, monkeypatch: pytest.MonkeyPatch, engines: dict[str, object]
+) -> None:
+    config = _config(audio_file, diarization_engine="sherpa")
+
+    assert factory.resolve_diarization_engine(config) == "sherpa"
     assert engines["estimate_calls"] == 0
 
 
@@ -344,3 +354,20 @@ def test_create_diarizer_auto_routes_and_emits_progress(
 
     assert isinstance(diarizer, NemoSpeechSpeakerDiarizer)
     assert any(getattr(event, "stage", None) == "diarization" for event in events)
+
+
+def test_create_diarizer_sherpa_carries_settings(
+    audio_file: Path, engines: dict[str, object]
+) -> None:
+    config = _config(
+        audio_file,
+        diarization_engine="sherpa",
+        diarization_estimate_model="campplus.onnx",
+        diarization_estimate_threshold=0.6,
+    )
+
+    diarizer = factory.create_diarizer(config, Device.CPU)
+
+    assert isinstance(diarizer, SherpaSpeakerDiarizer)
+    assert diarizer._embedding_model == "campplus.onnx"
+    assert diarizer._threshold == 0.6

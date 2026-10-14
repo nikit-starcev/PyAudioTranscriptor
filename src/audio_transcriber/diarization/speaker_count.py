@@ -60,7 +60,9 @@ __all__ = [
     "SILERO_VAD_URL",
     "SPEAKER_COUNT_ESTIMATOR_VERSION",
     "default_model_cache_dir",
+    "detect_speech_spans",
     "estimate_speaker_count",
+    "resolve_vad_model",
 ]
 
 #: Версия алгоритма оценки числа говорящих. Участвует в ключе кэша диаризации
@@ -165,16 +167,30 @@ def _resolve_models(
     )
     if embedding is None:
         return None
-
-    candidate_vad = resolved_cache / SILERO_VAD_FILENAME
-    vad_path: Path | None
-    if embedding_utils.is_valid_file(candidate_vad):
-        vad_path = candidate_vad
-    else:
-        vad_path = _download_file(SILERO_VAD_URL, candidate_vad, on_progress=on_progress)
+    vad_path = resolve_vad_model(resolved_cache, on_progress=on_progress)
     if vad_path is None:
         return None
     return embedding, vad_path
+
+
+def resolve_vad_model(
+    model_dir: Path | None = None,
+    *,
+    on_progress: ProgressCallback | None = None,
+    download: bool = True,
+) -> Path | None:
+    """Путь к ONNX-модели silero VAD (скачивается при отсутствии, если разрешено).
+
+    Используется и оценщиком числа говорящих, и диаризацией ``sherpa`` (#63).
+    Без сети/при ошибке загрузки возвращает ``None`` (мягкая деградация).
+    """
+    resolved_cache = model_dir or embedding_utils.default_model_cache_dir()
+    candidate = resolved_cache / SILERO_VAD_FILENAME
+    if embedding_utils.is_valid_file(candidate):
+        return candidate
+    if not download:
+        return None
+    return _download_file(SILERO_VAD_URL, candidate, on_progress=on_progress)
 
 
 def _load_samples(
@@ -191,8 +207,11 @@ def _load_samples(
     return samples if samples.size > 0 else None
 
 
-def _detect_speech(samples: np.ndarray, vad_model: Path) -> list[SpeechSpan]:
-    """Возвращает речевые фрагменты ``(начало, конец)`` в сэмплах (silero VAD)."""
+def detect_speech_spans(samples: np.ndarray, vad_model: Path) -> list[SpeechSpan]:
+    """Возвращает речевые фрагменты ``(начало, конец)`` в сэмплах (silero VAD).
+
+    Общий помощник оценщика числа говорящих и диаризации ``sherpa`` (#63).
+    """
     import sherpa_onnx
 
     config = sherpa_onnx.VadModelConfig()
@@ -221,6 +240,11 @@ def _detect_speech(samples: np.ndarray, vad_model: Path) -> list[SpeechSpan]:
     detector.flush()
     drain()
     return spans
+
+
+def _detect_speech(samples: np.ndarray, vad_model: Path) -> list[SpeechSpan]:
+    """Прежняя точка вызова VAD (оставлена для совместимости тестов)."""
+    return detect_speech_spans(samples, vad_model)
 
 
 def _start_at(

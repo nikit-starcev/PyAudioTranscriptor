@@ -587,6 +587,17 @@ def test_validate_settings_rejects_unknown_diarization_engine() -> None:
         validate_settings(settings)
 
 
+def test_validate_settings_accepts_sherpa_engine() -> None:
+    from audio_transcriber.web.settings import validate_settings
+
+    settings = default_settings({})
+    settings.diarization_engine = "sherpa"
+
+    validate_settings(settings)
+
+    assert settings.diarization_engine == "sherpa"
+
+
 def test_validate_settings_rejects_unknown_nemo_device() -> None:
     from audio_transcriber.web.settings import SettingsError, validate_settings
 
@@ -622,6 +633,27 @@ def test_build_job_config_maps_diarization_engine(
     assert config.nemo_speech_lib_path == str(lib_dir)
     assert config.nemo_speech_model == "sortformer"
     assert config.nemo_speech_device == "vulkan"
+
+
+def test_build_job_config_maps_sherpa_engine(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("audio_transcriber.web.config.env_defaults", lambda: {})
+
+    config = build_job_config(
+        audio_file,
+        output_dir=tmp_path / "out",
+        data_dir=tmp_path / "data",
+        overrides={
+            "DIARIZATION_ENGINE": "sherpa",
+            "DIARIZATION_ESTIMATE_MODEL": "/models/campplus.onnx",
+            "DIARIZATION_ESTIMATE_THRESHOLD": "0.62",
+        },
+    )
+
+    assert config.diarization_engine == "sherpa"
+    assert config.diarization_estimate_model == "/models/campplus.onnx"
+    assert config.diarization_estimate_threshold == pytest.approx(0.62)
 
 
 # --- Оценщик числа говорящих / маршрутизация auto (#64) ---------------------

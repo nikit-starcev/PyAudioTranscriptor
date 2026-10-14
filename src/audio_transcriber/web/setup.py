@@ -254,8 +254,8 @@ def _diarization_requirements(settings: object) -> list[dict[str, object]]:
 
     sherpa-onnx — пакет из allowlist (#66): показываем кнопку «Установить»,
     но не блокируем запуск (без него оценка N деградирует, а ``auto``
-    безопасно уходит на pyannote). Бинарник nemo-speech нужен явным движкам
-    ``nemo-speech``/``hybrid``.
+    безопасно уходит на pyannote). Для явного движка ``sherpa`` он обязателен.
+    Бинарник nemo-speech нужен явным движкам ``nemo-speech``/``hybrid``.
     """
     engine = (
         str(getattr(settings, "diarization_engine", "auto")).strip().casefold() or "auto"
@@ -264,15 +264,15 @@ def _diarization_requirements(settings: object) -> list[dict[str, object]]:
     hybrid_enabled = bool(getattr(settings, "diarization_hybrid_enabled", True))
     requirements: list[dict[str, object]] = []
 
-    if estimate_enabled or (hybrid_enabled and engine == "hybrid"):
+    if estimate_enabled or (hybrid_enabled and engine == "hybrid") or engine == "sherpa":
         sherpa = _pip_requirement(
             "sherpa",
             "sherpa-onnx",
-            needed=False,
+            needed=engine == "sherpa",
             instructions=(
                 "Пакет ставится кнопкой «Установить» (sherpa-onnx). "
                 "Без него оценка числа говорящих деградирует, "
-                "а гибридная диаризация недоступна."
+                "гибридная диаризация недоступна, а движок sherpa не работает."
             ),
             links=[LINK_SHERPA_ONNX],
         )

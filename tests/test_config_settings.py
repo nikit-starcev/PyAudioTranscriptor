@@ -114,6 +114,18 @@ def test_diarization_enabled_must_be_boolean(audio_file: Path) -> None:
         AppConfig(input_file=audio_file, diarization_enabled="yes")  # type: ignore[arg-type]
 
 
+def test_diarization_engine_accepts_sherpa(audio_file: Path) -> None:
+    from audio_transcriber.config.defaults import VALID_DIARIZATION_ENGINES
+
+    assert "sherpa" in VALID_DIARIZATION_ENGINES
+    assert AppConfig(input_file=audio_file, diarization_engine="sherpa").diarization_engine == "sherpa"
+
+
+def test_diarization_engine_must_be_known(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, diarization_engine="bogus")
+
+
 def test_denoise_defaults_to_true(audio_file: Path) -> None:
     assert AppConfig(input_file=audio_file).denoise is True
 

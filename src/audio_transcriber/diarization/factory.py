@@ -18,8 +18,8 @@ GPU через Vulkan, быстро, но модель рассчитана на
 * если предпочтительный движок недоступен, берётся другой; если недоступны
   оба — возвращается предпочтительный, а движок деградирует сам.
 
-Явно заданные ``pyannote``/``nemo-speech``/``hybrid`` маршрутизацию не
-проходят — поведение не меняется. Решение логируется и отдаётся в прогресс.
+Явно заданные ``pyannote``/``nemo-speech``/``hybrid``/``sherpa`` маршрутизацию
+не проходят — поведение не меняется. Решение логируется и отдаётся в прогресс.
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ from audio_transcriber.diarization.base import SpeakerDiarizer
 from audio_transcriber.diarization.hybrid_engine import HybridSpeakerDiarizer
 from audio_transcriber.diarization.nemo_speech_engine import NemoSpeechSpeakerDiarizer
 from audio_transcriber.diarization.pyannote_engine import PyannoteSpeakerDiarizer
+from audio_transcriber.diarization.sherpa_engine import SherpaSpeakerDiarizer
 from audio_transcriber.diarization.speaker_count import estimate_speaker_count
 from audio_transcriber.domain.enums import Device
 from audio_transcriber.progress import ProgressCallback, ProgressEvent
@@ -49,6 +50,7 @@ logger = logging.getLogger(__name__)
 PYANNOTE_ENGINE = "pyannote"
 NEMO_SPEECH_ENGINE = "nemo-speech"
 HYBRID_ENGINE = "hybrid"
+SHERPA_ENGINE = "sherpa"
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,7 +136,7 @@ def decide_diarization(
 ) -> DiarizationDecision:
     """Выбирает движок диаризации по настройкам и (для ``auto``) числу говорящих."""
     engine = (config.diarization_engine or DEFAULT_DIARIZATION_ENGINE).strip().casefold()
-    if engine in (PYANNOTE_ENGINE, NEMO_SPEECH_ENGINE, HYBRID_ENGINE):
+    if engine in (PYANNOTE_ENGINE, NEMO_SPEECH_ENGINE, HYBRID_ENGINE, SHERPA_ENGINE):
         return DiarizationDecision(
             engine=engine,
             speaker_count=config.num_speakers,
@@ -299,6 +301,17 @@ def create_diarizer(
             # пользователь задаёт точно — они уходят в ``diarize`` из конвейера
             # и там применяются как жёсткое число/границы, а не как оценка.
             expected_speakers=decision.speaker_count if decision.estimated else None,
+        )
+    if decision.engine == SHERPA_ENGINE:
+        logger.info(
+            "sherpa: модель эмбеддингов %s, порог %.2f",
+            config.diarization_estimate_model,
+            config.diarization_estimate_threshold,
+        )
+        return SherpaSpeakerDiarizer(
+            embedding_model=config.diarization_estimate_model,
+            threshold=config.diarization_estimate_threshold,
+            on_progress=on_progress,
         )
     return PyannoteSpeakerDiarizer(
         device,

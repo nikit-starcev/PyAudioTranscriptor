@@ -410,7 +410,7 @@ export type WebSettings = {
   llm_base_url: string
   llm_model_name: string
   pyannote_local_model: string
-  /** Движок диаризации: auto | pyannote | nemo-speech | hybrid (#62). */
+  /** Движок диаризации: auto | pyannote | nemo-speech | hybrid | sherpa (#62). */
   diarization_engine: string
   /** NeMo-Speech.cpp: бинарник, каталог библиотек, модель и устройство (#62). */
   nemo_speech_binary: string
@@ -451,7 +451,7 @@ export type WebSettings = {
 export const ASR_BACKENDS = ['faster-whisper', 'whisper-cpp', 'gigaam'] as const
 export const DEVICES = ['auto', 'cpu', 'cuda'] as const
 export const LLM_PROVIDERS = ['llama', 'openai'] as const
-export const DIARIZATION_ENGINES = ['auto', 'pyannote', 'nemo-speech', 'hybrid'] as const
+export const DIARIZATION_ENGINES = ['auto', 'pyannote', 'nemo-speech', 'hybrid', 'sherpa'] as const
 export const NEMO_SPEECH_DEVICES = ['auto', 'vulkan', 'cpu'] as const
 
 /** Найденный автодетектом бинарник nemo-speech (путь + каталог lib/ + проба). */
