@@ -1323,6 +1323,60 @@ def test_event_bus_open_filters_history_and_detects_terminal() -> None:
     assert history == ["done"]
 
 
+def test_event_bus_clear_keeps_live_subscribers_on_rerun() -> None:
+    """Регресс #112: старт прогона не рвёт уже подключённых подписчиков.
+
+    ``clear(drop_subscribers=False)`` сбрасывает историю и нумерацию, но клиент,
+    подключившийся пока задача стояла в очереди, продолжает получать события
+    нового прогона. Иначе сервер молча шлёт только пинги, браузерный
+    ``EventSource`` не видит ошибки и стадии «зависают» до перезагрузки страницы.
+    """
+    bus = JobEventBus(heartbeat=0.05)
+    bus.publish("j1", {"stage": "queued", "status": "queued"})
+
+    async def scenario() -> list[str]:
+        stream = bus.open("j1")
+        # Старт прогона: чистим историю, живого подписчика оставляем.
+        bus.clear("j1", drop_subscribers=False)
+        bus.publish("j1", {"stage": "asr", "status": "running"})
+        bus.publish("j1", {"stage": "done", "status": "done"})
+        stages: list[str] = []
+        async for event in stream.events():
+            if event is None:
+                continue
+            stages.append(str(event["stage"]))
+            if event.get("status") == "done":
+                break
+        return stages
+
+    assert asyncio.run(scenario()) == ["asr", "done"]
+
+
+def test_event_bus_clear_drops_subscribers_by_default() -> None:
+    """``clear()`` по умолчанию снимает подписчиков (удаление задачи)."""
+    bus = JobEventBus(heartbeat=0.05)
+    bus.publish("j1", {"stage": "running", "status": "running"})
+
+    async def scenario() -> list[dict | None]:
+        stream = bus.open("j1")
+        bus.clear("j1")
+        bus.publish("j1", {"stage": "done", "status": "done"})
+        # Подписчик снят: новых событий нет, генератор отдаёт лишь heartbeat.
+        return [event async for event in _first_events(stream.events(), limit=1)]
+
+    assert asyncio.run(scenario()) == [None]
+
+
+async def _first_events(source, *, limit: int):
+    """Первые ``limit`` элементов асинхронного генератора (для тестов шины)."""
+    taken = 0
+    async for event in source:
+        yield event
+        taken += 1
+        if taken >= limit:
+            return
+
+
 def _job_events_route(app) -> object:
     """Находит APIRoute ``/api/jobs/{job_id}/events`` (роутер FastAPI вложен)."""
     stack = list(app.routes)
@@ -1582,6 +1636,48 @@ def test_rerun_clears_stale_sse_history(
     history = bus.history("rerun-job")
     assert not any(e.get("message") == ORPHAN_ERROR_MESSAGE for e in history), history
     assert not any(e.get("status") == STATUS_ERROR for e in history), history
+
+
+def test_rerun_keeps_live_sse_subscriber(
+    web_paths: WebPaths, config_builder, fake_pipeline
+) -> None:
+    """Регресс #112: клиент, подключённый пока задача в очереди, видит стадии.
+
+    Шина не снимает живых подписчиков при старте прогона, поэтому открытый до
+    запуска ``text/event-stream`` продолжает отдавать события стадий нового
+    прогона без переподключения (раньше его молча отбрасывали — стадии
+    «зависали» до перезагрузки страницы).
+    """
+    web_paths.ensure()
+    store = JobsDB(web_paths.jobs_db)
+    store.initialize()
+    bus = JobEventBus(heartbeat=0.05)
+    runner = JobRunner(store, bus, web_paths, config_builder, pipeline_fn=fake_pipeline)
+
+    source = web_paths.input_dir / "live-rerun.mp3"
+    source.write_bytes(b"x")
+    store.create("live-job", source)
+
+    async def collect() -> list[str]:
+        stream = bus.open("live-job")  # подписка ДО запуска (как со страницы задачи)
+        runner.start()
+        try:
+            assert runner.submit("live-job", source) is True
+            stages: list[str] = []
+            async for event in stream.events():
+                if event is None:
+                    continue
+                stages.append(str(event.get("stage")))
+                if event.get("status") == STATUS_DONE:
+                    break
+            return stages
+        finally:
+            runner.stop()
+
+    stages = asyncio.run(asyncio.wait_for(collect(), timeout=5.0))
+
+    assert "asr" in stages, stages
+    assert stages[-1] == STATUS_DONE, stages
 
 
 # --- #15/#24: оценки прогресса, ETA и здоровье ---------------------------

@@ -172,18 +172,26 @@ class JobEventBus:
                 self._subscribers.setdefault(job_id, []).append(subscriber)
         return _JobStream(self, job_id, subscriber, history, already_terminal)
 
-    def clear(self, job_id: str) -> None:
-        """Забывает историю, подписчиков и нумерацию задачи.
+    def clear(self, job_id: str, *, drop_subscribers: bool = True) -> None:
+        """Забывает историю, (опционально) подписчиков и нумерацию задачи.
 
         Вызывается при удалении задачи и в начале повторного прогона. Новый
         прогон начинается с ``seq=1``: клиент при перезапуске создаёт свежий
         ``EventSource`` (без ``Last-Event-ID`` прошлого прогона), а прежний
         номер нужен был только живому потоку. Нумерацию забываем, чтобы
         ``_seq`` не разрастался по всем когда-либо созданным задачам.
+
+        ``drop_subscribers=False`` оставляет уже подключённых подписчиков
+        живыми: старт повторного прогона не должен рвать ``text/event-stream``
+        клиента (иначе сервер молча перестаёт слать события, а браузерный
+        ``EventSource`` не видит ошибки и не переподключается). Подписчик
+        просто продолжает получать события нового прогона. При удалении задачи
+        подписчиков по-прежнему снимаем.
         """
         with self._lock:
             self._history.pop(job_id, None)
-            self._subscribers.pop(job_id, None)
+            if drop_subscribers:
+                self._subscribers.pop(job_id, None)
             self._seq.pop(job_id, None)
 
     async def subscribe(
