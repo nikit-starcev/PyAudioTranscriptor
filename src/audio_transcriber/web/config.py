@@ -315,6 +315,8 @@ def build_job_config(
         ),
         use_cache=_as_bool(defaults.get("USE_CACHE"), default=True),
         cache_dir=data_dir / "cache",
+        cache_max_bytes=_as_int(defaults.get("CACHE_MAX_BYTES"), 0),
+        cache_ttl_seconds=_as_float(defaults.get("CACHE_TTL_SECONDS"), 0.0),
         notifications=_as_bool(defaults.get("NOTIFICATIONS"), default=True),
         timeline=False,
         # Пословные таймстемпы (#45): по умолчанию включены.

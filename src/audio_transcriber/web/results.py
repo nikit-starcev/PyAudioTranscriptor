@@ -7,7 +7,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -159,6 +162,33 @@ def load_result_file(path: Path) -> dict[str, object] | None:
     except (OSError, ValueError):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def write_result_json(path: Path, payload: Mapping[str, object]) -> None:
+    """Потоково и атомарно пишет JSON результата задачи.
+
+    ``json.dump`` отдаёт данные в файл по частям, поэтому полная строка JSON не
+    материализуется в памяти (в отличие от ``json.dumps`` + ``write_text``).
+    Запись идёт во временный файл рядом и публикуется ``os.replace``: читатель
+    видит либо старое содержимое, либо полностью записанное новое, но не
+    обрывок. Содержимое (включая ``indent=2``) не меняется.
+    """
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as handle:
+            json.dump(
+                payload,
+                handle,
+                ensure_ascii=False,
+                indent=2,
+                default=numpy_json_default,
+            )
+        os.replace(tmp, target)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
 
 
 def result_summary(payload: Mapping[str, object]) -> dict[str, object]:

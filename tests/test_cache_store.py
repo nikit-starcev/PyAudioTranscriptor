@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -214,3 +215,63 @@ def test_concurrent_saves_keep_file_valid_and_no_leftover_tmp(tmp_path: Path) ->
     assert isinstance(loaded, dict)
     assert loaded["writer"] in range(8)
     assert list(cache.directory.glob("*.tmp")) == []
+
+
+# --- Лимит и эвикция (#142) --------------------------------------------------
+
+
+def test_eviction_by_max_bytes_drops_oldest(tmp_path: Path) -> None:
+    """При превышении лимита удаляются самые старые записи, свежая остаётся."""
+    cache = StageCache(tmp_path / ".cache", max_bytes=2500)
+    cache.directory.mkdir(parents=True)
+    older = cache._json_path("asr", "older")
+    older.write_bytes(b"x" * 1000)
+    os.utime(older, (900_000, 900_000))
+    old = cache._json_path("asr", "old")
+    old.write_bytes(b"x" * 1000)
+    os.utime(old, (1_000_000, 1_000_000))
+
+    cache.save("asr", "new", {"payload": "x" * 600})
+
+    assert not older.exists()
+    assert old.exists()
+    assert cache._json_path("asr", "new").exists()
+
+
+def test_eviction_by_ttl_removes_stale_entries(tmp_path: Path) -> None:
+    """Записи старше TTL удаляются, свежие — остаются."""
+    cache = StageCache(tmp_path / ".cache", ttl_seconds=100)
+    cache.directory.mkdir(parents=True)
+    stale = cache._json_path("asr", "stale")
+    stale.write_bytes(b"{}")
+    os.utime(stale, (time.time() - 1000, time.time() - 1000))
+    fresh = cache._json_path("asr", "fresh")
+    fresh.write_bytes(b"{}")
+    os.utime(fresh, (time.time() - 10, time.time() - 10))
+
+    cache.save("asr", "new", {"x": 1})
+
+    assert not stale.exists()
+    assert fresh.exists()
+    assert cache._json_path("asr", "new").exists()
+
+
+def test_eviction_never_removes_just_written_entry(tmp_path: Path) -> None:
+    """Запись не удаляется, даже если одна превышает лимит (иначе кэш бесполезен)."""
+    cache = StageCache(tmp_path / ".cache", max_bytes=1)
+
+    cache.save("asr", "k", {"payload": "x" * 100})
+
+    assert cache.load("asr", "k") == {"payload": "x" * 100}
+
+
+def test_eviction_ignores_subdirectories(tmp_path: Path) -> None:
+    """Эвикция трогает только стадийные файлы, не подкаталоги (speaker-tracks)."""
+    cache = StageCache(tmp_path / ".cache", max_bytes=1)
+    track = cache.directory / "speaker-tracks" / "job.wav"
+    track.parent.mkdir(parents=True)
+    track.write_bytes(b"x" * 5000)
+
+    cache.save("asr", "k", {"payload": "x" * 100})
+
+    assert track.exists()

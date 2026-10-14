@@ -1238,6 +1238,28 @@ def test_event_bus_history_after_seq() -> None:
     assert len(bus.history("j1", after=0)) == 3
 
 
+def test_event_bus_history_is_bounded() -> None:
+    """История ограничена кольцевым буфером; ``seq``/Last-Event-ID сохраняются."""
+    bus = JobEventBus(heartbeat=0.05, history_limit=3)
+    for index in range(5):
+        bus.publish("j1", {"stage": f"s{index}", "status": "running"})
+
+    history = bus.history("j1")
+    assert [event["seq"] for event in history] == [3, 4, 5]
+    assert [event["stage"] for event in bus.history("j1", after=4)] == ["s4"]
+    # ``Last-Event-ID`` старее буфера: отдаются все уцелевшие события.
+    assert len(bus.history("j1", after=0)) == 3
+
+
+def test_event_bus_history_unbounded_when_limit_none() -> None:
+    """``history_limit=None`` сохраняет прежнее неограниченное поведение."""
+    bus = JobEventBus(heartbeat=0.05, history_limit=None)
+    for index in range(5):
+        bus.publish("j1", {"stage": f"s{index}", "status": "running"})
+
+    assert len(bus.history("j1")) == 5
+
+
 def test_event_bus_subscribe_can_skip_replay() -> None:
     """``subscribe(replay=False)`` не повторяет историю, но шлёт живой поток."""
     bus = JobEventBus(heartbeat=0.05)

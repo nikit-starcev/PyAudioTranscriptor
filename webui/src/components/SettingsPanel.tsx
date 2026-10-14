@@ -418,6 +418,43 @@ function SettingsPanel({ onSaved }: Props) {
     }
   }
 
+  const applyPreset = async (presetId: string) => {
+    if (
+      !window.confirm(
+        'Применить профиль? Текущие настройки бэкенда, моделей и стадий будут ' +
+          'заменены значениями профиля. Пользовательские пути к моделям, кроме ' +
+          'модели whisper.cpp, сохраняются.',
+      )
+    ) {
+      return
+    }
+    setBusy(true)
+    setError(null)
+    setStatus(null)
+    try {
+      const saved = await api<WebSettings>('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preset: presetId }),
+      })
+      setSettings(saved)
+      setNumericDraft(numericDrafts(saved))
+      setHfToken('')
+      setHfTokenTouched(false)
+      setHfCheck(null)
+      setLlmApiKey('')
+      setLlmApiKeyTouched(false)
+      setLlmCheck(null)
+      setStatus('Профиль применён')
+      onSaved?.(saved)
+      void refreshNemoModel()
+    } catch (cause) {
+      setError(errorMessage(cause))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const checkLlm = async () => {
     if (!settings) return
     setLlmChecking(true)
@@ -512,6 +549,41 @@ function SettingsPanel({ onSaved }: Props) {
           {error}
         </Alert>
       )}
+
+      <Card>
+        <CardHeader
+          title="Профиль под железо"
+          description="Одним действием выставить конфигурацию под слабое железо (мало RAM, CPU без GPU). Индивидуальные поля можно изменить и сохранить после."
+        />
+        <CardContent className="space-y-3">
+          {settings.hardware_presets.length === 0 && (
+            <p className="text-xs text-muted">Готовые профили недоступны.</p>
+          )}
+          {settings.hardware_presets.map((preset) => (
+            <div
+              key={preset.id}
+              className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border p-3"
+            >
+              <div className="min-w-0">
+                <p className="text-sm font-medium">{preset.label}</p>
+                {preset.hint && (
+                  <p className="mt-0.5 max-w-prose text-pretty text-xs text-muted">
+                    {preset.hint}
+                  </p>
+                )}
+              </div>
+              <Button
+                variant="secondary"
+                size="sm"
+                loading={busy}
+                onClick={() => void applyPreset(preset.id)}
+              >
+                Применить
+              </Button>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader title="Режимы обработки" />

@@ -10,7 +10,6 @@ daemon-поток, который при старте задачи вызыва�
 from __future__ import annotations
 
 import inspect
-import json
 import logging
 import queue
 import threading
@@ -33,8 +32,8 @@ from audio_transcriber.web.processed import mark_processed
 from audio_transcriber.web.results import (
     load_result_file,
     merge_transcript_edits,
-    numpy_json_default,
     serialize_result,
+    write_result_json,
 )
 from audio_transcriber.web.storage.jobs_db import (
     STATUS_CANCELLED,
@@ -596,11 +595,7 @@ class JobRunner:
         # неизменным таймкодам.
         payload = merge_transcript_edits(payload, load_result_file(result_path))
         try:
-            result_path.parent.mkdir(parents=True, exist_ok=True)
-            result_path.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2, default=numpy_json_default),
-                encoding="utf-8",
-            )
+            write_result_json(result_path, payload)
         except OSError as exc:
             logger.exception("Не удалось сохранить результат задачи %s", job_id)
             failed = self._store.update(

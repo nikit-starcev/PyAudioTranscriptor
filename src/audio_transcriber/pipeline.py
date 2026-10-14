@@ -626,7 +626,12 @@ def run_pipeline(
         )
 
     # Дорогие стадии кэшируются по ключу от исходного файла и параметров.
-    cache = StageCache(config.resolved_cache_dir(), enabled=config.use_cache)
+    cache = StageCache(
+        config.resolved_cache_dir(),
+        enabled=config.use_cache,
+        max_bytes=config.cache_max_bytes,
+        ttl_seconds=config.cache_ttl_seconds,
+    )
 
     # Шумоподавление идёт первым: и распознавание, и диаризация должны видеть
     # один и тот же очищенный файл, иначе временные метки разъедутся.

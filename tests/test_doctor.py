@@ -692,3 +692,64 @@ def test_sherpa_engine_dependency_reported_when_missing(
     assert sherpa.critical
     assert all(check.key != "bin:nemo-speech" for check in checks)
     assert _find(checks, "model:sherpa").critical is False
+
+
+# --- Предупреждение по памяти (#144) ----------------------------------------
+
+
+def test_memory_check_warns_when_config_exceeds_ram(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Тяжёлая конфигурация при малой RAM — некритичное предупреждение с подсказкой."""
+    monkeypatch.setattr(doctor, "_total_ram_gb", lambda: 4.0)
+    monkeypatch.setattr(doctor, "_available_ram_gb", lambda: 4.0)
+    env = _base_env(
+        tmp_path,
+        ASR_BACKEND="faster-whisper",
+        DIARIZATION_ENABLED="true",
+        DIARIZATION_ENGINE="pyannote",
+        DENOISE="true",
+        LLM_ENABLED="true",
+        LLM_MODEL="qwen2.5-7b-instruct-q4_k_m.gguf",
+    )
+
+    check = doctor._check_memory_fit(env)
+
+    assert check.key == "memory_fit"
+    assert check.ok is False
+    assert check.critical is False
+    assert "LLM" in check.hint
+
+
+def test_memory_check_ok_for_light_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Лёгкий профиль (whisper.cpp base + sherpa, без LLM/денойза) влезает в 8 ГБ."""
+    monkeypatch.setattr(doctor, "_total_ram_gb", lambda: 8.0)
+    monkeypatch.setattr(doctor, "_available_ram_gb", lambda: 6.0)
+    env = _base_env(
+        tmp_path,
+        ASR_BACKEND="whisper-cpp",
+        DEVICE="cpu",
+        WHISPER_CPP_MODEL="whisper-models/ggml-base.bin",
+        DIARIZATION_ENABLED="true",
+        DIARIZATION_ENGINE="sherpa",
+        DENOISE="false",
+        LLM_ENABLED="false",
+    )
+
+    check = doctor._check_memory_fit(env)
+
+    assert check.ok is True
+    assert check.hint == ""
+
+
+def test_memory_check_included_in_doctor_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+
+    checks = doctor.run_doctor(None, _base_env(tmp_path))
+
+    assert _find(checks, "memory_fit")

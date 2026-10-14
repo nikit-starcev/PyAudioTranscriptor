@@ -22,6 +22,7 @@ from audio_transcriber.web.results import (
     entry_to_dict,
     numpy_json_default,
     serialize_result,
+    write_result_json,
 )
 
 
@@ -174,3 +175,16 @@ def test_result_save_does_not_fail_with_numpy_scalar_fields() -> None:
     assert decoded["low_speaker_confidence"] is True
     assert decoded["count"] == 3
 
+
+
+def test_write_result_json_streams_and_is_atomic(tmp_path: Path) -> None:
+    """Запись результата совпадает с ``json.dumps`` и не оставляет ``.tmp``."""
+    path = tmp_path / "results" / "job.json"
+    payload = {"b": np.int64(2), "a": [1, 2], "nested": {"s": "текст"}}
+
+    write_result_json(path, payload)
+
+    expected = json.dumps(payload, ensure_ascii=False, indent=2, default=numpy_json_default)
+    assert path.read_text(encoding="utf-8") == expected
+    assert json.loads(path.read_text(encoding="utf-8"))["b"] == 2
+    assert list(path.parent.glob("*.tmp")) == []
