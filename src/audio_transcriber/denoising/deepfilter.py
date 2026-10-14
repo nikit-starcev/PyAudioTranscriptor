@@ -516,6 +516,7 @@ class DeepFilterDenoiser:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                errors="replace",
             )
         except FileNotFoundError as exc:
             raise AudioFileError(f"Бинарник deep-filter не найден: {binary}") from exc

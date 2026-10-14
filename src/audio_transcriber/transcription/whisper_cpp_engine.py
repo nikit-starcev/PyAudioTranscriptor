@@ -1064,6 +1064,7 @@ class WhisperCppRecognizer:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 text=True,
+                errors="replace",
                 env=env,
             )
         except FileNotFoundError as exc:
@@ -1085,9 +1086,8 @@ class WhisperCppRecognizer:
                     match = _PROGRESS_RE.search(line)
                     if match and on_fraction is not None:
                         on_fraction(float(match.group(1)) / 100.0)
-            except (OSError, ValueError):
-                # Поток закрыт при принудительном завершении процесса.
-                pass
+            except (OSError, ValueError) as exc:
+                logger.warning("Чтение stderr whisper.cpp прервано: %s", exc)
 
         reader = threading.Thread(
             target=_drain_stderr, name="whisper-cpp-stderr", daemon=True

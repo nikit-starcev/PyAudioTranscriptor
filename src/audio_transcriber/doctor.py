@@ -164,6 +164,7 @@ def _run_command(
             command,
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=timeout,
             env=_subprocess_env(library_path),
             check=False,

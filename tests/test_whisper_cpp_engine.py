@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import wave
 from pathlib import Path
 
@@ -456,3 +457,56 @@ def test_empty_transcription_is_valid(tmp_path: Path) -> None:
     assert segments == []
     assert detected == "ru"
 
+
+# --- Битый UTF-8 в stderr (#130) --------------------------------------------
+
+
+def test_whisper_stderr_invalid_utf8_does_not_block_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Битый UTF-8 в stderr не убивает читателя и не блокирует whisper-cli (#130).
+
+    Реальный дочерний процесс пишет в stderr невалидные байты и много строк:
+    если читатель падает на декодировании, pipe переполняется и процесс встаёт
+    на записи в stderr. Обёртка вокруг настоящего ``Popen`` сохраняет боевые
+    аргументы (``text=True``/``errors="replace"``), поэтому при регрессии тест
+    падает по таймауту, а не проходит.
+    """
+    model = tmp_path / "model.bin"
+    model.write_bytes(b"fake")
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"")
+
+    payload = json.dumps(_json_payload())
+    captured_kwargs: list[dict] = []
+    real_popen = subprocess.Popen
+
+    def _fake_popen(cmd: list[str], *args: object, **kwargs: object) -> subprocess.Popen:
+        captured_kwargs.append(dict(kwargs))
+        output_json = str(cmd[cmd.index("-of") + 1]) + ".json"
+        script = "\n".join(
+            [
+                "import os",
+                "os.write(2, b'progress = 50%\\n')",
+                "os.write(2, b'bad \\xd0\\xb0\\xd0 token\\n')",
+                "for _ in range(100000):",
+                "    os.write(2, b'x' * 64 + b'\\n')",
+                f"open({output_json!r}, 'w').write({payload!r})",
+            ]
+        )
+        return real_popen([sys.executable, "-c", script], *args, **kwargs)
+
+    monkeypatch.setattr(
+        whisper_module, "load_waveform", lambda _path: np.zeros(48000, dtype=np.float32)
+    )
+    monkeypatch.setattr(whisper_module, "write_wav", lambda _path, _waveform: None)
+    monkeypatch.setattr(whisper_module.subprocess, "Popen", _fake_popen)
+
+    segments, detected = WhisperCppRecognizer(model, timeout=10.0)._run_whisper(
+        input_path=audio, output_base=tmp_path / "result", language=None
+    )
+
+    assert captured_kwargs[0].get("errors") == "replace"
+    assert captured_kwargs[0].get("text") is True
+    assert detected == "ru"
+    assert [segment.text for segment in segments] == ["привет", "мир"]
