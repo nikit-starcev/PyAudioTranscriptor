@@ -24,9 +24,9 @@ import StagesTab from './job/StagesTab'
 import TranscriptTab from './job/TranscriptTab'
 
 const TABS = [
-  { id: 'transcript', label: 'Стенограмма' },
-  { id: 'speakers', label: 'Спикеры' },
   { id: 'stages', label: 'Стадии' },
+  { id: 'speakers', label: 'Спикеры' },
+  { id: 'transcript', label: 'Стенограмма' },
   { id: 'chat', label: 'Чат' },
   { id: 'export', label: 'Экспорт' },
 ]
