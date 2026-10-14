@@ -11,6 +11,8 @@ import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+import numpy as np
+
 from audio_transcriber.domain.models import Speaker, TranscriptEntry, TranscriptionResult
 from audio_transcriber.export.annotations import (
     DEFAULT_SPEAKER_CONFIDENCE_THRESHOLD,
@@ -36,11 +38,25 @@ MARK_OVERLAP: dict[str, str] = {
 MARKS: list[dict[str, str]] = [MARK_LOW_CONFIDENCE, MARK_SPEAKER_UNCERTAIN, MARK_OVERLAP]
 
 
+def numpy_json_default(value: object) -> object:
+    """``default=`` для ``json.dumps``: numpy-объекты в чистый Python.
+
+    Скаляры (``np.bool_``/``np.float32``/``np.int64``/…) приводятся через
+    ``.item()``, массивы — через ``.tolist()``. Нужна как страховка на границе
+    сохранения: любой numpy-тип не должен ронять прогон в самом конце.
+    """
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 def _is_low_confidence(entry: TranscriptEntry, threshold: float | None) -> bool:
     """Реплика помечается, если порог задан и логвероятность ниже него."""
     if threshold is None or entry.avg_logprob is None:
         return False
-    return entry.avg_logprob < threshold
+    return bool(entry.avg_logprob < threshold)
 
 
 def words_to_dict(entry: TranscriptEntry) -> list[dict[str, object]]:
@@ -52,9 +68,9 @@ def words_to_dict(entry: TranscriptEntry) -> list[dict[str, object]]:
     return [
         {
             "text": word.text,
-            "start": word.start,
-            "end": word.end,
-            "probability": word.probability,
+            "start": float(word.start),
+            "end": float(word.end),
+            "probability": None if word.probability is None else float(word.probability),
         }
         for word in entry.words
     ]
@@ -71,9 +87,11 @@ def entry_to_dict(entry: TranscriptEntry, threshold: float | None) -> dict[str, 
         "end": entry.end,
         "speaker_id": entry.speaker.id if entry.speaker is not None else None,
         "extra_speaker_ids": [speaker.id for speaker in entry.extra_speakers],
-        "speaker_confidence": entry.speaker_confidence,
-        "low_speaker_confidence": is_low_speaker_confidence(
-            entry, DEFAULT_SPEAKER_CONFIDENCE_THRESHOLD
+        "speaker_confidence": (
+            None if entry.speaker_confidence is None else float(entry.speaker_confidence)
+        ),
+        "low_speaker_confidence": bool(
+            is_low_speaker_confidence(entry, DEFAULT_SPEAKER_CONFIDENCE_THRESHOLD)
         ),
         "text": entry.text,
         "low_confidence": _is_low_confidence(entry, threshold),

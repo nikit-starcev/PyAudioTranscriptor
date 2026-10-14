@@ -303,14 +303,14 @@ class OverlapSegmentMerger:
             confidence: float | None = None
             if has_diarization:
                 covered = hits.get(speaker_id, 0.0) if speaker_id is not None else 0.0
-                confidence = 0.0 if duration <= 0 else min(1.0, covered / duration)
+                confidence = float(0.0 if duration <= 0 else min(1.0, covered / duration))
                 # При наличии пословных меток (#45) уверенность считаем по речи,
                 # а не по всему интервалу реплики: ведущая/замыкающая тишина
                 # больше не занижает привязку.
                 if speaker_id is not None:
                     speech_confidence = resolver.coverage_of_speech(segment, speaker_id)
                     if speech_confidence is not None:
-                        confidence = speech_confidence
+                        confidence = float(speech_confidence)
 
             entries.append(
                 TranscriptEntry(
@@ -527,7 +527,7 @@ class _SpeakerResolver:
                 overlap = min(seg_end, end) - max(seg_start, start)
                 if overlap > 0.0:
                     covered += overlap
-        return min(1.0, covered / total)
+        return float(min(1.0, covered / total))
 
     def simultaneous_by_speaker(
         self, transcription_segments: Sequence[TranscriptionSegment]

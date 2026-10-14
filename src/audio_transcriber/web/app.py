@@ -201,6 +201,7 @@ from audio_transcriber.web.prompts_api import register_prompts_routes
 from audio_transcriber.web.results import (
     apply_transcript_edits,
     load_result_file,
+    numpy_json_default,
     result_summary,
 )
 from audio_transcriber.web.runner import ConfigBuilder, JobRunner, PipelineFn
@@ -3794,7 +3795,8 @@ def _write_result(paths: WebPaths, job: Job, payload: Mapping[str, object]) -> N
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            json.dumps(payload, ensure_ascii=False, indent=2, default=numpy_json_default),
+            encoding="utf-8",
         )
     except OSError as exc:
         raise HTTPException(

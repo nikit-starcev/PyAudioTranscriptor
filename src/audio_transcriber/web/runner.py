@@ -30,7 +30,12 @@ from audio_transcriber.web.estimates import StageEstimator, planned_stages, prob
 from audio_transcriber.web.events import JobEventBus
 from audio_transcriber.web.paths import WebPaths
 from audio_transcriber.web.processed import mark_processed
-from audio_transcriber.web.results import load_result_file, merge_transcript_edits, serialize_result
+from audio_transcriber.web.results import (
+    load_result_file,
+    merge_transcript_edits,
+    numpy_json_default,
+    serialize_result,
+)
 from audio_transcriber.web.storage.jobs_db import (
     STATUS_CANCELLED,
     STATUS_DONE,
@@ -590,7 +595,8 @@ class JobRunner:
         try:
             result_path.parent.mkdir(parents=True, exist_ok=True)
             result_path.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+                json.dumps(payload, ensure_ascii=False, indent=2, default=numpy_json_default),
+                encoding="utf-8",
             )
         except OSError as exc:
             logger.exception("Не удалось сохранить результат задачи %s", job_id)

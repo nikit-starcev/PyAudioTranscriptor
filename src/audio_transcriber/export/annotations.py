@@ -28,7 +28,9 @@ def is_low_confidence(entry: TranscriptEntry, threshold: float | None) -> bool:
     При ``threshold is None`` или неизвестной уверенности (``avg_logprob is
     None``) реплика низкоуверенной не считается.
     """
-    return threshold is not None and entry.avg_logprob is not None and entry.avg_logprob < threshold
+    return bool(
+        threshold is not None and entry.avg_logprob is not None and entry.avg_logprob < threshold
+    )
 
 
 def is_low_speaker_confidence(
@@ -39,7 +41,7 @@ def is_low_speaker_confidence(
     При ``threshold is None`` или отсутствии оценки (``speaker_confidence is
     None``, т.е. диаризации не было) реплика сомнительной не считается.
     """
-    return (
+    return bool(
         threshold is not None
         and entry.speaker_confidence is not None
         and entry.speaker_confidence < threshold
