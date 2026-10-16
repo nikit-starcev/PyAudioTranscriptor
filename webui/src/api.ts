@@ -996,6 +996,16 @@ export type SummaryPromptsResponse = {
 
 export const EXPORT_FORMATS = ['txt', 'docx', 'json', 'srt', 'vtt', 'md', 'pdf'] as const
 
+export class ApiHttpError extends Error {
+  readonly status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'ApiHttpError'
+    this.status = status
+  }
+}
+
 export async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init)
   if (!response.ok) {
@@ -1006,7 +1016,7 @@ export async function api<T>(url: string, init?: RequestInit): Promise<T> {
     } catch {
       // тело не JSON — оставляем статус
     }
-    throw new Error(detail)
+    throw new ApiHttpError(response.status, detail)
   }
   return (await response.json()) as T
 }
@@ -1471,4 +1481,31 @@ export async function streamChat(
       boundary = buffer.indexOf('\n\n')
     }
   }
+}
+
+export type Slide = {
+  index: number
+  start: number
+  end: number | null
+  text: string
+  engine: string
+  image: string
+}
+
+export type SlidesResponse = {
+  slides: Slide[]
+  total: number
+}
+
+export async function fetchSlides(jobId: string): Promise<SlidesResponse | null> {
+  try {
+    return await api<SlidesResponse>(`/api/jobs/${encodeURIComponent(jobId)}/slides`)
+  } catch (cause) {
+    if (cause instanceof ApiHttpError && cause.status === 404) return null
+    throw cause
+  }
+}
+
+export async function extractSlides(jobId: string): Promise<SlidesResponse> {
+  return api<SlidesResponse>(`/api/jobs/${encodeURIComponent(jobId)}/slides`, { method: 'POST' })
 }
