@@ -124,6 +124,40 @@ def test_sherpa_dependency_absent_when_estimate_disabled(
     assert all(check.key != "dep:sherpa_onnx" for check in checks)
 
 
+def test_slides_ocr_checks_listed_when_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Слайды (#121/#148): rapidocr и tesseract показываются при SLIDES_ENABLED."""
+    monkeypatch.setattr(doctor, "_module_available", lambda name: name != "rapidocr")
+    monkeypatch.setattr(doctor, "_binary_available", lambda _binary: False)
+    _patch_writable(monkeypatch)
+
+    checks = doctor.run_doctor(None, _base_env(tmp_path, SLIDES_ENABLED="true"))
+
+    rapidocr = _find(checks, "dep:rapidocr")
+    assert not rapidocr.ok
+    assert not rapidocr.critical
+
+    tesseract = _find(checks, "bin:tesseract")
+    assert not tesseract.ok
+    assert not tesseract.critical
+    assert tesseract.links == (doctor.LINK_TESSERACT,)
+    assert "rus" in tesseract.hint.lower() and "eng" in tesseract.hint.lower()
+
+
+def test_slides_ocr_checks_absent_when_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_modules(monkeypatch)
+    _patch_writable(monkeypatch)
+
+    checks = doctor.run_doctor(None, _base_env(tmp_path))
+
+    assert all(
+        check.key not in {"dep:rapidocr", "bin:tesseract"} for check in checks
+    )
+
+
 def test_whisper_cpp_missing_binary_and_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

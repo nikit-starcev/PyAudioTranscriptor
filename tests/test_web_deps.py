@@ -102,6 +102,19 @@ def test_module_available_probes_without_import() -> None:
     assert web_deps.module_available("definitely-not-real-module-xyz") is False
 
 
+def test_registry_includes_rapidocr_for_slides() -> None:
+    spec = web_deps.find_dependency("rapidocr")
+
+    assert spec is not None
+    assert spec.module == "rapidocr"
+    # Проверка доктора ``rapidocr`` (issue #121) регистрируется как ``dep:<модуль>``.
+    assert spec.check_id == "dep:rapidocr"
+    # RapidOCR не объявляет onnxruntime зависимостью — ставим их вместе.
+    assert "rapidocr>=2.0" in spec.spec
+    assert "onnxruntime>=1.18" in spec.spec
+    assert "слайд" in spec.needed_for.lower()
+
+
 def test_resolve_install_command_prefers_uv(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(web_deps, "find_uv", lambda: "/usr/local/bin/uv")
     command = web_deps.resolve_install_command("onnx-asr[cpu,hub]")
@@ -133,6 +146,32 @@ def test_resolve_install_command_without_installer(monkeypatch: pytest.MonkeyPat
         web_deps.resolve_install_command("onnx-asr")
     assert web_deps.installer_name() is None
     assert web_deps.installer_available() is False
+
+
+def test_resolve_install_command_splits_multi_requirement_spec(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Пункт реестра может ставить несколько пакетов (rapidocr + onnxruntime)."""
+    monkeypatch.setattr(web_deps, "find_uv", lambda: "/usr/local/bin/uv")
+
+    command = web_deps.resolve_install_command("rapidocr>=2.0 onnxruntime>=1.18")
+
+    assert command[:5] == ["/usr/local/bin/uv", "pip", "install", "--python", sys.executable]
+    assert command[5:] == ["rapidocr>=2.0", "onnxruntime>=1.18"]
+
+
+def test_resolve_install_command_splits_for_pip(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(web_deps, "find_uv", lambda: None)
+    monkeypatch.setattr(web_deps, "pip_available", lambda: True)
+
+    assert web_deps.resolve_install_command("rapidocr>=2.0 onnxruntime>=1.18") == [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "rapidocr>=2.0",
+        "onnxruntime>=1.18",
+    ]
 
 
 # --- GET /api/deps ---------------------------------------------------------
@@ -206,6 +245,29 @@ def test_install_runs_in_background_and_publishes_progress(
     assert statuses[-1] == "done"
     messages = [event["message"] for event in events if event["key"] == "gigaam"]
     assert "Collecting onnx-asr" in messages
+
+
+def test_install_rapidocr_passes_both_requirements(
+    client: TestClient, runner: FakeRunner
+) -> None:
+    response = client.post("/api/deps/rapidocr/install")
+
+    assert response.status_code == 202
+    client.app.state.dependency_installer.wait(5)  # type: ignore[attr-defined]
+
+    assert runner.commands == [
+        [
+            "/usr/local/bin/uv",
+            "pip",
+            "install",
+            "--python",
+            sys.executable,
+            "rapidocr>=2.0",
+            "onnxruntime>=1.18",
+        ]
+    ]
+    state = client.app.state.dependency_installer.state("rapidocr")  # type: ignore[attr-defined]
+    assert state.status == web_deps.DEP_DONE
 
 
 def test_install_invalidates_doctor_cache(

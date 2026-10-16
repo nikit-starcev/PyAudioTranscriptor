@@ -665,6 +665,8 @@ export type BinaryRequirement = {
   status: 'ok' | 'fail'
   instructions: string
   links: string[]
+  /** Для чего нужен компонент (пометка «нужно для …»). */
+  needed_for?: string
   /** Ключ ресурса в едином реестре внешних ресурсов (#98). */
   asset_key?: string
   /** Вид ресурса: pip-пакет или скачиваемый бинарник. */

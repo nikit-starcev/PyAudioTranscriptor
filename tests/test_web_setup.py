@@ -137,6 +137,56 @@ def test_binary_requirements_mark_sherpa_needed_for_sherpa_engine() -> None:
     assert "nemo-speech" not in by_key
 
 
+def test_binary_requirements_include_slides_when_enabled() -> None:
+    """Слайды (#121/#148): RapidOCR (пакет) + tesseract (инструкция, запасной)."""
+    disabled = web_setup.binary_requirements(WebSettings())
+    assert "rapidocr" not in [item["key"] for item in disabled]
+    assert "tesseract" not in [item["key"] for item in disabled]
+
+    by_key = {
+        item["key"]: item
+        for item in web_setup.binary_requirements(WebSettings(slides_enabled=True))
+    }
+    rapidocr = by_key["rapidocr"]
+    assert rapidocr["needed"] is True
+    assert rapidocr["kind"] == "pip"
+    assert rapidocr["check_id"] == "dep:rapidocr"
+    assert rapidocr["dep_key"] == "rapidocr"
+    assert rapidocr["spec"] == "rapidocr>=2.0 onnxruntime>=1.18"
+    assert "слайд" in str(rapidocr["needed_for"]).lower()
+    assert "installable" in rapidocr
+
+    tesseract = by_key["tesseract"]
+    assert tesseract["needed"] is False
+    assert tesseract["kind"] == "binary"
+    assert tesseract["check_id"] == "bin:tesseract"
+    assert tesseract["downloadable"] is False
+    assert tesseract["links"] == [web_setup.LINK_TESSERACT]
+    assert "rus" in str(tesseract["instructions"]).lower()
+    assert "слайд" in str(tesseract["needed_for"]).lower()
+
+
+def test_setup_readiness_lists_slides_ocr() -> None:
+    settings = WebSettings(slides_enabled=True)
+    required = tuple(web_setup.required_model_ids(settings))
+    plan = web_setup.build_setup_steps(
+        settings=settings,
+        report=_report([_check("dep:rapidocr", "fail"), _check("bin:tesseract", "fail")]),
+        models=_models(present=set(required), required_ids=required),
+        hf_token_set=False,
+    )
+
+    assert "rapidocr" in [item["key"] for item in plan["binaries"]]
+    assert "tesseract" in [item["key"] for item in plan["binaries"]]
+
+    readiness = plan["readiness"]
+    assert "rapidocr" in [dep["key"] for dep in readiness["dependencies"]]
+    # tesseract — запасной (needed=False), поэтому не блокирует готовность.
+    tesseract = next(item for item in readiness["binaries"] if item["key"] == "tesseract")
+    assert tesseract["needed"] is False
+    assert "tesseract" not in readiness["missing_binaries"]
+
+
 def test_required_models_include_gigaam_only_for_gigaam_backend() -> None:
     for backend in ("faster-whisper", "whisper-cpp"):
         ids = web_setup.required_model_ids(WebSettings(asr_backend=backend))

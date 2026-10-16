@@ -350,6 +350,24 @@ def _check_dependencies(env: Mapping[str, str]) -> list[DoctorCheck]:
     return checks
 
 
+def _tesseract_hint() -> str:
+    """Инструкция установки ``tesseract`` под текущую ОС (языки rus+eng)."""
+    if sys.platform == "darwin":
+        return (
+            "Установите tesseract с языками rus и eng: "
+            "brew install tesseract tesseract-lang."
+        )
+    if sys.platform.startswith("win"):
+        return (
+            "Установите tesseract с языками rus и eng: инсталлятор UB Mannheim "
+            "или choco install tesseract."
+        )
+    return (
+        "Установите tesseract с языками rus и eng: пакет дистрибутива "
+        "(tesseract-ocr, для кириллицы — tesseract-ocr-rus)."
+    )
+
+
 def _check_binaries(env: Mapping[str, str]) -> list[DoctorCheck]:
     checks: list[DoctorCheck] = []
     backend = env.get("ASR_BACKEND", DEFAULT_ASR_BACKEND.value).strip()
@@ -445,7 +463,7 @@ def _check_binaries(env: Mapping[str, str]) -> list[DoctorCheck]:
                 hint=(
                     ""
                     if tesseract_available
-                    else "Установите tesseract с языками rus и eng либо extra 'slides' "
+                    else f"{_tesseract_hint()} Либо установите extra 'slides' "
                     "(RapidOCR)."
                 ),
                 links=() if tesseract_available else (LINK_TESSERACT,),

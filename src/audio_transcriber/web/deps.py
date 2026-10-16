@@ -20,6 +20,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -111,6 +112,14 @@ DEPENDENCIES: tuple[DependencySpec, ...] = (
         check_id="dep:sherpa_onnx",
         needed_for="Быстрый выбор движка диаризации (auto)",
     ),
+    DependencySpec(
+        key="rapidocr",
+        spec="rapidocr>=2.0 onnxruntime>=1.18",
+        label="Слайды (OCR, RapidOCR)",
+        module="rapidocr",
+        check_id="dep:rapidocr",
+        needed_for="Распознавание текста на слайдах (OCR)",
+    ),
 )
 
 _DEPENDENCIES_BY_KEY = {spec.key: spec for spec in DEPENDENCIES}
@@ -171,17 +180,31 @@ def installer_available() -> bool:
     return installer_name() is not None
 
 
+def _spec_tokens(spec: str) -> list[str]:
+    """Разбивает spec на отдельные требования (пункт реестра может ставить несколько пакетов).
+
+    В allowlist допускается список требований через пробел (например,
+    ``rapidocr>=2.0 onnxruntime>=1.18``): RapidOCR не объявляет ``onnxruntime``
+    зависимостью, поэтому его ставят вместе. Оболочка не используется —
+    разбор безопасен (``shlex``), пользовательский ввод в spec не попадает.
+    """
+    return shlex.split(spec) or [spec]
+
+
 def resolve_install_command(spec: str) -> list[str]:
     """Собирает команду установки для фиксированного spec.
 
     Предпочитается ``uv`` (в venv проекта ``pip`` может отсутствовать), иначе
-    ``python -m pip``. Если нет ни того, ни другого — :class:`InstallerUnavailable`.
+    ``python -m pip``. Spec может содержать несколько требований через пробел —
+    каждое передаётся установщику отдельным аргументом. Если нет ни ``uv``, ни
+    ``pip`` — :class:`InstallerUnavailable`.
     """
+    requirements = _spec_tokens(spec)
     uv = find_uv()
     if uv is not None:
-        return [uv, "pip", "install", "--python", sys.executable, spec]
+        return [uv, "pip", "install", "--python", sys.executable, *requirements]
     if pip_available():
-        return [sys.executable, "-m", "pip", "install", spec]
+        return [sys.executable, "-m", "pip", "install", *requirements]
     raise InstallerUnavailable("не найден установщик (uv/pip)")
 
 

@@ -428,6 +428,30 @@ BINARY_ASSETS: tuple[AssetSpec, ...] = (
         ),
         artifacts=(),
     ),
+    AssetSpec(
+        key="tesseract",
+        label="Бинарник tesseract (OCR слайдов)",
+        kind=KIND_BINARY,
+        needed_for="Слайды: запасной OCR-движок (RapidOCR основной)",
+        check_id="bin:tesseract",
+        bin_name="tesseract",
+        optional=True,
+        note=(
+            "Устанавливается пакетным менеджером ОС и находится в PATH. Нужны "
+            "языки rus и eng. Linux — пакет tesseract-ocr (+ tesseract-ocr-rus); "
+            "macOS — brew install tesseract tesseract-lang; "
+            "Windows — инсталлятор UB Mannheim или choco install tesseract."
+        ),
+        manual_hint=(
+            "Готового переносимого архива нет — установите системный пакет: "
+            "Linux — tesseract-ocr (менеджер дистрибутива); "
+            "macOS — brew install tesseract tesseract-lang; "
+            "Windows — инсталлятор UB Mannheim или choco install tesseract. "
+            "Обязательно с языками rus и eng, бинарник должен быть в PATH. "
+            "Запасной движок для слайдов."
+        ),
+        artifacts=(),
+    ),
 )
 
 #: Единый реестр: pip-пакеты (из allowlist :mod:`deps`) + бинарные ресурсы.

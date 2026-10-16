@@ -82,8 +82,10 @@ def test_registry_unique_and_kinds() -> None:
         assert web_assets.find_asset(asset.key) is asset
         assert asset.check_id
         if asset.kind == web_assets.KIND_BINARY:
-            assert asset.settings_field
             assert asset.bin_name
+            # Переносимые артефакты настраиваются путём; инструкции-компоненты
+            # без артефактов (tesseract) документируются через manual_hint.
+            assert asset.settings_field or asset.manual_hint
     assert web_assets.find_asset("nope") is None
     # URL/хеши фиксированы только у артефактов, без пользовательского ввода.
     for asset in web_assets.BINARY_ASSETS:
@@ -106,6 +108,32 @@ def test_resolve_artifact_by_platform_and_variant() -> None:
     nemo = web_assets.find_asset("nemo-speech")
     assert nemo is not None
     assert web_assets.resolve_artifact(nemo) is None  # скачать нельзя — инструкция
+
+
+def test_tesseract_asset_is_instruction_only() -> None:
+    """Tesseract (#148): нативный пакет ОС без переносимого архива — инструкция."""
+    asset = web_assets.find_asset("tesseract")
+
+    assert asset is not None
+    assert asset.kind == web_assets.KIND_BINARY
+    assert asset.check_id == "bin:tesseract"
+    assert asset.bin_name == "tesseract"
+    assert asset.artifacts == ()
+    assert web_assets.resolve_artifact(asset) is None  # кнопки «Скачать» нет
+    assert "slid" in asset.needed_for.lower() or "слайд" in asset.needed_for.lower()
+    for token in ("tesseract", "rus", "eng"):
+        assert token in asset.manual_hint.lower()
+
+
+def test_rapidocr_asset_is_pip_from_registry() -> None:
+    """RapidOCR (#148): pip-пакет из allowlist deps — кнопка «Установить»."""
+    asset = web_assets.find_asset("rapidocr")
+
+    assert asset is not None
+    assert asset.kind == web_assets.KIND_PIP
+    assert asset.module == "rapidocr"
+    assert asset.check_id == "dep:rapidocr"
+    assert "rapidocr>=2.0" in asset.spec
 
 
 def test_current_platform_is_known() -> None:

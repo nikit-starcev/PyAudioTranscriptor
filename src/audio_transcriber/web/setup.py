@@ -16,6 +16,7 @@ from audio_transcriber.doctor import (
     LINK_LLAMA_CPP,
     LINK_NEMO_SPEECH,
     LINK_SHERPA_ONNX,
+    LINK_TESSERACT,
     LINK_WHISPER_CPP,
 )
 from audio_transcriber.domain.enums import AsrBackend
@@ -125,6 +126,7 @@ _BINARY_LINKS: dict[str, tuple[str, ...]] = {
     "llama-server": (LINK_LLAMA_CPP,),
     "deep-filter": (LINK_DEEP_FILTER,),
     "nemo-speech": (LINK_NEMO_SPEECH,),
+    "tesseract": (LINK_TESSERACT,),
 }
 
 
@@ -173,6 +175,7 @@ def _binary_requirement(
         "check_id": asset.check_id,
         "label": asset.label,
         "needed": needed,
+        "needed_for": asset.needed_for,
         "optional": asset.optional,
         "downloadable": artifact is not None,
         "artifact": artifact.as_dict() if artifact is not None else None,
@@ -204,6 +207,7 @@ def _pip_requirement(
         "check_id": dep.check_id,
         "label": dep.label,
         "needed": needed,
+        "needed_for": dep.needed_for,
         "dep_key": dep.key,
         "spec": dep.spec,
         "installable": deps_registry.installer_available(),
@@ -246,6 +250,33 @@ def binary_requirements(settings: object) -> list[dict[str, object]]:
         # Денойз опционален (некритично): без бинарника этап мягко пропускается.
         requirements.append(_binary_requirement("deep-filter", settings, needed=False))
     requirements.extend(_diarization_requirements(settings))
+    if bool(getattr(settings, "slides_enabled", False)):
+        requirements.extend(_slides_requirements(settings))
+    return requirements
+
+
+def _slides_requirements(settings: object) -> list[dict[str, object]]:
+    """OCR-компоненты слайдов (#121/#148) для шага «Бинарники/Пакеты».
+
+    RapidOCR — основной движок (extra ``slides``): ставится кнопкой «Установить»
+    и обязателен, пока не выбран другой OCR. Tesseract — запасной движок:
+    автоустановки нет (нативный пакет ОС), показывается инструкция; необязателен.
+    """
+    requirements: list[dict[str, object]] = []
+    rapidocr = _pip_requirement(
+        "rapidocr",
+        "rapidocr",
+        needed=True,
+        instructions=(
+            "Пакет ставится кнопкой «Установить» (rapidocr + onnxruntime). "
+            "Вручную: uv pip install 'rapidocr>=2.0' 'onnxruntime>=1.18' "
+            "или extra 'slides'. Основной OCR слайдов."
+        ),
+        links=[],
+    )
+    if rapidocr is not None:
+        requirements.append(rapidocr)
+    requirements.append(_binary_requirement("tesseract", settings, needed=False))
     return requirements
 
 

@@ -34,6 +34,7 @@ function requirementFromAsset(asset: AssetInfo): BinaryRequirement {
     status: asset.installed ? 'ok' : 'fail',
     instructions: asset.note,
     links: [],
+    needed_for: asset.needed_for,
     asset_key: asset.key,
     kind: asset.kind,
     downloadable: asset.downloadable,
@@ -155,7 +156,10 @@ function BinaryRequirements({ requirements, onChanged }: Props) {
     [assetList],
   )
   const installedBinaries = useMemo(
-    () => assetList.filter((asset) => asset.kind === 'binary' && asset.installed),
+    () =>
+      assetList.filter(
+        (asset) => asset.kind === 'binary' && asset.installed && asset.managed,
+      ),
     [assetList],
   )
   const anyRunning = assetList.some((asset) => asset.status === 'running')
@@ -386,7 +390,7 @@ function BinaryRequirements({ requirements, onChanged }: Props) {
             return (
               <li key={requirement.key} className="rounded-md border border-border p-3 text-sm">
                 <p className="flex flex-wrap items-center gap-2 font-medium">
-                  {auto && installed && isBinary && (
+                  {auto && installed && isBinary && managed && (
                     <Checkbox
                       checked={selected.has(assetKey)}
                       onChange={() => toggleSelected(assetKey)}
@@ -399,6 +403,9 @@ function BinaryRequirements({ requirements, onChanged }: Props) {
                   </Badge>
                   {requirement.optional && !installed && (
                     <span className="text-xs text-muted">необязательно</span>
+                  )}
+                  {requirement.needed_for && (
+                    <span className="text-xs text-muted">нужно для: {requirement.needed_for}</span>
                   )}
                 </p>
                 <p className="text-xs text-muted">{requirement.instructions}</p>
@@ -429,12 +436,12 @@ function BinaryRequirements({ requirements, onChanged }: Props) {
                   </p>
                 )}
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-                  {!installed && (
+                  {!installed && canAct && (
                     <Button
                       variant="primary"
                       size="sm"
                       loading={busy === assetKey || running}
-                      disabled={actionsDisabled || !canAct}
+                      disabled={actionsDisabled}
                       onClick={() => asset && void install(asset)}
                     >
                       {running ? 'Установка…' : isBinary ? 'Скачать' : 'Установить'}
@@ -442,7 +449,7 @@ function BinaryRequirements({ requirements, onChanged }: Props) {
                   )}
                   {!installed && isBinary && !downloadable && (
                     <span className="text-warn">
-                      Для вашей ОС/архитектуры готового артефакта нет — нужна ручная сборка
+                      Автоустановка недоступна — установите вручную (см. инструкцию)
                     </span>
                   )}
                   {!installed && !isBinary && !canInstallPip && (
