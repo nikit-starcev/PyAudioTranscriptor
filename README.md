@@ -4,6 +4,10 @@
 
 **Локальная утилита на Python для транскрибации аудиозаписей с разделением говорящих**
 
+**Стабильный релиз `1.0.0`** — публичный API/CLI/настройки и форматы результата зафиксированы
+(см. «Стабильный контракт» в [CHANGELOG](CHANGELOG.md#100---2026-10-16)).
+
+[![Release](https://img.shields.io/badge/release-1.0.0%20stable-brightgreen)](https://github.com/nikit-starcev/PyAudioTranscriptor/releases/tag/v1.0.0)
 [![Python](https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![uv](https://img.shields.io/badge/managed%20with-uv-DE5FE9?logo=astral&logoColor=white)](https://docs.astral.sh/uv/)
 [![faster-whisper](https://img.shields.io/badge/ASR-faster--whisper-FF6F00)](https://github.com/SYSTRAN/faster-whisper)
