@@ -138,6 +138,9 @@ class WebSettings:
     #: только неизвестные словоформы. Осторожный режим, по умолчанию выключен.
     enable_correction: bool = False
     protocol_auto: bool = False
+    #: Извлечение слайдов из видео (#121): опциональный пост-шаг по кнопке.
+    #: По умолчанию выключено — фича тяжёлая (OCR на CPU) и включается осознанно.
+    slides_enabled: bool = False
     #: Пословные таймстемпы (#45): собирать слова с временами из токенов ASR.
     #: По умолчанию включено; доступны в результате API.
     word_timestamps: bool = True
@@ -233,6 +236,7 @@ class WebSettings:
             "CLEAN_ARTIFACTS": _format_bool(self.clean_artifacts),
             "ENABLE_CORRECTION": _format_bool(self.enable_correction),
             "PROTOCOL_AUTO": _format_bool(self.protocol_auto),
+            "SLIDES_ENABLED": _format_bool(self.slides_enabled),
             "WORD_TIMESTAMPS": _format_bool(self.word_timestamps),
             "NOTIFICATIONS": _format_bool(self.notifications),
             "ASR_BACKEND": self.asr_backend,
@@ -318,6 +322,7 @@ def default_settings(defaults: Mapping[str, str] | None = None) -> WebSettings:
         clean_artifacts=_as_bool(source.get("CLEAN_ARTIFACTS"), default=True),
         enable_correction=_as_bool(source.get("ENABLE_CORRECTION")),
         protocol_auto=_as_bool(source.get("PROTOCOL_AUTO")),
+        slides_enabled=_as_bool(source.get("SLIDES_ENABLED")),
         word_timestamps=_as_bool(source.get("WORD_TIMESTAMPS"), default=True),
         notifications=_as_bool(source.get("NOTIFICATIONS"), default=True),
         asr_backend=source.get("ASR_BACKEND", "").strip() or "faster-whisper",
@@ -469,6 +474,7 @@ def settings_from_mapping(
         clean_artifacts=pick_bool("clean_artifacts", current.clean_artifacts),
         enable_correction=pick_bool("enable_correction", current.enable_correction),
         protocol_auto=pick_bool("protocol_auto", current.protocol_auto),
+        slides_enabled=pick_bool("slides_enabled", current.slides_enabled),
         word_timestamps=pick_bool("word_timestamps", current.word_timestamps),
         notifications=pick_bool("notifications", current.notifications),
         asr_backend=pick_nonempty("asr_backend", current.asr_backend),

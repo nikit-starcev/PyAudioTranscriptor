@@ -275,3 +275,44 @@ def test_eviction_ignores_subdirectories(tmp_path: Path) -> None:
     cache.save("asr", "k", {"payload": "x" * 100})
 
     assert track.exists()
+
+
+def test_blob_roundtrip(tmp_path: Path) -> None:
+    cache = StageCache(tmp_path / ".cache", extra_suffixes=(".png",))
+
+    saved = cache.save_blob("slides", "k", "-000.png", b"\x89PNG")
+
+    assert saved is not None
+    assert cache.load_blob("slides", "k", "-000.png") == saved
+    assert saved.read_bytes() == b"\x89PNG"
+
+
+def test_blob_missing_returns_none(tmp_path: Path) -> None:
+    cache = StageCache(tmp_path / ".cache", extra_suffixes=(".png",))
+    assert cache.load_blob("slides", "absent", "-000.png") is None
+
+
+def test_eviction_covers_extra_suffixes(tmp_path: Path) -> None:
+    """Файлы дополнительных суффиксов (картинки) участвуют в эвикции по лимиту."""
+    cache = StageCache(tmp_path / ".cache", max_bytes=1500, extra_suffixes=(".png",))
+    cache.directory.mkdir(parents=True)
+    old_image = cache._blob_path("slides", "old", "-000.png")
+    old_image.write_bytes(b"x" * 1000)
+    os.utime(old_image, (900_000, 900_000))
+
+    cache.save_blob("slides", "new", "-000.png", b"x" * 900)
+
+    assert not old_image.exists()
+    assert cache.load_blob("slides", "new", "-000.png") is not None
+
+
+def test_clear_removes_extra_suffixes(tmp_path: Path) -> None:
+    cache = StageCache(tmp_path / ".cache", extra_suffixes=(".png",))
+    cache.save_blob("slides", "k", "-000.png", b"png")
+    cache.save("slides", "k", {"slides": []})
+
+    removed = cache.clear()
+
+    assert removed == 2
+    assert list(cache.directory.iterdir()) == []
+

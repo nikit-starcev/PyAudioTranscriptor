@@ -645,6 +645,19 @@ def test_protocol_auto_must_be_boolean(audio_file: Path) -> None:
         AppConfig(input_file=audio_file, protocol_auto="yes")  # type: ignore[arg-type]
 
 
+def test_slides_enabled_defaults_to_false(audio_file: Path) -> None:
+    assert AppConfig(input_file=audio_file).slides_enabled is False
+
+
+def test_slides_enabled_can_be_enabled(audio_file: Path) -> None:
+    assert AppConfig(input_file=audio_file, slides_enabled=True).slides_enabled is True
+
+
+def test_slides_enabled_must_be_boolean(audio_file: Path) -> None:
+    with pytest.raises(ConfigurationError):
+        AppConfig(input_file=audio_file, slides_enabled="yes")  # type: ignore[arg-type]
+
+
 # --- Диаризация: диапазон говорящих и гиперпараметры pyannote ----------------
 
 def test_diarization_hyperparameters_defaults(audio_file: Path) -> None:

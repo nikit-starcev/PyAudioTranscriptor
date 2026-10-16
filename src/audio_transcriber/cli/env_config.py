@@ -477,6 +477,8 @@ def collect_env_kwargs(
         put("word_timestamps", as_bool(val("WORD_TIMESTAMPS"), default=True))
     if has("PROTOCOL_AUTO"):
         put("protocol_auto", as_bool(val("PROTOCOL_AUTO"), default=True))
+    if has("SLIDES_ENABLED"):
+        put("slides_enabled", as_bool(val("SLIDES_ENABLED"), default=False))
     if has("ENABLE_CORRECTION"):
         put("enable_correction", as_bool(val("ENABLE_CORRECTION")))
     if has("CORRECTION_MIN_WORD_LENGTH"):

@@ -211,6 +211,45 @@ def test_build_job_config_word_timestamps(
     assert disabled.word_timestamps is False
 
 
+def test_slides_enabled_roundtrip() -> None:
+    """#121: флаг извлечения слайдов по умолчанию выключен и сохраняется."""
+    current = default_settings({})
+    assert current.slides_enabled is False
+
+    enabled = settings_from_mapping({"slides_enabled": True}, base=current)
+    assert enabled.slides_enabled is True
+    assert enabled.env_overrides()["SLIDES_ENABLED"] == "true"
+
+
+def test_build_job_config_slides_enabled(
+    audio_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("audio_transcriber.web.config.env_defaults", lambda: {})
+
+    default = build_job_config(
+        audio_file, output_dir=tmp_path / "out", data_dir=tmp_path / "data"
+    )
+    enabled = build_job_config(
+        audio_file,
+        output_dir=tmp_path / "out",
+        data_dir=tmp_path / "data",
+        overrides={"SLIDES_ENABLED": "true"},
+    )
+
+    assert default.slides_enabled is False
+    assert enabled.slides_enabled is True
+
+
+def test_put_settings_slides_toggle_persists(client: TestClient) -> None:
+    assert client.get("/api/settings").json()["slides_enabled"] is False
+
+    response = client.put("/api/settings", json={"slides_enabled": True})
+
+    assert response.status_code == 200
+    assert response.json()["slides_enabled"] is True
+    assert client.get("/api/settings").json()["slides_enabled"] is True
+
+
 def test_put_settings_rejects_invalid_formats(client: TestClient) -> None:
     response = client.put("/api/settings", json={"export_formats": ["txt", "xyz"]})
 

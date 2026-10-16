@@ -67,6 +67,7 @@ LINK_HF_TOKENS = "https://huggingface.co/settings/tokens"
 LINK_NEMO_SPEECH = "https://github.com/nvidia/nemo-speech.cpp"
 LINK_SHERPA_ONNX = "https://github.com/k2-fsa/sherpa-onnx"
 LINK_DEEP_FILTER = "https://github.com/Rikorose/DeepFilterNet/releases"
+LINK_TESSERACT = "https://tesseract-ocr.github.io/tessdoc/Installation.html"
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,6 +322,8 @@ def _dependencies(env: Mapping[str, str]) -> list[tuple[str, str, bool]]:
                 sherpa_explicit,
             )
         )
+    if _truthy(env.get("SLIDES_ENABLED"), default=False):
+        checks.append(("rapidocr", "rapidocr (OCR слайдов, extra 'slides')", False))
     return checks
 
 
@@ -429,6 +432,25 @@ def _check_binaries(env: Mapping[str, str]) -> list[DoctorCheck]:
             links=() if deep_filter_available else (LINK_DEEP_FILTER,),
         )
     )
+
+    if _truthy(env.get("SLIDES_ENABLED"), default=False):
+        tesseract_available = _binary_available("tesseract")
+        checks.append(
+            DoctorCheck(
+                key="bin:tesseract",
+                label="Бинарник tesseract (OCR слайдов)",
+                ok=tesseract_available,
+                critical=False,
+                detail="tesseract",
+                hint=(
+                    ""
+                    if tesseract_available
+                    else "Установите tesseract с языками rus и eng либо extra 'slides' "
+                    "(RapidOCR)."
+                ),
+                links=() if tesseract_available else (LINK_TESSERACT,),
+            )
+        )
     return checks
 
 

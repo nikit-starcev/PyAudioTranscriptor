@@ -388,4 +388,5 @@ def build_job_config(
         # Экспорт по кнопке (протокол) — по умолчанию; может быть включён
         # настройкой веб-интерфейса (PROTOCOL_AUTO).
         protocol_auto=_as_bool(defaults.get("PROTOCOL_AUTO"), default=False),
+        slides_enabled=_as_bool(defaults.get("SLIDES_ENABLED"), default=False),
     )

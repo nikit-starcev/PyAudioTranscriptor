@@ -50,6 +50,14 @@ web = [
     "uvicorn[standard]>=0.30",
     "python-multipart>=0.0.9",
 ]
+# OCR слайдов (#121): RapidOCR на ONNX Runtime (CPU, без torch). Основной
+# движок для извлечения текста слайдов; запасной путь — внешний CLI tesseract
+# (ставится отдельно, как deep-filter). Без обоих фича недоступна (503).
+#   uv pip install --python .venv/bin/python '.[slides]'
+slides = [
+    "rapidocr>=2.0",
+    "onnxruntime>=1.18",
+]
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]

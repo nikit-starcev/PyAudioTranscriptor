@@ -349,6 +349,9 @@ class AppConfig:
     # а протокол формируется отдельно по запросу (``generate_protocol``).
     # По умолчанию ``True`` — обратная совместимость CLI; TUI ставит ``False``.
     protocol_auto: bool = True
+    #: Опциональный пост-шаг «извлечь слайды» по кнопке (#121). По умолчанию
+    #: выключен: фича тяжёлая (OCR на CPU) и включается осознанно.
+    slides_enabled: bool = False
     #: Проверять существование ``input_file`` при валидации. Реальные прогоны
     #: оставляют ``True``; сборка «оценочного» конфига (предпросмотр времени до
     #: запуска, #107) может отключить проверку, чтобы не требовать входного файла.
@@ -401,6 +404,9 @@ class AppConfig:
 
         if not isinstance(self.protocol_auto, bool):
             raise ConfigurationError("PROTOCOL_AUTO должно быть true или false")
+
+        if not isinstance(self.slides_enabled, bool):
+            raise ConfigurationError("SLIDES_ENABLED должно быть true или false")
 
         if not isinstance(self.denoise, bool):
             raise ConfigurationError("DENOISE должно быть true или false")

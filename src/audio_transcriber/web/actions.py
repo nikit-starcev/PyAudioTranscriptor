@@ -2,8 +2,8 @@
 
 Длительные операции, запускаемые кнопками поверх уже готовой задачи —
 «Применить имена» (enrollment, #37), «Применить глоссарий» (#32),
-«Проверить текст» (#51) и «Сформировать протокол» (LLM), — выполняются
-синхронным HTTP-запросом. Чтобы интерфейс не выглядел «зависшим», сервер
+«Проверить текст» (#51), «Сформировать протокол» (LLM) и «Извлечь слайды» (#121),
+— выполняются синхронным HTTP-запросом. Чтобы интерфейс не выглядел «зависшим», сервер
 публикует этапы выполнения в отдельную шину событий, а фронтенд подписывается
 на неё отдельным SSE-каналом ``GET /api/actions/{action_id}/events``.
 
@@ -15,7 +15,7 @@
 Каждое событие имеет форму::
 
     {
-        "action": "enrollment" | "glossary" | "correction" | "protocol",
+        "action": "enrollment" | "glossary" | "correction" | "protocol" | "slides",
         "stage":  "samples" | "embeddings" | "matching" | "apply" | ...,
         "message": "Расчёт эмбеддингов образца «Иван» (2/3)",
         "fraction": 0.45 | None,
@@ -53,6 +53,7 @@ ACTION_ENROLLMENT = "enrollment"
 ACTION_GLOSSARY = "glossary"
 ACTION_CORRECTION = "correction"
 ACTION_PROTOCOL = "protocol"
+ACTION_SLIDES = "slides"
 
 #: Статус незавершённого действия.
 ACTION_RUNNING = "running"

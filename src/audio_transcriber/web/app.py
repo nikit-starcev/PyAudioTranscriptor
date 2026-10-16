@@ -129,6 +129,15 @@ from audio_transcriber.utils.net import DEFAULT_WEB_PORT
 from audio_transcriber.utils.playback import amplitude_envelope, read_duration
 from audio_transcriber.utils.subprocess_registry import terminate_all_processes
 from audio_transcriber.utils.text import sanitize_filename
+from audio_transcriber.video.frames import VideoFileError, has_video_stream
+from audio_transcriber.video.ocr import OcrUnavailableError
+from audio_transcriber.video.slides import (
+    SlidesExtractor,
+    build_slides_payload,
+    extract_slides,
+    read_slides_metadata,
+    slides_directory,
+)
 from audio_transcriber.web import assets as assets_registry
 from audio_transcriber.web import deps as deps_registry
 from audio_transcriber.web.actions import (
@@ -136,6 +145,7 @@ from audio_transcriber.web.actions import (
     ACTION_ENROLLMENT,
     ACTION_GLOSSARY,
     ACTION_PROTOCOL,
+    ACTION_SLIDES,
     ActionEventBus,
     ActionProgress,
     sanitize_action_id,
@@ -616,6 +626,8 @@ class SettingsUpdate(BaseModel):
     clean_artifacts: bool | None = None
     enable_correction: bool | None = None
     protocol_auto: bool | None = None
+    #: Извлечение слайдов из видео (#121) — опциональный пост-шаг по кнопке.
+    slides_enabled: bool | None = None
     #: Пословные таймстемпы (#45).
     word_timestamps: bool | None = None
     #: Системные уведомления о завершении/ошибке/отмене веб-задачи (#35).
@@ -730,6 +742,7 @@ def create_app(
     pipeline_fn: PipelineFn | None = None,
     config_builder: ConfigBuilder | None = None,
     protocol_fn: ProtocolFn | None = None,
+    slides_fn: SlidesExtractor | None = None,
     llm_factory: LlmFactory | None = None,
     voices_dir: Path | None = None,
     downloader: Downloader | None = None,
@@ -745,9 +758,9 @@ def create_app(
 ) -> FastAPI:
     """Собирает приложение FastAPI с изолированным окружением данных.
 
-    ``pipeline_fn``, ``config_builder``, ``protocol_fn`` и ``downloader``
-    подменяются в тестах, чтобы не требовать GPU/моделей, сети и реального
-    ``config.env``. ``voices_dir`` позволяет подменить каталог библиотеки
+    ``pipeline_fn``, ``config_builder``, ``protocol_fn``, ``slides_fn`` и
+    ``downloader`` подменяются в тестах, чтобы не требовать GPU/моделей, сети и
+    реального ``config.env``. ``voices_dir`` позволяет подменить каталог библиотеки
     голосов (в тестах) вместо ``VOICES_DIR``; в остальных случаях он берётся
     из сохранённых настроек. ``dep_install_runner`` — заглушка запуска
     установщика пакетов (#66): в тестах реальные ``uv``/``pip`` не вызываются.
@@ -964,6 +977,7 @@ def create_app(
         resolve_voices=resolve_voices,
         config_builder=effective_builder,
         protocol_fn=protocol_fn or generate_protocol,
+        slides_fn=slides_fn or extract_slides,
         llm_factory=llm_factory or create_llm_client,
         downloads=downloads,
         download_bus=download_bus,
@@ -1335,6 +1349,7 @@ def register_api(
     resolve_voices: VoicesResolver,
     config_builder: ConfigBuilder,
     protocol_fn: ProtocolFn,
+    slides_fn: SlidesExtractor,
     llm_factory: LlmFactory,
     downloads: ModelDownloadManager,
     download_bus: DownloadBus,
@@ -3060,6 +3075,98 @@ def register_api(
             "protocol": updated,
         }
 
+    def _require_slides_enabled() -> None:
+        """404, если извлечение слайдов выключено флагом ``SLIDES_ENABLED``."""
+        if not settings_store.load().slides_enabled:
+            raise HTTPException(
+                status_code=404,
+                detail="Извлечение слайдов отключено (SLIDES_ENABLED)",
+            )
+
+    def _slides_directory(job: Job) -> Path:
+        """Sidecar-каталог слайдов задачи: ``<results>/<job_id>/<stem>.slides``."""
+        source = Path(job.source_path)
+        return slides_directory(paths.results_dir / job.id, source)
+
+    @router.post("/jobs/{job_id}/slides")
+    def job_slides(
+        job_id: str,
+        action_id: Annotated[str | None, Header(alias="X-Action-Id")] = None,
+    ) -> dict[str, object]:
+        """Извлекает слайды из видео задачи (синхронно, по кнопке, #121).
+
+        Ошибки: ``404`` — нет задачи/результата/видеодорожки либо фича
+        выключена; ``503`` — не найден OCR-движок (RapidOCR/Tesseract).
+        Результат: ``{"slides": [...], "total": N}``; кадры отдаются отдельным
+        эндпоинтом ``GET .../slides/{index}/image``. ``X-Action-Id`` публикует
+        этапы в шину действий (индикатор прогресса).
+        """
+        _require_slides_enabled()
+        job = _require_job(store, job_id)
+        _require_result(paths, job)
+        source = Path(job.source_path)
+        if not source.is_file():
+            raise HTTPException(status_code=404, detail="Исходный файл не найден")
+        if not has_video_stream(source):
+            raise HTTPException(status_code=404, detail="В исходном файле нет видеодорожки")
+        progress = _action_progress(action_id, ACTION_SLIDES)
+        config = config_builder(job_id, source)
+        try:
+            artifacts = slides_fn(
+                config, on_progress=progress.as_callback() if progress is not None else None
+            )
+        except OcrUnavailableError as exc:
+            if progress is not None:
+                progress.fail(str(exc))
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except VideoFileError as exc:
+            if progress is not None:
+                progress.fail(str(exc))
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            if progress is not None:
+                progress.fail(f"Не удалось извлечь слайды: {exc}")
+            raise HTTPException(
+                status_code=500, detail=f"Не удалось извлечь слайды: {exc}"
+            ) from exc
+        metadata = read_slides_metadata(artifacts.directory)
+        if metadata is None:
+            metadata = {"slides": [slide.as_dict() for slide in artifacts.slides]}
+        if progress is not None:
+            progress.done("Слайды извлечены")
+        return build_slides_payload(metadata, job_id=job_id)
+
+    @router.get("/jobs/{job_id}/slides")
+    def job_slides_get(job_id: str) -> dict[str, object]:
+        """Отдаёт ранее извлечённые слайды задачи (``404``, если их нет)."""
+        _require_slides_enabled()
+        job = _require_job(store, job_id)
+        _require_result(paths, job)
+        metadata = read_slides_metadata(_slides_directory(job))
+        if metadata is None:
+            raise HTTPException(status_code=404, detail="Слайды ещё не извлечены")
+        return build_slides_payload(metadata, job_id=job_id)
+
+    @router.get("/jobs/{job_id}/slides/{index}/image")
+    def job_slide_image(job_id: str, index: int) -> Response:
+        """Отдаёт PNG ключевого кадра слайда (``image/png``)."""
+        _require_slides_enabled()
+        job = _require_job(store, job_id)
+        _require_result(paths, job)
+        directory = _slides_directory(job)
+        metadata = read_slides_metadata(directory)
+        if metadata is None:
+            raise HTTPException(status_code=404, detail="Слайды ещё не извлечены")
+        image_name = _slide_image_name(metadata, index)
+        if image_name is None:
+            raise HTTPException(status_code=404, detail="Слайд не найден")
+        image_path = _resolve_within(directory, directory / image_name)
+        if image_path is None or not image_path.is_file():
+            raise HTTPException(status_code=404, detail="Кадр слайда не найден")
+        return FileResponse(image_path, media_type="image/png", filename=image_path.name)
+
     @router.get("/jobs/{job_id}/summary")
     def job_summary(job_id: str) -> dict[str, object]:
         job = _require_job(store, job_id)
@@ -3849,6 +3956,20 @@ def _sample_path(paths: WebPaths, relative: str) -> Path | None:
     except OSError:
         return None
     return candidate if candidate.is_relative_to(root) else None
+
+
+def _slide_image_name(metadata: Mapping[str, object], index: int) -> str | None:
+    """Имя файла кадра слайда по его индексу из метаданных ``slides.json``."""
+    raw = metadata.get("slides")
+    if not isinstance(raw, list):
+        return None
+    for item in raw:
+        if not isinstance(item, Mapping):
+            continue
+        value = item.get("image")
+        if item.get("index") == index and isinstance(value, str) and value:
+            return value
+    return None
 
 
 def _write_result(paths: WebPaths, job: Job, payload: Mapping[str, object]) -> None:

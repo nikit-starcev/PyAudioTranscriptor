@@ -20,7 +20,7 @@ import stat
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +79,7 @@ class StageCache:
         enabled: bool = True,
         max_bytes: int = DEFAULT_CACHE_MAX_BYTES,
         ttl_seconds: float = DEFAULT_CACHE_TTL_SECONDS,
+        extra_suffixes: Sequence[str] = (),
     ) -> None:
         self.directory = Path(directory)
         self.enabled = enabled
@@ -86,10 +87,22 @@ class StageCache:
         self.max_bytes = max(0, int(max_bytes))
         #: Время жизни записи с момента изменения в секундах (0 — нет).
         self.ttl_seconds = max(0.0, float(ttl_seconds))
+        #: Дополнительные расширения стадийных файлов (например, ``.png`` для
+        #: картинок слайдов). Учитываются эвикцией/``clear`` наравне с
+        #: ``*.json``/``*.wav`` — иначе такие файлы росли бы бесконтрольно.
+        self.extra_suffixes: tuple[str, ...] = tuple(
+            suffix if suffix.startswith(".") else f".{suffix}"
+            for suffix in extra_suffixes
+            if suffix
+        )
         #: Сериализация записей в рамках процесса. От межпроцессных гонок
         #: защищает не лок, а уникальное имя временного файла + атомарный
         #: ``os.replace`` (см. :meth:`_write_atomic`).
         self._write_lock = threading.Lock()
+
+    def _patterns(self) -> tuple[str, ...]:
+        """Glob-шаблоны стадийных файлов: штатные плюс дополнительные суффиксы."""
+        return ("*.json", "*.wav", *(f"*{suffix}" for suffix in self.extra_suffixes))
 
     def key(self, stage: str, source: Path, params: Mapping[str, Any]) -> str:
         """Возвращает ключ кэша для стадии."""
@@ -100,6 +113,14 @@ class StageCache:
 
     def _audio_path(self, stage: str, key: str) -> Path:
         return self.directory / f"{stage}-{key}.wav"
+
+    def _blob_path(self, stage: str, key: str, suffix: str) -> Path:
+        """Путь произвольного стадийного файла: ``<stage>-<key><suffix>``.
+
+        Суффикс задаёт расширение и/или номер (например, ``-000.png``), поэтому
+        несколько файлов одной стадии не конфликтуют.
+        """
+        return self.directory / f"{stage}-{key}{suffix}"
 
     def load(self, stage: str, key: str) -> dict[str, Any] | None:
         """Читает данные стадии из кэша.
@@ -179,6 +200,32 @@ class StageCache:
             return None
         return path
 
+    def load_blob(self, stage: str, key: str, suffix: str) -> Path | None:
+        """Возвращает путь к произвольному стадийному файлу (или ``None``)."""
+        if not self.enabled:
+            return None
+        path = self._blob_path(stage, key, suffix)
+        try:
+            if path.is_file() and path.stat().st_size > 0:
+                return path
+        except OSError:
+            return None
+        return None
+
+    def save_blob(self, stage: str, key: str, suffix: str, data: bytes) -> Path | None:
+        """Сохраняет произвольные байты как стадийный файл. Ошибка — ``None``."""
+        if not self.enabled:
+            return None
+        path = self._blob_path(stage, key, suffix)
+        try:
+            with self._write_lock:
+                self._write_atomic(path, lambda tmp: tmp.write_bytes(data))
+                self._evict(keep=path)
+        except OSError as exc:
+            logger.warning("Не удалось сохранить файл кэша %s: %s", stage, exc)
+            return None
+        return path
+
     def _temp_path(self, target: Path) -> Path:
         """Уникальный путь временного файла рядом с целевым.
 
@@ -214,7 +261,7 @@ class StageCache:
         трогаются.
         """
         entries: list[tuple[float, int, Path]] = []
-        for pattern in ("*.json", "*.wav"):
+        for pattern in self._patterns():
             for entry in self.directory.glob(pattern):
                 try:
                     info = entry.stat()
@@ -271,7 +318,7 @@ class StageCache:
         # ``*.tmp`` захватывает и уникальные скрытые ``.<name>.<pid>.<uuid>.tmp``
         # (pathlib не выделяет файлы с ведущей точкой), поэтому отдельных
         # шаблонов не нужно.
-        for pattern in ("*.json", "*.wav", "*.tmp"):
+        for pattern in ("*.json", "*.wav", "*.tmp", *(f"*{suffix}" for suffix in self.extra_suffixes)):
             for entry in self.directory.glob(pattern):
                 try:
                     entry.unlink()
