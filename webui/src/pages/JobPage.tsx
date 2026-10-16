@@ -19,6 +19,7 @@ import {
 import JobPlayer from '../components/JobPlayer'
 import ChatTab from './job/ChatTab'
 import ExportTab from './job/ExportTab'
+import SlidesTab from './job/SlidesTab'
 import SpeakersTab from './job/SpeakersTab'
 import StagesTab from './job/StagesTab'
 import TranscriptTab from './job/TranscriptTab'
@@ -28,6 +29,7 @@ const TABS = [
   { id: 'speakers', label: 'Спикеры' },
   { id: 'transcript', label: 'Стенограмма' },
   { id: 'chat', label: 'Чат' },
+  { id: 'slides', label: 'Слайды' },
   { id: 'export', label: 'Экспорт' },
 ]
 
@@ -161,6 +163,9 @@ function JobPage({ jobId, initialEntry }: { jobId: string; initialEntry?: number
         </TabPanel>
         <TabPanel value="chat" active={tab} className="pt-4">
           <ChatTab jobId={jobId} />
+        </TabPanel>
+        <TabPanel value="slides" active={tab} className="pt-4">
+          <SlidesTab jobId={jobId} />
         </TabPanel>
         <TabPanel value="export" active={tab} className="pt-4">
           <ExportTab jobId={jobId} />
