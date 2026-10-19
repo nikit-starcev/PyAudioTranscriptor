@@ -727,6 +727,16 @@
   к аудио-диаризации (не переопределение); тяжёлые **TalkNet/Light-ASD** (torch) — опционально. Ресёрч —
   `docs/architecture/video.md`. Связано с #47/#63.
 
+- **ONNX-модели на GPU: WebGPU EP (Linux/AMD) + DirectML (Windows).** (#150)
+  Суть: считать ONNX-модели не только на CPU — **GigaAM** (`onnx-asr`) и **RapidOCR** (слайды);
+  sherpa-onnx в готовых колёсах — только CPU/CUDA.
+  Зачем: на AMD RX 590 (gfx803, Vulkan) ONNX сейчас на CPU; **WebGPU EP** (Dawn→Vulkan/RADV)
+  ускоряет «крупные» вызовы — замерено: OCR det **2.8×**, GigaAM **1.27×**; VAD/эмбеддинги на GPU
+  наоборот медленнее (0.04–0.05×) → оставить на CPU.
+  Как: `onnxruntime-webgpu` (Linux) / `onnxruntime-directml` (Windows), флаг `ASR_ONNX_PROVIDER=auto|cpu|webgpu|dml`,
+  патч провайдеров в RapidOCR; ROCm/Vulkan EP — нет (gfx803 не поддержан, Vulkan EP не существует).
+  Сложность: низкая/средняя; связано с #46, #63, #121. Ресёрч — локальный отчёт (не в репо).
+
 ## Корпоративная версия (многопользовательский режим)
 
 **Решение (архитектура):** это **режим того же проекта**, а не отдельный продукт/ветка/пакет — один
