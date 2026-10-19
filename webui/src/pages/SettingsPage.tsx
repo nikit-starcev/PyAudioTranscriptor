@@ -1,6 +1,7 @@
 import { useApp } from '../app/useApp'
 import ApiKeyPanel from '../components/ApiKeyPanel'
 import CachePanel from '../components/CachePanel'
+import FeedbackPanel from '../components/FeedbackPanel'
 import SettingsPanel from '../components/SettingsPanel'
 
 function SettingsPage() {
@@ -14,6 +15,7 @@ function SettingsPage() {
       <SettingsPanel onSaved={app.handleSettingsSaved} />
       <ApiKeyPanel />
       <CachePanel />
+      <FeedbackPanel version={app.version} asrDevice={app.asrDevice} />
     </div>
   )
 }
