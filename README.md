@@ -1740,54 +1740,60 @@ chmod 600 config.env
 ```mermaid
 sequenceDiagram
     actor User as Пользователь
-    participant UI as CLI / TUI
+    participant UI as CLI / TUI / Web
     participant Config
     participant Pipeline
-    participant Denoise as Denoise<br/>(DeepFilterNet, опц.)
-    participant ASR as Transcription<br/>(faster-whisper / whisper.cpp)
-    participant Diar as Diarization<br/>(pyannote.audio)
+    participant Denoise as Denoise<br/>(deep-filter CLI, опц.)
+    participant ASR as Transcription<br/>(whisper.cpp Vulkan / faster-whisper /<br/>GigaAM / hybrid)
+    participant Diar as Diarization<br/>(pyannote / nemo-speech /<br/>hybrid / sherpa; выбор auto)
     participant Merge as Merging
     participant Sent as SentenceMerger
-    participant Correct as Correction<br/>(pymorphy3)
-    participant LLM as LLM<br/>(llama.cpp, опц.)
+    participant Clean as Cleaning
+    participant Correct as Correction<br/>(pymorphy3; опц.)
+    participant LLM as LLM<br/>(llama.cpp / OpenAI-совместимый; опц.)
     participant Export as Export
 
-    User->>UI: transcribe audio.mp3 [опции]
+    User->>UI: transcribe audio.mp3 [опции] / загрузка в Web
     UI->>Config: собрать и провалидировать AppConfig
     Config-->>UI: AppConfig
     UI->>Pipeline: run_pipeline(config)
 
     opt включён --denoise
-        Pipeline->>Denoise: denoise(audio)
-        Note right of Denoise: 48 кГц → модель (чанками) →<br/>ресемплинг 16 кГц во временный WAV
+        Pipeline->>Denoise: denoise(аудио)
+        Note right of Denoise: внешний deep-filter (чанками)<br/>→ очищенный WAV 16 кГц
         Denoise-->>Pipeline: очищенный аудиофайл
     end
 
-    Pipeline->>ASR: transcribe(audio)
-    Note right of ASR: реализует Protocol SpeechRecognizer
+    Pipeline->>ASR: transcribe(аудио)
+    Note right of ASR: Protocol SpeechRecognizer;<br/>пословные таймкоды (#45)
     ASR-->>Pipeline: сегменты речи, язык, длительность
 
-    Pipeline->>Diar: diarize(audio)
-    Note right of Diar: реализует Protocol SpeakerDiarizer
+    Pipeline->>Diar: diarize(аудио)
+    Note right of Diar: Protocol SpeakerDiarizer;<br/>имена по образцам (enrollment)
     Diar-->>Pipeline: сегменты говорящих
 
     Pipeline->>Merge: merge(сегменты речи, говорящие)
-    Merge-->>Pipeline: реплики + говорящие
+    Merge-->>Pipeline: реплики + говорящие (наложения)
 
     Pipeline->>Sent: merge(реплики)
     Note right of Sent: склейка коротких реплик одного<br/>говорящего в предложения
     Sent-->>Pipeline: укрупнённые реплики
 
+    opt очистка артефактов / нормализация
+        Pipeline->>Clean: clean(реплики)
+        Clean-->>Pipeline: очищенный текст (words в синхроне)
+    end
+
     opt включён --enable-correction
         Pipeline->>Correct: correct(реплики)
-        Note right of Correct: только неизвестные словоформы (pymorphy3)
+        Note right of Correct: точечные правки и «частые ошибки»;<br/>семантика LLM — только предложения (#75)
         Correct-->>Pipeline: реплики с точечными правками
     end
 
     opt включён --llm
-        Pipeline->>LLM: имена участников + правка терминов
-        Note right of LLM: llama-server (Vulkan/CPU),<br/>глоссарий поверх матчера
-        LLM-->>Pipeline: реплики + имена
+        Pipeline->>LLM: имена, термины, резюме/протокол, чат
+        Note right of LLM: llama-server (Vulkan/CPU) или<br/>OpenAI-совместимый; глоссарий поверх матчера
+        LLM-->>Pipeline: реплики + имена (+ резюме)
     end
 
     loop по каждому формату экспорта
@@ -1795,28 +1801,38 @@ sequenceDiagram
     end
 
     Pipeline-->>UI: TranscriptionResult
-    UI-->>User: сводка в консоль + файлы в output-dir
+    UI-->>User: результат в UI + файлы в output-dir
 ```
 
-- **CLI / TUI / Config** — принимают команду или данные формы, валидируют
-  параметры запуска (`AppConfig`).
-- **Denoise (опционально)** — подавляет фоновый шум (DeepFilterNet) и отдаёт
-  один очищенный аудиофайл и распознаванию, и диаризации, чтобы их временные
-  метки совпадали. Если движок недоступен — этап пропускается.
-- **Transcription / Diarization** — вызываются последовательно, каждый за
-  интерфейсом `typing.Protocol`: движок можно заменить (faster-whisper ⇄
-  whisper.cpp, другая диаризация) без изменения остального кода. Merging
-  сопоставляет их результаты по времени.
-- **SentenceMerger** — склеивает подряд идущие короткие сегменты одного
-  говорящего в реплики-предложения, чтобы корректор и LLM видели цельный текст.
-- **Correction** — опциональное автоисправление опечаток; меняет только слова,
-  неизвестные морфологическому анализатору русского языка.
-- **LLM** — опциональная постобработка локальным `llama.cpp`: имена участников
-  и правка терминов по глоссарию.
-- **Export** — сохраняет результат в каждый из запрошенных форматов.
+**Веб-версия** добавляет сверху очередь и UI: SPA отправляет файл/запуск (`POST /api/jobs`), задача
+попадает в очередь (`JobRunner`, один воркер), прогресс идёт по SSE (`JobEventBus`), а результаты,
+слайды и архив хранятся в `web-data/`. Подробнее — [`docs/architecture/web.md`](docs/architecture/web.md).
 
-`domain` (модели данных), `progress` (события прогресса для TUI) и `utils`
-(логирование, работа с устройством CPU/CUDA, исключения) используются всеми
+- **CLI / TUI / Web / Config** — принимают команду или данные формы, валидируют
+  параметры запуска (`AppConfig`). Веб-версия дополнительно ставит задачу в очередь
+  (`JobRunner`, один воркер) и отдаёт прогресс по SSE.
+- **Denoise (опционально)** — подавляет фоновый шум внешним CLI **`deep-filter`**
+  (DeepFilterNet) и отдаёт один очищенный аудиофайл и распознаванию, и диаризации,
+  чтобы их временные метки совпадали. Если движок недоступен — этап пропускается.
+- **Transcription / Diarization** — вызываются последовательно, каждый за
+  интерфейсом `typing.Protocol`: движок можно заменить без изменения остального кода
+  (ASR: whisper.cpp Vulkan / faster-whisper / GigaAM / hybrid; диаризация: pyannote /
+  nemo-speech / hybrid / sherpa, выбор `auto`; имена — enrollment по образцам из
+  «Голосов»). Merging сопоставляет их результаты по времени.
+- **SentenceMerger / Cleaning** — склеивают короткие реплики одного говорящего в
+  предложения и убирают артефакты/нормализуют текст (с синхронизацией `words`),
+  чтобы корректор и LLM видели цельный и чистый текст.
+- **Correction** — опциональное автоисправление: точечные правки опечаток
+  (pymorphy3), «частые ошибки» и ручные правила; семантические правки LLM (#75)
+  показываются как **предложения** и применяются только по подтверждению.
+- **LLM** — опциональная постобработка: имена участников, правка терминов по
+  глоссарию, резюме/протокол и чат по стенограмме. Провайдер — локальный `llama.cpp`
+  (Vulkan/CPU) или OpenAI-совместимый endpoint.
+- **Export** — сохраняет результат в каждый из запрошенных форматов
+  (TXT/DOCX/JSON/SRT/VTT/MD/PDF).
+
+`domain` (модели данных), `progress` (события прогресса для TUI и веб-SSE) и `utils`
+(логирование, работа с устройством CPU/CUDA/Vulkan, исключения) используются всеми
 участниками насквозь и не показаны на схеме отдельно.
 
 
