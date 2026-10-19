@@ -1745,12 +1745,12 @@ sequenceDiagram
     participant Pipeline
     participant Denoise as Denoise<br/>(deep-filter CLI, опц.)
     participant ASR as Transcription<br/>(whisper.cpp Vulkan / faster-whisper /<br/>GigaAM / hybrid)
-    participant Diar as Diarization<br/>(pyannote / nemo-speech /<br/>hybrid / sherpa; выбор auto)
+    participant Diar as Diarization<br/>(pyannote / nemo-speech /<br/>hybrid / sherpa, выбор auto)
     participant Merge as Merging
     participant Sent as SentenceMerger
     participant Clean as Cleaning
-    participant Correct as Correction<br/>(pymorphy3; опц.)
-    participant LLM as LLM<br/>(llama.cpp / OpenAI-совместимый; опц.)
+    participant Correct as Correction<br/>(pymorphy3, опц.)
+    participant LLM as LLM<br/>(llama.cpp / OpenAI-совместимый, опц.)
     participant Export as Export
 
     User->>UI: transcribe audio.mp3 [опции] / загрузка в Web
@@ -1765,11 +1765,11 @@ sequenceDiagram
     end
 
     Pipeline->>ASR: transcribe(аудио)
-    Note right of ASR: Protocol SpeechRecognizer;<br/>пословные таймкоды (#45)
+    Note right of ASR: Protocol SpeechRecognizer<br/>пословные таймкоды (issue 45)
     ASR-->>Pipeline: сегменты речи, язык, длительность
 
     Pipeline->>Diar: diarize(аудио)
-    Note right of Diar: Protocol SpeakerDiarizer;<br/>имена по образцам (enrollment)
+    Note right of Diar: Protocol SpeakerDiarizer<br/>имена по образцам (enrollment)
     Diar-->>Pipeline: сегменты говорящих
 
     Pipeline->>Merge: merge(сегменты речи, говорящие)
@@ -1786,13 +1786,13 @@ sequenceDiagram
 
     opt включён --enable-correction
         Pipeline->>Correct: correct(реплики)
-        Note right of Correct: точечные правки и «частые ошибки»;<br/>семантика LLM — только предложения (#75)
+        Note right of Correct: точечные правки и «частые ошибки»<br/>семантика LLM — только предложения (issue 75)
         Correct-->>Pipeline: реплики с точечными правками
     end
 
     opt включён --llm
         Pipeline->>LLM: имена, термины, резюме/протокол, чат
-        Note right of LLM: llama-server (Vulkan/CPU) или<br/>OpenAI-совместимый; глоссарий поверх матчера
+        Note right of LLM: llama-server (Vulkan/CPU) или<br/>OpenAI-совместимый, глоссарий поверх матчера
         LLM-->>Pipeline: реплики + имена (+ резюме)
     end
 
