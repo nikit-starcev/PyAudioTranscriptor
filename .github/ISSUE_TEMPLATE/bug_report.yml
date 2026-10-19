@@ -1,0 +1,168 @@
+name: Сообщение об ошибке
+description: Воспроизводимая проблема в PyAudioTranscriptor — приложите версию, окружение и лог.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо за сообщение об ошибке.
+
+        Перед созданием issue:
+        - проверьте, что проблема не вызвана конфигурацией: выполните `audio-transcriber doctor`, а при работе через веб-интерфейс откройте «Настройки» и «Мастер» и посмотрите лог веб-сервера;
+        - просмотрите [документацию по архитектуре](https://github.com/nikit-starcev/PyAudioTranscriptor/tree/main/docs/architecture), README и существующие issues;
+        - **не прикладывайте** токены (`HF_TOKEN`, `LLM_API_KEY`, `API_KEY`), персональные данные и записи без необходимости. Замените значения на `***`.
+
+        Чем точнее шаги воспроизведения и лог, тем быстрее удастся разобраться.
+
+  - type: input
+    id: summary
+    attributes:
+      label: Краткое описание
+      description: Одно предложение о том, что пошло не так.
+      placeholder: "Например: падение при экспорте в DOCX после диаризации"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Версия
+      description: "Вывод `audio-transcriber --version` или поле `version` из `GET /api/health`."
+      placeholder: "1.0.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Операционная система
+      options:
+        - Linux
+        - Windows
+        - macOS
+        - Другое
+    validations:
+      required: true
+
+  - type: input
+    id: os_version
+    attributes:
+      label: Дистрибутив и версия ОС
+      description: Укажите дистрибутив/версию или сборку.
+      placeholder: "Ubuntu 24.04, Windows 11 23H2, macOS 15.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: Способ установки
+      options:
+        - uv (uv sync / uv run)
+        - venv + pip
+        - Docker / docker compose
+        - Portable-бандл (one-dir)
+        - Инсталлятор (.exe / .dmg / AppImage)
+        - Другое
+    validations:
+      required: true
+
+  - type: dropdown
+    id: asr_backend
+    attributes:
+      label: Бэкенд ASR
+      options:
+        - faster-whisper
+        - whisper.cpp
+        - GigaAM
+        - hybrid
+        - Другое / не знаю
+    validations:
+      required: true
+
+  - type: dropdown
+    id: device
+    attributes:
+      label: Устройство ASR
+      options:
+        - auto
+        - CPU
+        - CUDA
+        - Vulkan
+        - Другое / не знаю
+    validations:
+      required: true
+
+  - type: dropdown
+    id: diarization
+    attributes:
+      label: Движок диаризации
+      options:
+        - pyannote
+        - nemo-speech
+        - hybrid
+        - sherpa
+        - auto
+        - Диаризация выключена
+        - Другое / не знаю
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Шаги воспроизведения
+      description: Перечислите действия по порядку, включая команду или действия в веб-интерфейсе.
+      placeholder: |
+        1. Запустить ...
+        2. Открыть ...
+        3. Выбрать ...
+        4. Нажать ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Ожидаемое поведение
+      description: Что должно было произойти.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Фактическое поведение
+      description: Что произошло на самом деле. Укажите текст ошибки, если он есть.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Лог и вывод doctor
+      description: |
+        Приложите релевантный лог и вывод `audio-transcriber doctor` (или отчёт doctor в «Настройках»/«Мастере»).
+        Удалите токены, имена пользователей, пути с персональными данными и другие секреты.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: Скриншот или видео (необязательно)
+      description: |
+        Формы GitHub не принимают файлы. После создания issue перетащите скриншот или видео в комментарий.
+      placeholder: "Кратко опишите, что видно на скриншоте"
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Подтверждение
+      options:
+        - label: Я удалил из текста и вложений секреты, токены и персональные данные.
+          required: true

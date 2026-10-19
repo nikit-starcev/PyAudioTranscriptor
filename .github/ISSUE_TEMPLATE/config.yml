@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Документация по архитектуре
+    url: https://github.com/nikit-starcev/PyAudioTranscriptor/tree/main/docs/architecture
+    about: Обзор, компоненты, конвейер, движки, веб-слой, конфигурация и упаковка.
+  - name: Политика безопасности
+    url: https://github.com/nikit-starcev/PyAudioTranscriptor/blob/main/SECURITY.md
+    about: Поддерживаемые версии, область и правила ответственного раскрытия.
+  - name: Приватно сообщить об уязвимости
+    url: https://github.com/nikit-starcev/PyAudioTranscriptor/security/advisories/new
+    about: GitHub Security Advisories — не создавайте публичный issue с деталями уязвимости.

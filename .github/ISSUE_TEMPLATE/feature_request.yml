@@ -1,0 +1,50 @@
+name: Предложение функции
+description: Идея улучшения PyAudioTranscriptor — опишите сценарий и ожидаемую пользу.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо за идею.
+
+        Перед созданием issue проверьте, нет ли уже похожего предложения, и просмотрите [документацию по архитектуре](https://github.com/nikit-starcev/PyAudioTranscriptor/tree/main/docs/architecture). Одно предложение — один issue.
+
+        Если идея связана с уязвимостью, не создавайте публичный issue: используйте [SECURITY.md](https://github.com/nikit-starcev/PyAudioTranscriptor/blob/main/SECURITY.md).
+
+  - type: input
+    id: idea
+    attributes:
+      label: Идея
+      description: Кратко сформулируйте предложение.
+      placeholder: "Например: экспорт стенограммы в формате Markdown с таймкодами"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Зачем это нужно
+      description: Какую задачу или проблему решает предложение? Опишите реальный сценарий использования.
+      placeholder: |
+        Я транскрибирую ...
+        Сейчас приходится ...
+        Было бы удобно ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Альтернативы
+      description: Какие обходные пути или другие решения вы рассматривали?
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Дополнительный контекст
+      description: Ссылки, примеры, скриншоты, ограничения по железу или совместимости.
+    validations:
+      required: false
